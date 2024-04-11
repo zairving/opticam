@@ -1,0 +1,15 @@
+name: opticam_new
+channels:
+  - conda-forge
+dependencies:
+  - astropy
+  - numpy
+  - scipy
+  - ipykernel
+  - ipympl
+  - matplotlib
+  - photutils
+  - loguru
+  - astroalign
+  - pandas
+prefix: /home/zac/miniforge3/envs/opticam_new
