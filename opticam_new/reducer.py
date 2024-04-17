@@ -90,12 +90,15 @@ class Reducer:
         
         # check binning and parse observation times
         self.times = {}  # file name : file MJD
+        self.gains = {}
         binning = []
         for file_name in tqdm(self.file_names):
             with fits.open(self.data_directory + file_name) as hdul:
                 # get file binning
                 if hdul[0].header["BINNING"] not in binning:
                     binning.append(hdul[0].header["BINNING"])
+                
+                self.gains.update({file_name: hdul[0].header["GAIN"]})  # get gain
                 
                 # parse observation time
                 if "GPSTIME" in hdul[0].header.keys():
@@ -316,7 +319,7 @@ class Reducer:
                                                     edgecolor=self.colours[i % len(self.colours)],
                                                     facecolor="none",
                                                     lw=1))
-                ax[camera - 1].add_patch(Circle(xy=(self.catalogs[f"camera {camera}"]["xcentroid"][i],
+                cat_ax[camera - 1].add_patch(Circle(xy=(self.catalogs[f"camera {camera}"]["xcentroid"][i],
                                                     self.catalogs[f"camera {camera}"]["ycentroid"][i]),
                                                     radius=2*radius,
                                                     edgecolor=self.colours[i % len(self.colours)],
@@ -478,10 +481,9 @@ class Reducer:
             
             ax.add_patch(Circle(xy=(aperture_position), radius=radius,
                                     edgecolor=self.colours[i % len(self.colours)], facecolor="none", lw=1))
-            ax[camera - 1].add_patch(Circle(xy=(self.catalogs[f"camera {camera}"]["xcentroid"][i],
-                                                self.catalogs[f"camera {camera}"]["ycentroid"][i]),
-                                            radius=2*radius, edgecolor=self.colours[i % len(self.colours)],
-                                            facecolor="none", lw=1, ls=":"))
+            ax.add_patch(Circle(xy=(self.catalogs[f"camera {camera}"]["xcentroid"][i],
+                                    self.catalogs[f"camera {camera}"]["ycentroid"][i]), radius=2*radius,
+                                edgecolor=self.colours[i % len(self.colours)], facecolor="none", lw=1, ls=":"))
             ax.text(aperture_position[0] + 1.05*radius, aperture_position[1] + 1.05*radius, i + 1,
                         color=self.colours[i % len(self.colours)])
         
@@ -692,10 +694,10 @@ class Reducer:
                 return None
         
         data = get_data(self.data_directory + file)
-        error = np.sqrt(data)  # Poisson noise
         bkg = self.background(data)
         clean_data = data - bkg.background
         clean_data = np.clip(clean_data, 0, None)  # clip negative values to zero
+        error = calc_total_error(clean_data, bkg.background_rms, self.gains[file])
         
         # for each source
         for i in range(len(self.catalogs[f"camera {camera}"])):
@@ -727,10 +729,10 @@ class Reducer:
                 return None
         
         data = get_data(self.data_directory + file)
-        error = np.sqrt(data)  # Poisson noise
         bkg = self.background(data)
         clean_data = data - bkg.background
         clean_data = np.clip(clean_data, 0, None)  # clip negative values to zero
+        error = calc_total_error(clean_data, bkg.background_rms, self.gains[file])
         
         # for each source
         for i in range(len(self.catalogs[f"camera {camera}"])):
@@ -757,5 +759,6 @@ class Reducer:
             local_background_errors.append(total_bkg_error)
         
         return self.times[file], fluxes, flux_errors, local_backgrounds, local_background_errors
+
 
 
