@@ -141,7 +141,7 @@ class Photometer:
             relative_light_curve.to_csv(self.out_directory + "relative_light_curves/" + f"{prefix}_{fltr}_{save_label}.csv", index=False)
             
             # return Analyser object
-            return Analyser({fltr: relative_light_curve})
+            return Analyser({fltr: relative_light_curve}, self.out_directory, prefix, phot_type)
         else:
             # define dictionaries to store relative light curves and transformed masks for each camera
             relative_light_curves = {}
@@ -184,7 +184,7 @@ class Photometer:
             for (k, v) in relative_light_curves.items():
                 v.to_csv(self.out_directory + "relative_light_curves/" + f"{prefix}_{k}_{save_label}.csv", index=False)
             
-            return Analyser(relative_light_curves)
+            return Analyser(relative_light_curves, self.out_directory, prefix, phot_type)
     
     def _compute_relative_light_curve(self, fltr: str, target: int, comparisons: List[int],
                                       phot_type: Literal["aperture", "annulus", "normal", "optimal"],
