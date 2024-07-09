@@ -9,7 +9,5 @@ dependencies:
   - ipympl
   - matplotlib
   - photutils
-  - loguru
-  - astroalign
   - pandas
 prefix: /home/zac/miniforge3/envs/opticam_new
