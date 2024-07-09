@@ -25,10 +25,6 @@ def variable_function(i: float) -> float:
     
     return 10*np.sin(2*np.pi*i/50)
 
-def bad_function(i: float) -> float:
-    
-    return i**2/10**3
-
 save_path = input("Enter the path to save the fits file: ")
 
 if not save_path.endswith("/"):
@@ -51,9 +47,6 @@ N_sources = 6
 source_positions = rng.uniform(17, 239, (N_sources, 2))  # generate random source positions
 peak_fluxes = rng.uniform(10000, 100000, N_sources)  # generate random peak fluxes
 variable_source = 1
-bad_source = 4
-
-print(source_positions[variable_source])
 
 N_images = 1000
 
@@ -68,8 +61,6 @@ for i in tqdm(range(N_images)):
     gradient = x*y/100
     noisy_image = noisy_image + gradient
     
-    jitter = rng.normal(0, 1, 2)  # generate random jitter in x and y direction
-    
     for fltr in filters:
         
         indx = filters.index(fltr)
@@ -78,10 +69,9 @@ for i in tqdm(range(N_images)):
         
         # put sources in the image
         for j in range(N_sources):
+            
             if j == variable_source:
                 filter_image = add_two_dimensional_gaussian_to_image(filter_image, *source_positions[j], peak_fluxes[j]+variable_function(i), 1, 1, 0)
-            elif j == bad_source:
-                filter_image = add_two_dimensional_gaussian_to_image(filter_image, *source_positions[j], peak_fluxes[j]+bad_function(i), 1, 1, 0)
             else:
                 filter_image = add_two_dimensional_gaussian_to_image(filter_image, *source_positions[j], peak_fluxes[j], 1, 1, 0)
         
@@ -98,4 +88,4 @@ for i in tqdm(range(N_images)):
         hdu.header["UT"] = f"2024-01-01 {hh}:{mm}:{ss}"
         
         # save fits file
-        hdu.writeto(f"{save_path}/{fltr}-band_image_{i}.fits")
+        hdu.writeto(f"{save_path}/{fltr}-band_image_{i}.fits", overwrite=True)
