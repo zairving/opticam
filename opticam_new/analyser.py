@@ -5,6 +5,8 @@ from astropy.timeseries import LombScargle
 from typing import Dict, Union, Literal
 from numpy.typing import ArrayLike, NDArray
 import os
+import astropy.units as u
+from astropy.units.quantity import Quantity
 
 
 class Analyser:
@@ -54,7 +56,7 @@ class Analyser:
             _description_, by default 'BDT'
         ax : _type_, optional
             _description_, by default None
-
+        
         Returns
         -------
         _type_
@@ -210,14 +212,16 @@ class Analyser:
         
         return results
     
-    def phase_fold(self, period: float) -> Dict[str, NDArray]:
+    def phase_fold(self, period: Quantity, plot=True) -> Dict[str, NDArray]:
         """
         Phase fold each light curve using the given period.
         
         Parameters
         ----------
-        period : float
-            The period to use for phase folding.
+        period : Quantity
+            The period (with units) to use for phase folding.
+        plot : bool, optional
+            Whether to plot the phase folded light curves, by default True.
         
         Returns
         -------
@@ -225,47 +229,94 @@ class Analyser:
             The phase folded light curves.
         """
         
+        period = period.to(u.day).value  # convert from given units to days
+        
         results = {}
         
         for fltr, lc in self.light_curves.items():
             phase = (lc['BDT'] % period) / period
             results[fltr] = phase
         
+        if plot:
+            fig, axs = plt.subplots(tight_layout=True, nrows=len(self.light_curves), sharex=True,
+                                    figsize=(6.4, (0.5 + 0.5*len(self.light_curves)*4.8)))
+            
+            for i in range(len(self.light_curves)):
+                k = list(self.light_curves.keys())[i]
+                axs[i].errorbar(np.append(results[k], results[k] + 1),
+                                np.append(self.light_curves[k]['relative flux'], self.light_curves[k]['relative flux']),
+                                np.append(self.light_curves[k]['relative flux error'], self.light_curves[k]['relative flux error']),
+                                marker='.', ms=2, linestyle='none', color=self.colours[k], ecolor='grey', elinewidth=1)
+                axs[i].set_title(k)
+            
+            axs[-1].set_xlabel('Phase')
+            axs[len(self.light_curves)//2].set_ylabel('Relative Flux')
+        
         return results
     
-    def phase_bin(self, period: np.array, n_bins: int = 10):
+    def phase_bin(self, period: Quantity, n_bins: int = 10, plot=True) -> Dict[str, Dict[str, NDArray]]:
         """
-        Phase bin the light curve.
-
+        Phase bin each light curve using the given period.
+        
         Parameters
         ----------
-        period : np.array
-            The period used to fold the light curve.
+        period : Quantity
+            The period (with units) to use for phase binning.
         n_bins : int, optional
-            The number of phase bins. The default is 100.
-
+            The number of phase bins, by default 10.
+        plot : bool, optional
+            Whether to plot the phase binned light curves, by default True.
+        
         Returns
         -------
+        Dict[str, Dict[str, NDArray]]
+            The phase binned light curves.
         """
         
-        bins = np.linspace(0, 1, n_bins + 1)[1:]  # remove first element since phase cannot be less than zero (resulting in a bin with no points)
-        
-        phases = self.phase_fold(period)
+        period = period.to(u.day).value  # convert from given units to days
         
         results = {}
         
         for fltr, lc in self.light_curves.items():
+            phase = (lc['BDT'] % period) / period
+            bins = [[] for i in range(n_bins + 1)]
+            
+            for i in range(len(phase)):
+                bin_num = int(phase[i] * (n_bins + 1))
+                bins[bin_num].append(lc['relative flux'][i])
+            
+            # remove final bin (it will be the same as the first)
+            bins.pop()
+            
+            fluxes = np.array([np.mean(b) for b in bins])
+            errs = np.array([np.std(b) / np.sqrt(len(b)) for b in bins])
+            
+            results[fltr] = {
+                'phase': np.linspace(0, 1, n_bins + 1)[:-1],  # remove final phase value (it will be the same as the first)
+                'flux': fluxes,
+                'flux error': errs
+            }
         
-            digitized = np.digitize(phases[fltr], bins)
+        if plot:
+            fig, axs = fig, axs = plt.subplots(tight_layout=True, nrows=len(self.light_curves), sharex=True,
+                                    figsize=(6.4, (0.5 + 0.5*len(self.light_curves)*4.8)))
             
-            lengths = np.array([len(lc['relative flux'][digitized == i]) for i in range(len(bins))], np.float64).flatten()
+            for i in range(len(self.light_curves)):
+                k = list(self.light_curves.keys())[i]
+                axs[i].errorbar(
+                    np.append(results[k]['phase'], results[k]['phase'] + 1),
+                    np.append(results[k]['flux'], results[k]['flux']),
+                    np.append(results[k]['flux error'], results[k]['flux error']),
+                    marker='.', ms=2, linestyle='none', color=self.colours[k], ecolor='grey', elinewidth=1)
+                axs[i].set_title(k)
             
-            # if bin has fewer than 30 points, reduce number of bins
-            if np.any(np.array(lengths) < 30):
-                # reduce number of bins until each bin has at least 30 points
-                return self.phase_bin(period, n_bins - 1)
-            else:
-                folded_y = np.array([np.mean(self.f[digitized == i]) for i in range(len(bins))], np.float64).flatten()
-                folded_yerr = np.array([np.sqrt(np.sum(np.square(self.ferr[digitized == i])))/len(self.ferr[digitized == i]) for i in range(len(bins))], np.float64).flatten()
+            axs[-1].set_xlabel('Phase')
+            axs[len(self.light_curves)//2].set_ylabel('Relative Flux')
             
-            return bins - bins[0]/2, folded_y, folded_yerr
+            for ax in axs.flatten():
+                ax.minorticks_on()
+                ax.tick_params(which='both', direction='in', top=True, right=True)
+            
+            plt.show()
+        
+        return results
