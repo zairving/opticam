@@ -1,22 +1,45 @@
-from multiprocessing import cpu_count
-from typing import List, Literal, Union, Tuple
+from typing import Dict, List, Literal, Union, Tuple
 import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from numpy.typing import ArrayLike
+from astropy.table import QTable
+from scipy.spatial.distance import cdist
+from scipy.optimize import linear_sum_assignment
+from matplotlib import image as mpimage
+
+from opticam_new.analyser import Analyser
 
 
 class Photometer:
+    """
+    Helper class for creating light curves from reduced OPTICam data.
+    """
     
     def __init__(self, out_directory: str, show_plots: bool = True):
+        """
+        Helper class for creating light curves from reduced OPTICam data.
+
+        Parameters
+        ----------
+        out_directory : str
+            The path to the directory where output will be saved.
+        show_plots : bool, optional
+            Whether plots should be shown as they're generated, by default True.
+
+        Raises
+        ------
+        FileNotFoundError
+            If out_directory cannot be found.
+        """
         
         self.out_directory = out_directory
         if self.out_directory[-1] != "/":
             self.out_directory += "/"
         
         if not os.path.isdir(self.out_directory):
-            raise FileNotFoundError(f"[OPTICAM] {self.out_directory} not found. Make sure to run Reducer first so that out_directory contains the necessary files for photometry.")
+            raise FileNotFoundError('[OPTICAM] ' + self.out_directory + ' not found. Make sure to run Reducer first so that out_directory contains the necessary files for photometry.')
         
         self.show_plots = show_plots
         
@@ -26,18 +49,63 @@ class Photometer:
             for line in file:
                 self.filters.append(line.strip())
         print(self.filters)
+        
+        # read catalogs
+        self.catalogs = {}
+        for fltr in self.filters:
+            try:
+                self.catalogs.update({f"{fltr}": QTable.read(self.out_directory + f"cat/{fltr}_catalog.ecsv", format="ascii.ecsv")})
+            except:
+                print(f"[OPTICAM] Could not load {self.out_directory}cat/{fltr}_catalog.ecsv, skipping ...")
+                self.filters.remove(fltr)
+                continue
+        
+        # plot catalogs
+        catalog_image = mpimage.imread(self.out_directory + "cat/catalogs.png")
+        fig, ax = plt.subplots(figsize=(len(self.catalogs)*5, 5))
+        ax.imshow(catalog_image)
+        
+        # remove ticks and tick labels
+        ax.tick_params(axis="both", which="both", bottom=False, top=False, left=False, right=False, labelbottom=False, labeltop=False, labelleft=False, labelright=False)
+        
+        plt.show()
     
-    def get_relative_flux(self, target: List[int], comparison: List[Union[List, int]], phot_type: Literal["aperture", "annulus", "normal", "optimal"],
-                          save: bool = True, label: str = None) -> Union[Tuple[ArrayLike, ArrayLike, ArrayLike], None]:
-        
-        if save:
-            assert label is not None, "A label must be provided if save is True."
-        
-        # ensure comparison is a list of lists
-        for i in range(len(comparison)):
-            if isinstance(comparison[i], int):
-                comparison[i] = [comparison[i]]
+    def get_relative_light_curve(self, fltr: str, target: int, comparisons: List[int],
+                                 phot_type: Literal["aperture", "annulus", "normal", "optimal"],
+                                 prefix: str = None, match_other_cameras = False,
+                                 show_diagnostics: bool = True) -> Analyser:
+        """
+        Compute the relative light curve for a target source with respect to one or more comparison sources. By default,
+        the relative light curve is computed for a single filter. The relative light curve is saved to
+        out_directory/relative_light_curves. To automatically match the target and comparison sources across the other two
+        filters, set match_other_cameras to True. Note that this can incorrectly match sources, so it is recommended to
+        manually check the results.
 
+        Parameters
+        ----------
+        fltr : str
+            The filter to compute the relative light curve for.
+        target : int
+            The catalog ID of the target source.
+        comparison : List[int]
+            The catalog ID(s) of the comparison source(s).
+        phot_type : Literal['aperture', 'annulus', 'normal', 'optimal']
+            The type of photometry to use.
+        prefix : str, optional
+            The prefix to use when saving the relative light curve (e.g., the target star's name), by default None. 
+        match_other_cameras : bool, optional
+            Whether to try and automatically match the target and comparison sources across OPTICAM's other cameras, by
+            default False. Note that this can incorrectly match sources, particularly if the fields are crowded, and so
+            it is recommended to manually check the results.
+        show_diagnostics : bool, optional
+            Whether to show diagnostic plots for each comparison source, by default True.
+        
+        Returns
+        -------
+        Analyser
+            An Analyser object containing the relative light curve(s).
+        """
+        
         if phot_type == "aperture":
             save_label = "aperture_light_curve"
             light_curve_dir = "aperture_light_curves"
@@ -47,144 +115,300 @@ class Photometer:
         elif phot_type == "normal":
             save_label = "normal_light_curve"
             light_curve_dir = "normal_light_curves"
+        elif phot_type == "optimal":
+            save_label = "optimal_light_curve"
+            light_curve_dir = "optimal_light_curves"
         else:
             print(f"[OPTICAM] Flux type {phot_type} is not supported.")
             return None
         
-        mjd, t, f, ferr, flags = [], [], [], [], []
+        if not os.path.isdir(self.out_directory + "relative_light_curves"):
+            os.mkdir(self.out_directory + "relative_light_curves")
         
-        ref = np.loadtxt(self.out_directory + "misc/earliest_observation_time.txt")
+        # validate filter
+        if fltr not in self.filters:
+            if fltr not in [cat_filter[0] for cat_filter in self.filters]:
+                raise ValueError('[OPTICAM] ' + fltr + ' is not a valid filter.')
         
-        fig, ax = plt.subplots(nrows=3, tight_layout=True, sharex=True, figsize=(1.5*6.4, 2*4.8))
+        t_ref = np.loadtxt(self.out_directory + "misc/earliest_observation_time.txt")  # load reference time
         
-        # for each camera
-        for fltr in self.filters:
-            try:
-                source_df = pd.read_csv(self.out_directory + f"{light_curve_dir}/{fltr}_source_{target[self.filters.index(fltr)]}.csv")
-            except:
-                print(f"[OPTICAM] Could not load {light_curve_dir}/{fltr}_source_{target[self.filters.index(fltr)]}.csv, skipping ...")
-                continue
+        if not match_other_cameras:
+            # compute and plot relative light curve for single filter
+            relative_light_curve, transformed_mask = self._compute_relative_light_curve(fltr, target, comparisons, phot_type, t_ref, show_diagnostics)
+            self._plot_relative_light_curve(relative_light_curve, t_ref, transformed_mask, target=target, comparisons=comparisons, prefix=prefix, fltr=fltr, save_label=save_label)
             
-            transformed_mask = source_df["quality_flag"] == "A"
+            # save light curve to CSV
+            relative_light_curve.to_csv(self.out_directory + "relative_light_curves/" + f"{prefix}_{fltr}_{save_label}.csv", index=False)
             
-            time = source_df["MJD"].values.copy()
-            time -= ref
-            time *= 86400
-            
-            comp_fluxes = np.zeros_like(source_df["flux"].values)
-            comp_flux_errors = np.zeros_like(source_df["flux_error"].values)
-            
-            # for each comparison source
-            for comp in comparison[self.filters.index(fltr)]:
-                # load comparison source light curve
-                try:
-                    comparison_df = pd.read_csv(self.out_directory + f"{light_curve_dir}/{fltr}_source_{comp}.csv")
-                except:
-                    print(f"[OPTICAM] Could not load {light_curve_dir}/{fltr}_source_{comparison[self.filters.index(fltr)]}.csv, skipping ...")
-                    continue
-                
-                # ensure time arrays match, otherwise relative flux cannot be calculated
-                if not np.array_equal(source_df["MJD"].values, comparison_df["MJD"].values):
-                    print(f"[OPTICAM] {fltr} time arrays do not match, skipping ...")
-                    continue
-                
-                # add fluxes
-                comp_fluxes += comparison_df["flux"].values
-                
-                # add flux errors in quadrature
-                comp_flux_errors = np.sqrt(np.square(comp_flux_errors) + np.square(comparison_df["flux_error"].values))
-                
-            # calculate relative flux and error
-            relative_flux = source_df["flux"].values/comp_fluxes
-            relative_flux_error = relative_flux*np.sqrt(np.square(source_df["flux_error"].values/source_df["flux"].values) + np.square(comp_flux_errors/comp_fluxes))
-            
-            mjd.append(source_df["MJD"].values)
-            t.append(time)
-            f.append(relative_flux)
-            ferr.append(np.abs(relative_flux_error))
-            flags.append(source_df["quality_flag"].values)
-            
-            # ax[self.filters.index(fltr)].errorbar(time[transformed_mask], relative_flux[transformed_mask], np.abs(relative_flux_error[transformed_mask]), fmt="k.", ms=2, ecolor="grey", elinewidth=1)
-            # ax[self.filters.index(fltr)].errorbar(time[~transformed_mask], relative_flux[~transformed_mask], np.abs(relative_flux_error[~transformed_mask]), fmt="r.", ms=2, elinewidth=1, alpha=.2)
-            ax[self.filters.index(fltr)].plot(time[transformed_mask], relative_flux[transformed_mask], "k.", ms=2)
-            ax[self.filters.index(fltr)].plot(time[~transformed_mask], relative_flux[~transformed_mask], "r.", ms=2, alpha=.2)
-            ax[self.filters.index(fltr)].set_title(f"{fltr} (Source ID: {target[self.filters.index(fltr)]}, Comparison ID(s): {comparison[self.filters.index(fltr)]})")
-        
-        ax[2].set_xlabel(f"Time from MJD {ref} [s]")
-        ax[1].set_ylabel("Relative flux")
-
-        fig.savefig(self.out_directory + f"{label}_{save_label}.png")
-
-        if self.show_plots:
-            plt.show()
-        
-        if save:
-            # for each camera
-            for i in range(len(t)):
-                # create light curve dictionary
-                light_curve = {"MJD": mjd[i], "flux": f[i], "flux_error": ferr[i], "quality_flag": flags[i]}
-                self._save_light_curve(light_curve, f"{self.filters[i]}_{label}_{save_label}.txt", target=target[i], comparison=comparison[i])
+            # return Analyser object
+            return Analyser({fltr: relative_light_curve}, self.out_directory, prefix, phot_type)
         else:
-            return t, f, ferr
+            # define dictionaries to store relative light curves and transformed masks for each camera
+            relative_light_curves = {}
+            transformed_masks = {}
+            targets_ = {}
+            comparisons_ = {}
+            
+            # get source coordinates for input filter
+            input_filter_coords = np.array([self.catalogs[fltr]['xcentroid'], self.catalogs[fltr]['ycentroid']]).T
+            
+            for cat_fltr in self.filters:
+                # get target and comparison source indices
+                if cat_fltr == fltr:
+                    # if the current filter is the input filter, the target and comparison sources are already known
+                    targets_[cat_fltr] = target
+                    comparisons_[cat_fltr] = comparisons
+                else:
+                    # if the current filter is not the input filter, the target and comparison sources need to be matched
+                    # using the Hungarian algorithm
+                    fltr_coords = np.array([self.catalogs[cat_fltr]['xcentroid'], self.catalogs[cat_fltr]['ycentroid']]).T  # get source coordinates for current filter
+                    distance_matrix = cdist(input_filter_coords, fltr_coords)  # compute distance matrix
+                    input_filter_indices, fltr_indices = linear_sum_assignment(distance_matrix)  # solve assignment problem
+                    
+                    # get target and comparison source indices
+                    targets_[cat_fltr] = int(fltr_indices[np.where(input_filter_indices == target - 1)[0]]) + 1
+                    comparisons_[cat_fltr] = [int(fltr_indices[np.where(input_filter_indices == comp - 1)[0]]) + 1 for comp in comparisons]
+                    
+                    print(cat_fltr, targets_[cat_fltr], comparisons_[cat_fltr])
+                
+                # compute relative light curve for current filter
+                relative_light_curves[cat_fltr], transformed_masks[cat_fltr] = self._compute_relative_light_curve(cat_fltr, targets_[cat_fltr], comparisons_[cat_fltr], phot_type, t_ref, show_diagnostics)
+            
+            # plot the relative light curves for each filter
+            self._plot_relative_light_curves(relative_light_curves, t_ref, transformed_masks, targets_, comparisons_, prefix, save_label)
+            
+            if self.show_plots:
+                plt.show()
+            
+            # save relative light curves
+            for (k, v) in relative_light_curves.items():
+                v.to_csv(self.out_directory + "relative_light_curves/" + f"{prefix}_{k}_{save_label}.csv", index=False)
+            
+            return Analyser(relative_light_curves, self.out_directory, prefix, phot_type)
     
-    def _save_light_curve(self, light_curve: dict, file_name: str, target: int, comparison: int) -> None:
+    def _compute_relative_light_curve(self, fltr: str, target: int, comparisons: List[int],
+                                      phot_type: Literal["aperture", "annulus", "normal", "optimal"],
+                                      t_ref: float, show_diagnostics: bool) -> Tuple[Dict[str, ArrayLike], ArrayLike]:
         """
-        Saves the light curve to out_directory under file_name.
+        Compute the relative light curve for a target source with respect to one or more comparison sources for a given
+        filter.
 
         Parameters
         ----------
-        light_curve : dict
-            The light curve to be saved.
-        file_name : str
-            The name of the file.
+        fltr : str
+            The filter to compute the relative light curve for.
         target : int
-            The target source's catalog ID.
-        comparison : int
-            The comparison source's catalog ID.
+            The catalog ID of the target source.
+        comparisons : List[int]
+            The catalog ID(s) of the comparison source(s).
+        phot_type : Literal['aperture', 'annulus';, 'normal', 'optimal']
+            The type of photometry to use.
+        t_ref : float
+            The time of the earliest observation (used for plotting the relative light curve in seconds from t_ref).
+        show_diagnostics : bool
+            Whether to show diagnostic plots for each comparison source.
+
+        Returns
+        -------
+        Tuple[Dict[str, ArrayLike], ArrayLike]
+            The relative light curve and the transformation mask.
         """
         
-        header = list(light_curve.keys())
-
-        with open(self.out_directory + file_name, "w") as file:
-            file.write(f"# target: {target}\n")
-            file.write(f"# comparison: {comparison}\n")
-            
-            for key in header:
-                file.write(f"{key} ")
-            file.write("\n")
-            
-            for i in range(len(light_curve[header[0]])):
-                for key in header:
-                    file.write(f"{light_curve[key][i]} ")
-                file.write("\n")
-
-    def get_relative_error_light_curve(self, target: str, phot_type_1: str, phot_type_2: str) -> None:
+        if phot_type == "aperture":
+            save_label = "aperture_light_curve"
+            light_curve_dir = "aperture_light_curves"
+        elif phot_type == "annulus":
+            save_label = "annulus_light_curve"
+            light_curve_dir = "annulus_light_curves"
+        elif phot_type == "normal":
+            save_label = "normal_light_curve"
+            light_curve_dir = "normal_light_curves"
+        elif phot_type == "optimal":
+            save_label = "optimal_light_curve"
+            light_curve_dir = "optimal_light_curves"
+        else:
+            print(f"[OPTICAM] Flux type {phot_type} is not supported.")
+            return None
         
-        fig, ax = plt.subplots(nrows=3, tight_layout=True, sharex=True, figsize=(6.4, 2*4.8))
+        # define relative light curve dictionary
+        relative_light_curve = {
+            'MJD': [],
+            'BDT': [],
+            'relative flux': [],
+            'relative flux error': [],
+        }
+        if phot_type == 'aperture' or phot_type == 'annulus':
+            relative_light_curve.update({'quality_flag': []})
         
-        for fltr in self.filters:
+        # get target data frame
+        try:
+            target_df = pd.read_csv(self.out_directory + light_curve_dir + '/' + fltr + '_source_' + str(target) + '.csv')
+        except:
+            print('[OPTICAM] Could not load ' + light_curve_dir + '/' + fltr + '_source_' + str(target) + '.csv, skipping ...')
+            return None
+        
+        # get comparison data frames
+        comp_dfs = []
+        for comp in comparisons:
             try:
-                df1 = pd.read_csv(self.out_directory + f"{fltr}_{target}_{phot_type_1}_light_curve.txt", delimiter=" ", comment="#")
+                comparison_df = pd.read_csv(self.out_directory + light_curve_dir + '/' + fltr + '_source_' + str(comp) + '.csv')
             except:
-                print(f"[OPTICAM] {self.out_directory}{fltr}_{target}_{phot_type_1}_light_curve.txt could not be loaded, skipping ...")
+                print('[OPTICAM] Could not load ' + light_curve_dir + '/' + fltr + '_source_' + str(comp) + '.csv, skipping ...')
                 continue
-            
-            try:
-                df2 = pd.read_csv(self.out_directory + f"{fltr}_{target}_{phot_type_2}_light_curve.txt", delimiter=" ", comment="#")
-            except:
-                print(f"[OPTICAM] {self.out_directory}{fltr}_{target}_{phot_type_2}_light_curve.txt could not be loaded, skipping ...")
-                continue
-            
-            assert np.array_equal(df1["MJD"].values, df2["MJD"].values), f"{fltr} time arrays do not match."
-            
-            f = (df1["flux"].values - df2["flux"].values)/df1["flux"].values
-            temp = np.sqrt(np.square(df1["flux_error"].values/df1["flux"].values) + np.square(df2["flux_error"].values/df2["flux"].values))
-            temp2 = np.sqrt(np.square(temp/(df1["flux"].values - df2["flux"].values)) + np.square(df1["flux_error"].values/df1["flux"].values))
-            ferr = np.abs(f)*temp2
-            
-            ax[self.filters.index(fltr)].errorbar(df1["MJD"], f, ferr, fmt="k.", ms=2, ecolor="grey", elinewidth=1)
-            
-        ax[2].set_xlabel("MJD")
-        ax[1].set_ylabel(r"$(F_{\rm " + phot_type_1.replace("_", "\\_") + r"} - F_{\rm " + phot_type_2.replace("_", "\\_") + r"})/F_{\rm " + phot_type_1.replace("_", "\\_") + r"}$")
+            comp_dfs.append(comparison_df)
         
-        fig.savefig(self.out_directory + f"{target}_{phot_type_1}-{phot_type_2}_relative_error_light_curve.png")
+        # get time columns from all data frames
+        time_columns = [target_df["MJD"].values]
+        time_columns.extend([df["MJD"].values for df in comp_dfs])
+        
+        # get matching times between all data frames
+        common_times = set(time_columns[0])
+        for time_col in time_columns[1:]:
+            common_times.intersection_update(time_col)
+        common_times = sorted(common_times)
+        
+        # get matching times for target
+        filtered_target_df = target_df[target_df["MJD"].isin(common_times)]
+        filtered_target_df.reset_index(drop=True, inplace=True)
+        
+        # get matching times for comparisons
+        filtered_comp_dfs = [df[df["MJD"].isin(common_times)] for df in comp_dfs]
+        filtered_comp_dfs = [df.reset_index(drop=True) for df in filtered_comp_dfs]
+        
+        # define transform mask
+        if "quality_flag" in filtered_target_df.columns:
+            transformed_mask = filtered_target_df["quality_flag"] == "A"
+        else:
+            # if no quality flag column is present flux are from normal or optimal photometry, which are all aligned
+            transformed_mask = np.ones_like(filtered_target_df["flux"].values, dtype=bool)
+        
+        # plot diagnostic light curves
+        for i, df in enumerate(filtered_comp_dfs):
+            self._plot_diag(fltr, target, comparisons[i], filtered_target_df, df, t_ref, save_label, show_diagnostics)
+        
+        # get total flux and error of comparison sources
+        comp_fluxes = np.sum([df["flux"].values for df in filtered_comp_dfs], axis=0)
+        comp_flux_errors = np.sqrt(np.sum([np.square(df["flux_error"].values) for df in filtered_comp_dfs], axis=0))
+        
+        relative_light_curve['relative flux'] = filtered_target_df["flux"].values/comp_fluxes
+        relative_light_curve['relative flux error'] = relative_light_curve['relative flux']*np.abs(np.sqrt(np.square(filtered_target_df["flux_error"].values/filtered_target_df["flux"].values) + np.square(comp_flux_errors/comp_fluxes)))
+        
+        # add quality flag column if it exists
+        try:
+            relative_light_curve['quality_flag'] = filtered_target_df["quality_flag"].values
+        except:
+            pass
+        
+        relative_light_curve['MJD'] = filtered_target_df["MJD"].values
+        relative_light_curve['BDT'] = filtered_target_df["BDT"].values
+        
+        return pd.DataFrame(relative_light_curve), transformed_mask
+    
+    def _plot_relative_light_curve(self, relative_light_curve: Dict[str, ArrayLike], t_ref: float,
+                                   transformed_mask: ArrayLike, ax = None, target: int = None,
+                                   comparisons: List[int] = None, prefix: str = None, fltr: str = None,
+                                   save_label: str = None) -> None:
+        """
+        Plot the relative light curve for a target source with respect to one or more comparison sources for a given filter.
+
+        Parameters
+        ----------
+        relative_light_curve : Dict[str, ArrayLike]
+            The relative light curve.
+        t_ref : float
+            The time of the earliest observation (used for plotting the relative light curve in seconds from t_ref).
+        transformed_mask : ArrayLike
+            The transformation mask. Unaligned data points are plotted in red.
+        ax : _type_, optional
+            The axis onto which the relative light curve is plotted, by default None (a new figure is created).
+        target : int, optional
+            The catalog ID of the target source, by default None.
+        comparisons : List[int], optional
+            The catalog ID(s) of the comparison source(s), by default None.
+        prefix : str, optional
+            The prefix to use when saving the relative light curve (e.g., the target star's name), by default None.
+        fltr : str, optional
+            The filter used 
+        save_label : str, optional
+            _description_, by default None
+        """
+        
+        time = relative_light_curve["MJD"].copy()
+        time -= t_ref
+        time *= 86400
+        
+        # if an axis is not provided, create a new figure
+        # an axis will be provided if light curves for multiple filters are being plotted
+        # if only plotting a single filter, a dedicated figure is created
+        if ax is None:
+            fig, ax = plt.subplots(tight_layout=True, figsize=(1.5*6.4, 4.8))
+            dedicated_plot = True
+        else:
+            dedicated_plot = False
+        
+        ax.errorbar(time[transformed_mask], relative_light_curve['relative flux'][transformed_mask], np.abs(relative_light_curve['relative flux error'][transformed_mask]), fmt="k.", ms=2, ecolor="grey", elinewidth=1)
+        ax.errorbar(time[~transformed_mask], relative_light_curve['relative flux'][~transformed_mask], np.abs(relative_light_curve['relative flux error'][~transformed_mask]), fmt="r.", ms=2, elinewidth=1, alpha=.2)
+        
+        ax.set_title(fltr + ' (Source ID: ' + str(target) + ', Comparison ID(s): ' + ', '.join([str(comp) for comp in comparisons]) + ')')
+        
+        if dedicated_plot:
+            ax.set_xlabel(f"Time from MJD {t_ref:.4f} [s]")
+            ax.set_ylabel("Relative flux")
+        
+            fig.savefig(self.out_directory + "relative_light_curves/" + f"{prefix}_{fltr}_{save_label}.png")
+        
+            if self.show_plots:
+                plt.show()
+            else:
+                plt.close(fig)
+    
+    def _plot_relative_light_curves(self, relative_light_curves: Dict[str, Dict[str, ArrayLike]], t_ref: float,
+                                    transformed_masks: Dict[str, ArrayLike], targets: Dict[str, int],
+                                    comparisons: Dict[str, List[int]], prefix: str, save_label: str) -> None:
+        
+        fig, axs = plt.subplots(nrows=len(relative_light_curves), tight_layout=True, sharex=True,
+                                figsize=(1.5 * 6.4, 2 * len(relative_light_curves) / 3 * 4.8))
+        
+        for fltr, relative_light_curve in relative_light_curves.items():
+            self._plot_relative_light_curve(relative_light_curve, t_ref, transformed_masks[fltr], axs[self.filters.index(fltr)], targets[fltr], comparisons[fltr], prefix, fltr, save_label)
+        
+        axs[-1].set_xlabel(f"Time from MJD {t_ref:.4f} [s]")
+        axs[int(len(relative_light_curves) / 2)].set_ylabel("Relative flux")
+        
+        fig.savefig(self.out_directory + "relative_light_curves/" + f"{prefix}_{save_label}.png")
+        
+        if self.show_plots:
+            plt.show(fig)
+        else:
+            plt.close(fig)
+
+    def _plot_diag(self, fltr: str, target: int, comparison: int, target_df: pd.DataFrame, comparison_df: pd.DataFrame,
+                   t_ref: float, save_label: str, show: bool) -> None:
+        
+        time = (target_df["MJD"].values - t_ref)*86400  # convert to seconds
+        
+        diag_fig, diag_ax = plt.subplots(nrows=2, tight_layout=True, sharex=True, figsize=(6.4, 1.5*4.8), gridspec_kw={"height_ratios": [2, 1], "hspace": 0})
+        
+        diag_ax[0].set_title(fltr + ' Source ID: ' + str(target) + ', Comparison ID: ' + str(comparison))
+        
+        diag_ax[0].plot(time, target_df["flux"]/target_df["flux"].median(), "k-", lw=1)
+        diag_ax[0].plot(time, comparison_df["flux"]/comparison_df["flux"].median(), "r-", alpha=.5, lw=1)
+        
+        diag_ax[1].plot(time, target_df["flux"]/target_df["flux"].median() - comparison_df["flux"]/comparison_df["flux"].median(), "k-", lw=1)
+        
+        diag_ax[0].set_ylabel("Normalised raw flux [counts]")
+        diag_ax[0].xaxis.set_tick_params(labelbottom=False)
+        diag_ax[1].set_ylabel("Residuals")
+        diag_ax[1].set_xlabel(f"Time from MJD {t_ref} [s]")
+        
+        for diag_ax in diag_ax:
+            diag_ax.minorticks_on()
+            diag_ax.tick_params(which="both", direction="in", top=True, right=True)
+        
+        if not os.path.isdir(self.out_directory + "relative_light_curves/diag"):
+            os.mkdir(self.out_directory + "relative_light_curves/diag")
+        
+        diag_fig.savefig(self.out_directory + 'relative_light_curves/diag/' + fltr + '_' + str(target) + '_' + str(comparison) + '_' + save_label + '_diag.png')
+        
+        if not show:
+            plt.close(diag_fig)

@@ -1,11 +1,17 @@
 from astropy.io import fits
 import numpy as np
 from numpy.typing import ArrayLike
-from photutils.background import Background2D
-from typing import Literal, Union, Tuple
+from typing import Literal, Tuple
 from astropy.time import Time
-from astropy.stats import SigmaClip
+from astropy.coordinates import EarthLocation, SkyCoord
+import astropy.units as u
 import os
+from astropy.io import fits
+import json
+import itertools
+from astropy.table import QTable
+
+
 
 
 def get_data(file: str) -> ArrayLike:
@@ -80,49 +86,140 @@ def get_time(file: str, date_key: Literal["UT", "GPSTIME"]) -> float:
     return time
 
 
-def rename_directory(directory):
+def log_binnings(data_directory: str, out_directory: str):
     
-    for file_name in os.listdir(directory):
-        
-        name = file_name.split(".")[0]
-        extension = "." + file_name.split(".")[1]
-        
-        try:
-            extension += "." + file_name.split(".")[2]  # if file is gzipped (e.g., .fits.gz)
-        except:
-            pass
-        
-        if not ("fit" in extension or "fits" in extension):
-            continue
-        
-        if "C1" in file_name or "C2" in file_name or "C3" in file_name:
-            continue
-
-        source = directory + file_name
-        
-        if 'u' in name or 'g' in name:
-            ch = 'C1'
-            if 'u' in name:
-                key = 'u'
-            else:
-                key = 'g'
-        if 'r' in name:
-            ch = 'C2'
-            key = 'r'
-        if 'i' in name or 'z' in name:
-            ch = 'C3'
-            if 'i' in name:
-                key = 'i'
-            else:
-                key = 'z'
-        
-        new_name = name.split(key)[0] + ch + key + name.split(key)[1] + extension
-        destination = directory + new_name
+    file_binnings = {}
     
-        os.rename(source, destination)
+    for file in sorted(os.listdir(data_directory)):
+        with fits.open(data_directory + file) as hdul:
+            binning = hdul[0].header["BINNING"]
+            if binning in file_binnings:
+                file_binnings[binning].append(file)
+            else:
+                file_binnings[binning] = [file]
+    
+    with open(out_directory + "diag/binnings.json", "w") as f:
+        json.dump(file_binnings, f, indent=4)
 
 
+def log_filters(data_directory: str, out_directory: str):
+    
+    file_filters = {}
+    
+    for file in sorted(os.listdir(data_directory)):
+        with fits.open(data_directory + file) as hdul:
+            fltr = hdul[0].header["FILTER"]
+            if fltr in file_filters:
+                file_filters[fltr].append(file)
+            else:
+                file_filters[fltr] = [file]
+    
+    with open(out_directory + "diag/filters.json", "w") as f:
+        json.dump(file_filters, f, indent=4)
 
 
+def default_aperture_selector(aperture_sizes: ArrayLike) -> float:
+    """
+    Select the default aperture size.
+    
+    Parameters
+    ----------
+    aperture_sizes : ArrayLike
+        The aperture sizes for the sources.
+    
+    Returns
+    -------
+    float
+        The aperture size.
+    """
+    
+    max_aperture = np.max(aperture_sizes)
+    median_aperture = np.median(aperture_sizes)
+    aperture_std = np.std(aperture_sizes)
+    
+    # if the maximum aperture is significantly larger than the median aperture, use the median aperture
+    if max_aperture > median_aperture + aperture_std:
+        return median_aperture
+    # otherwise, use the maximum aperture
+    else:
+        return max_aperture
 
 
+def apply_barycentric_correction(original_times: ArrayLike, coords: SkyCoord) -> ArrayLike:
+    """
+    Apply barycentric corrections to a time vector, using an optional reference time.
+    
+    Parameters
+    ----------
+    times : ArrayLike
+        The times to correct.
+    coords : SkyCoord
+        The coordinates of the source.
+    
+    Returns
+    -------
+    ArrayLike
+        The corrected times.
+    """
+    
+    # OPTICam location
+    observer_coords = EarthLocation.from_geodetic(lon=-115.463611*u.deg, lat=31.044167*u.deg, height=2790*u.m)
+    
+    
+    # format the times
+    times = Time(original_times, format='mjd', scale='utc', location=observer_coords)
+    
+    # compute light travel time to barycentre
+    ltt_bary = times.light_travel_time(coords)
+    
+    # return the corrected times using TDB timescale
+    return times.tdb + ltt_bary
+
+
+def euclidean_distance(p1: Tuple[float, float], p2: Tuple[float, float]) -> float:
+    """
+    Compute the Euclidean distance between two points.
+    
+    Parameters
+    ----------
+    p1 : Tuple[float, float]
+        The x and y coordinates of the first point.
+    p2 : Tuple[float, float]
+        The x and y coordinates of the second point.
+    
+    Returns
+    -------
+    float
+        The distance.
+    """
+    
+    return np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+
+def find_closest_pair(point: ArrayLike, points: ArrayLike, threshold: int) -> ArrayLike:
+    
+    distances = [(euclidean_distance(point, point2), point2) for point2 in points]  # compute distances
+    
+    distances.sort(key=lambda x: x[0])  # sort by distance
+    
+    if distances[0][0] > threshold:
+        return None
+    
+    # return the closest pair
+    return distances[0][1]
+
+def clip_extended_sources(table: QTable):
+    
+    # sigma clip sources
+    for i in range(10):
+        median_radius = np.median(table["semimajor_sigma"].value)
+        radius_std = np.std(table["semimajor_sigma"].value)
+        table = table[table['semimajor_sigma'].value <= median_radius + 3*radius_std]  # remove sources with radius > 3*std from median
+    
+    median_radius = np.median(table["semimajor_sigma"].value)  # get median source radius
+    radius_std = np.std(table["semimajor_sigma"].value)  # get standard deviation of source radius
+    
+    table = table[table['semimajor_sigma'].value <= median_radius + 3*radius_std]  # remove sources with radius > 3*std from median
+    
+    table['label'] = np.arange(1, len(table) + 1)  # renumber labels
+    
+    return table
