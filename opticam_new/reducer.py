@@ -33,7 +33,7 @@ from ccdproc import cosmicray_lacosmic
 
 from opticam_new.helpers import get_data, log_binnings, log_filters, default_aperture_selector, apply_barycentric_correction, clip_extended_sources
 from opticam_new.background import Background
-from opticam_new.local_background import CircularLocalBackground
+from opticam_new.local_background import EllipticalLocalBackground
 from opticam_new.finder import CrowdedFinder, Finder
 
 try:
@@ -202,7 +202,7 @@ class Reducer:
             warnings.warn("[OPTICAM] Could not write background input parameters to file. It's a good idea to add a get_input_dict() method to your background estimator for reproducability (see the background tutorial).")
         
         if local_background is None:
-            self.local_background = CircularLocalBackground()
+            self.local_background = EllipticalLocalBackground()
         else:
             self.local_background = local_background
         
@@ -1939,8 +1939,8 @@ class Reducer:
         aperture_area = aperture.area_overlap(data)  # aperture area in pixels
         phot_table = aperture_photometry(data, aperture, error=error)
         
-        # estimate local background per pixel
-        local_background_per_pixel, local_background_error_per_pixel = self.local_background(data, error, radius, radius, None, position)
+        # estimate local background per pixel using circular annulus
+        local_background_per_pixel, local_background_error_per_pixel = self.local_background(data, error, radius, radius, 0, position)
         
         # calculate total background in aperture
         total_bkg = local_background_per_pixel * aperture_area
