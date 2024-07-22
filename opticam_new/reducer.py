@@ -33,6 +33,7 @@ from ccdproc import cosmicray_lacosmic
 
 from opticam_new.helpers import get_data, log_binnings, log_filters, default_aperture_selector, apply_barycentric_correction, clip_extended_sources
 from opticam_new.background import Background
+from opticam_new.local_background import EllipticalLocalBackground
 from opticam_new.finder import CrowdedFinder, Finder
 
 try:
@@ -57,13 +58,10 @@ class Reducer:
         threshold: float = 5,
         rotation_threshold: float = 5,
         background: Callable = None,
+        local_background: Callable = None,
         finder: Union[Literal['crowded', 'default'], Callable] = 'default',
         aperture_selector: Callable = None,
         scale: float = 5,
-        r_in_scale: float = 1,
-        r_out_scale: float = 2,
-        local_background_method: Literal["mean", "median"] = "mean",
-        local_background_sigma_clip: SigmaClip = SigmaClip(sigma=3, maxiters=10),
         remove_cosmic_rays: bool = True,
         number_of_processors: int = int(cpu_count()/2),
         show_plots: bool = True,
@@ -86,6 +84,8 @@ class Reducer:
             angle allowed for image alignment. If the rotation angle exceeds the threshold, the image is not aligned.
         background: Callable, optional
             The background calculator, by default None. If None, the default background calculator is used.
+        local_background: Callable, optional
+            The local background estimator, by default None. If None, the default local background estimator is used.
         finder: Union[Literal['crowded', 'default'], Callable], optional
             The source finder, by default 'default'. If 'default', the default source finder (no deblending) is used.
             If 'crowded', the crowded source finder (with deblending) is used. Alternatively, a custom source finder can
@@ -95,19 +95,6 @@ class Reducer:
         scale: float, optional
             The aperture scale factor, by default 5. The aperture scale factor scales the aperture size returned by
             aperture_selector for forced photometry.
-        r_in_scale: float, optional
-            The inner radius scale factor for the annulus used for local background estimation, by default 1 (equal to 
-            the aperture radius).
-        r_out_scale: float, optional
-            The outer radius scale factor for the annulus used for local background estimation, by default 2 (equal to 
-            twice the aperture radius).
-        local_background_method: Literal["mean", "median"], optional
-            The method for estimating the local background, by default "mean". The local background is estimated as the 
-            mean or median of the pixel values in the annulus, and the associated error is estimated as the standard
-            deviation or the median absolute deviation of the pixel values, respectively.
-        local_background_sigma_clip: SigmaClip, optional
-            The sigma clipper for the local background estimation, by default
-            astropy.stats.SigmaClip(sigma=3, maxiters=10).
         remove_cosmic_rays: bool, optional
             Whether to remove cosmic rays from images, by default True. Cosmic rays are removed using the LACosmic
             algorithm as implemented in astroscrappy.
@@ -169,12 +156,8 @@ class Reducer:
         self.fwhm_scale = 2 * np.sqrt(2 * np.log(2))  # FWHM scale factor
         self.aperture_selector = default_aperture_selector if aperture_selector is None else aperture_selector
         self.scale = scale
-        self.r_in_scale = r_in_scale
-        self.r_out_scale = r_out_scale
         self.threshold = threshold
         self.rotation_threshold = rotation_threshold
-        self.local_background_method = local_background_method
-        self.local_background_sigma_clip = local_background_sigma_clip
         self.remove_cosmic_rays = remove_cosmic_rays
         self.number_of_processors = number_of_processors
         self.show_plots = show_plots
@@ -199,17 +182,8 @@ class Reducer:
         param_dict = {
             "aperture selector": self.aperture_selector.__name__,
             "aperture scale": scale,
-            "annulus r_in scale": r_in_scale,
-            "annulus r_out scale": r_out_scale,
             "threshold": threshold,
-            "local background method": local_background_method,
         }
-        try:
-            for key, value in self.local_background_sigma_clip.__dict__.items():
-                if not key.startswith("_"):
-                    param_dict["local background SigmaClip " + str(key)] = value
-        except:
-            pass
         param_dict.update({"number of files": len(self.file_names)})
         param_dict.update({f"number of {fltr} files": len(self.camera_files[fltr]) for fltr in list(self.camera_files.keys())})
         with open(self.out_directory + "misc/reducer_input.json", "w") as file:
@@ -220,11 +194,17 @@ class Reducer:
             self.background = Background(box_size=int(64/self.binning_scale))
         else:
             self.background = background
+        # TODO: improve parameter logging to file
         try:
             with open(self.out_directory + "misc/background_input.json", "w") as file:
                 json.dump(self.background.get_input_dict(), file, indent=4)
         except:
             warnings.warn("[OPTICAM] Could not write background input parameters to file. It's a good idea to add a get_input_dict() method to your background estimator for reproducability (see the background tutorial).")
+        
+        if local_background is None:
+            self.local_background = EllipticalLocalBackground()
+        else:
+            self.local_background = local_background
         
         # define source finder and write input parameters to file
         if finder == 'default':
@@ -717,67 +697,43 @@ class Reducer:
         
         fig, ax = plt.subplots(ncols=len(self.catalogs), tight_layout=True, figsize=(len(stacked_images) * 5, 5))
         
+        if len(self.catalogs) == 1:
+            ax = [ax]
+        
         for i, fltr in enumerate(list(self.catalogs.keys())):
             
             plot_image = np.clip(stacked_images[fltr], 0, None)  # clip negative values to zero for better visualisation
             
             # plot stacked image
-            try:
-                ax[i].imshow(plot_image, origin="lower", cmap="Greys_r", interpolation="nearest",
-                             norm=simple_norm(plot_image, stretch="log"))
-            except:
-                ax.imshow(plot_image, origin="lower", cmap="Greys_r", interpolation="nearest", 
-                          norm=simple_norm(plot_image, stretch="log"))
+            ax[i].imshow(plot_image, origin="lower", cmap="Greys_r", interpolation="nearest",
+                            norm=simple_norm(plot_image, stretch="log"))
             
             # get aperture radius
             radius = self.scale*self.aperture_selector(self.catalogs[fltr]["semimajor_sigma"].value)
                      
             for j in range(len(self.catalogs[fltr])):
-                try:
-                    # label sources
-                    ax[i].add_patch(Circle(xy=(self.catalogs[fltr]["xcentroid"][j],
-                                               self.catalogs[fltr]["ycentroid"][j]),
-                                           radius=radius, edgecolor=self.colours[j % len(self.colours)], 
-                                           facecolor="none", lw=1))
-                    ax[i].add_patch(Circle(xy=(self.catalogs[fltr]["xcentroid"][j],
-                                               self.catalogs[fltr]["ycentroid"][j]), radius=self.r_in_scale*radius,
-                                           edgecolor=self.colours[j % len(self.colours)], facecolor="none", lw=1,
-                                           ls=":"))
-                    ax[i].add_patch(Circle(xy=(self.catalogs[fltr]["xcentroid"][j], 
-                                                self.catalogs[fltr]["ycentroid"][j]),
-                                            radius=self.r_out_scale*radius,
-                                            edgecolor=self.colours[j % len(self.colours)], facecolor="none", lw=1,
-                                            ls=":"))
-                    ax[i].text(self.catalogs[fltr]["xcentroid"][j] + 1.05*radius,
-                               self.catalogs[fltr]["ycentroid"][j] + 1.05*radius, j + 1, 
-                               color=self.colours[j % len(self.colours)])
-                    
-                    # label plot
-                    ax[i].set_title(fltr)
-                    ax[i].set_xlabel("X")
-                    ax[i].set_ylabel("Y")
-                except:
-                    # label sources
-                    ax.add_patch(Circle(xy=(self.catalogs[fltr]["xcentroid"][j],
+                # label sources
+                ax[i].add_patch(Circle(xy=(self.catalogs[fltr]["xcentroid"][j],
                                             self.catalogs[fltr]["ycentroid"][j]),
-                                        radius=radius, edgecolor=self.colours[j % len(self.colours)],
+                                        radius=radius, edgecolor=self.colours[j % len(self.colours)], 
                                         facecolor="none", lw=1))
-                    ax.add_patch(Circle(xy=(self.catalogs[fltr]["xcentroid"][j],
-                                            self.catalogs[fltr]["ycentroid"][j]), radius=self.r_in_scale*radius,
+                ax[i].add_patch(Circle(xy=(self.catalogs[fltr]["xcentroid"][j],
+                                            self.catalogs[fltr]["ycentroid"][j]),
+                                       radius=self.local_background.r_in_scale*radius,
+                                       edgecolor=self.colours[j % len(self.colours)], facecolor="none", lw=1, ls=":"))
+                ax[i].add_patch(Circle(xy=(self.catalogs[fltr]["xcentroid"][j], 
+                                            self.catalogs[fltr]["ycentroid"][j]),
+                                        radius=self.local_background.r_out_scale*radius,
                                         edgecolor=self.colours[j % len(self.colours)], facecolor="none", lw=1,
                                         ls=":"))
-                    ax.add_patch(Circle(xy=(self.catalogs[fltr]["xcentroid"][j],
-                                            self.catalogs[fltr]["ycentroid"][j]),
-                                        radius=self.r_out_scale*radius,
-                                        edgecolor=self.colours[j % len(self.colours)], facecolor="none", lw=1, ls=":"))
-                    ax.text(self.catalogs[fltr]["xcentroid"][j] + 1.05*radius,
-                            self.catalogs[fltr]["ycentroid"][j] + 1.05*radius, j + 1,
+                ax[i].text(self.catalogs[fltr]["xcentroid"][j] + 1.05*radius,
+                            self.catalogs[fltr]["ycentroid"][j] + 1.05*radius, j + 1, 
                             color=self.colours[j % len(self.colours)])
-                    
-                    # label plot
-                    ax.set_title(fltr)
-                    ax.set_xlabel("X")
-                    ax.set_ylabel("Y")
+                
+                # label plot
+                ax[i].set_title(fltr)
+                ax[i].set_xlabel("X")
+                ax[i].set_ylabel("Y")
         
         fig.savefig(self.out_directory + "cat/catalogs.png")
         
@@ -1895,7 +1851,7 @@ class Reducer:
                 except:
                     position = catalog_position
                 
-                flux, flux_error, local_background, local_background_error, local_background_per_pixel, local_background_error_per_pixel = self._compute_annulus_flux(data, error, position, radius, self.r_in_scale*radius, self.r_out_scale*radius, self.local_background_method, self.local_background_sigma_clip)
+                flux, flux_error, local_background, local_background_error, local_background_per_pixel, local_background_error_per_pixel = self._compute_annulus_flux(data, error, position, radius)
                 fluxes.append(flux)
                 flux_errors.append(flux_error)
                 local_backgrounds.append(local_background)
@@ -1956,10 +1912,7 @@ class Reducer:
         
         return data, error
     
-    @staticmethod
-    def _compute_annulus_flux(data: ArrayLike, error: ArrayLike, position: ArrayLike, radius: float, r_in: float,
-                              r_out: float, local_background_method: Literal['mean', 'median'],
-                              sigma_clip: SigmaClip) -> Tuple[float, float, float, float, float, float]:
+    def _compute_annulus_flux(self, data: ArrayLike, error: ArrayLike, position: ArrayLike, radius: float) -> Tuple[float, float, float, float, float, float]:
         """
         Compute the local-background-subtracted flux and error for a given aperture position and radius.
         
@@ -1973,14 +1926,6 @@ class Reducer:
             The aperture position.
         radius : float
             The aperture radius.
-        r_in : float
-            The annulus inner radius.
-        r_out : float
-            The annulus outer radius.
-        local_background_method : Literal['mean', 'median']
-            The method to use for calculating the local background.
-        sigma_clip : SigmaClip
-            The sigma clipper.
         
         Returns
         -------
@@ -1991,23 +1936,15 @@ class Reducer:
         
         # define aperture
         aperture = CircularAperture(position, r=radius)
-        annulus_aperture = CircularAnnulus(position, r_in=r_in, r_out=r_out)
-        aperstats = ApertureStats(data, annulus_aperture, error=error, sigma_clip=sigma_clip)
-        aperture_area = aperture.area_overlap(data)
+        aperture_area = aperture.area_overlap(data)  # aperture area in pixels
+        phot_table = aperture_photometry(data, aperture, error=error)
         
-        # calculate local background per pixel
-        if local_background_method == "median":
-            local_background_per_pixel = aperstats.median
-            local_background_error_per_pixel = aperstats.mad_std
-        elif local_background_method == "mean":
-            local_background_per_pixel = aperstats.mean
-            local_background_error_per_pixel = aperstats.std
+        # estimate local background per pixel using circular annulus
+        local_background_per_pixel, local_background_error_per_pixel = self.local_background(data, error, radius, radius, 0, position)
         
         # calculate total background in aperture
-        total_bkg = local_background_per_pixel*aperture_area
-        total_bkg_error = local_background_error_per_pixel*np.sqrt(aperture_area)
-        
-        phot_table = aperture_photometry(data, aperture, error=error)
+        total_bkg = local_background_per_pixel * aperture_area
+        total_bkg_error = local_background_error_per_pixel * np.sqrt(aperture_area)
         
         flux = phot_table["aperture_sum"].value[0] - total_bkg
         flux_error = np.sqrt(phot_table["aperture_sum_err"].value[0]**2 + total_bkg_error**2)
@@ -2251,7 +2188,7 @@ class Reducer:
                 aperture_flux_errors.append(aperture_flux_error)
                 
                 # get aperture - annulus flux
-                annulus_flux, annulus_flux_error, local_background, local_background_error, local_background_per_pixel, local_background_error_per_pixel = self._compute_annulus_flux(data, error, position, radius, self.r_in_scale*radius, self.r_out_scale*radius, self.local_background_method, self.local_background_sigma_clip)
+                annulus_flux, annulus_flux_error, local_background, local_background_error, local_background_per_pixel, local_background_error_per_pixel = self._compute_annulus_flux(data, error, position, radius)
                 annulus_fluxes.append(annulus_flux)
                 annulus_flux_errors.append(annulus_flux_error)
                 local_backgrounds.append(local_background)
@@ -2296,7 +2233,8 @@ class Reducer:
 
 
 
-    def photometry(self, phot_type: Literal['both', 'normal', 'optimal'] = 'both', tolerance: float = 5.,
+    def photometry(self, phot_type: Literal['both', 'normal', 'optimal'] = 'both',
+                   background_method: Literal['global', 'local'] = 'global', tolerance: float = 5.,
                    remove_cosmic_rays: bool = False, overwrite: bool = False) -> None:
         """
         Perform photometry by fitting for the source positions in each image. This method can misidentify sources if the
@@ -2310,6 +2248,10 @@ class Reducer:
             'optimal' will extract fluxes using the optimal photometry method outlined in Naylor 1998, MNRAS, 296, 339.
             'both' will extract fluxes using both methods (this is more efficient than performing both separately since
             it only opens the file once).
+        background_method : Literal['global', 'local'], optional
+            The method to use for background subtraction, by default 'global'. 'global' uses the background attribute to
+            compute the 2D background across an entire image, while 'local' uses the local_background attribute to
+            estimate the local background around each source.
         tolerance : float, optional
             The tolerance for source position matching in standard deviations (assuming a Gaussian PSF), by default 5.
             This parameter defines how far from the transformed catalog position a source can be while still being
@@ -2329,16 +2271,19 @@ class Reducer:
         
         # determine which photometry function to use
         if phot_type == "normal":
-            return self._extract_normal_light_curves(tolerance, batch_size, remove_cosmic_rays, overwrite)
+            return self._extract_normal_light_curves(background_method, tolerance, batch_size, remove_cosmic_rays,
+                                                     overwrite)
         elif phot_type == "optimal":
-            return self._extract_optimal_light_curves(tolerance, batch_size, remove_cosmic_rays, overwrite)
+            return self._extract_optimal_light_curves(background_method, tolerance, batch_size, remove_cosmic_rays,
+                                                      overwrite)
         elif phot_type == "both":
-            self._extract_normal_and_optimal_light_curves(tolerance, batch_size, remove_cosmic_rays, overwrite)
+            self._extract_normal_and_optimal_light_curves(background_method, tolerance, batch_size, remove_cosmic_rays,
+                                                          overwrite)
         else:
             raise ValueError(f"[OPTICAM] Photometry type {phot_type} not recognised.")
     
-    def _extract_normal_light_curves(self, tolerance: float, batch_size: int, remove_cosmic_rays: bool,
-                                     overwrite: bool) -> None:
+    def _extract_normal_light_curves(self, background_method: Literal['global', 'local'], tolerance: float,
+                                     batch_size: int, remove_cosmic_rays: bool, overwrite: bool) -> None:
         """
         Extract the source fluxes from the images using simple aperture photometry. Unlike the forced photometry methods,
         this method requires fitting for the source positions in each image; as such, this method can be significantly
@@ -2346,6 +2291,10 @@ class Reducer:
         
         Parameters
         ----------
+        background_method : Literal['global', 'local']
+            The method to use for background subtraction. 'global' uses the background attribute to compute the 2D
+            background across an entire image, while 'local' uses the local_background attribute to estimate the local
+            background around each source.
         tolerance : float
             The tolerance for source position matching in standard deviations. This parameter defines how far from the
             transformed catalog position a source can be while still being considered the same source. If the alignments
@@ -2392,6 +2341,7 @@ class Reducer:
                     results = list(tqdm(pool.imap(partial(self._extract_normal_source_fluxes_from_batch,
                                                         fltr=fltr, semimajor_sigma=semimajor_sigma,
                                                         semiminor_sigma=semiminor_sigma,
+                                                        background_method=background_method,
                                                         tolerance=tolerance, remove_cosmic_rays=remove_cosmic_rays),
                                                   batches), total=len(batches)))
                 print("[OPTICAM] Done.")
@@ -2399,6 +2349,7 @@ class Reducer:
                 with Pool(self.number_of_processors) as pool:
                     results = pool.map(partial(self._extract_normal_source_fluxes_from_batch, fltr=fltr,
                                                semimajor_sigma=semimajor_sigma, semiminor_sigma=semiminor_sigma,
+                                               background_method=background_method,
                                                tolerance=tolerance, remove_cosmic_rays=remove_cosmic_rays), batches)
             
             mjds, bdts, fluxes, flux_errors, detections = self._parse_batch_extraction_results(results)
@@ -2415,7 +2366,7 @@ class Reducer:
             self._plot_number_of_detections_per_source(detections, fltr)  # plot number of detections per source
     
     def _extract_normal_source_fluxes_from_batch(self, batch: List[str], fltr: str, semimajor_sigma: float, 
-                                                semiminor_sigma: float,
+                                                semiminor_sigma: float, background_method: Literal['global', 'local'],
                                                 tolerance: float,
                                                 remove_cosmic_rays: bool) -> Tuple[float, float, List, List, ArrayLike]:
         """
@@ -2433,6 +2384,10 @@ class Reducer:
             The semimajor axis of the (presumed 2D Gaussian) PSF.
         semiminor_sigma : float
             The semiminor axis of the (presumed 2D Gaussian) PSF.
+        background_method : Literal['global', 'local']
+            The method to use for background subtraction. 'global' uses the background attribute to compute the 2D
+            background across an entire image, while 'local' uses the local_background attribute to estimate the local
+            background around each source.
         tolerance : float
             The tolerance for source position matching in standard deviations. This parameter defines how far from the
             transformed catalog position a source can be while still being considered the same source. If the source is
@@ -2470,7 +2425,11 @@ class Reducer:
             
             bkg = self.background(data)
             clean_data = data - bkg.background
-            error = calc_total_error(clean_data, bkg.background_rms, self.gains[file])
+            
+            if background_method == "global":
+                error = calc_total_error(clean_data, bkg.background_rms, self.gains[file])
+            else:
+                error = np.sqrt(data*self.gains[file])
             
             # find sources in the image
             try:
@@ -2497,7 +2456,11 @@ class Reducer:
                 detections[i] += 1
                 
                 # compute source flux
-                flux, flux_error = self._compute_normal_flux(clean_data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]["orientation"][i].value)
+                if background_method == "global":
+                    flux, flux_error = self._compute_normal_flux(clean_data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]["orientation"][i].value)
+                else:
+                    flux, flux_error = self._compute_normal_flux(data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]["orientation"][i].value, estimate_local_background=True)
+                
                 fluxes.append(flux)
                 flux_errors.append(flux_error)
             
@@ -2590,8 +2553,8 @@ class Reducer:
         
         plt.close(fig)
     
-    def _extract_optimal_light_curves(self, tolerance: float, batch_size:  int, remove_cosmic_rays: bool,
-                                      overwrite: bool) -> None:
+    def _extract_optimal_light_curves(self, background_method: Literal['global', 'local'], tolerance: float,
+                                      batch_size:  int, remove_cosmic_rays: bool, overwrite: bool) -> None:
         """
         Use the optimal photometry method of Naylor 1998, MNRAS, 296, 339 to extract source fluxes from the images.
         Unlike the forced photometry methods, this method requires fitting for the source positions in each image; as
@@ -2600,6 +2563,10 @@ class Reducer:
         
         Parameters
         ----------
+        background_method : Literal['global', 'local']
+            The method to use for background subtraction. 'global' uses the background attribute to compute the 2D
+            background across an entire image, while 'local' uses the local_background attribute to estimate the local
+            background around each source.
         tolerance : float
             The tolerance for source position matching in standard deviations. This parameter defines how far from the
             transformed catalog position a source can be while still being considered the same source. If the source is
@@ -2648,15 +2615,16 @@ class Reducer:
                     results = list(tqdm(pool.imap(partial(self._extract_optimal_source_fluxes_from_batches,
                                                         fltr=fltr, semimajor_sigma=semimajor_sigma,
                                                         semiminor_sigma=semiminor_sigma,
-                                                        tolerance=tolerance, remove_cosmic_rays=remove_cosmic_rays,
-                                                        radius=radius),
+                                                        background_method=background_method, tolerance=tolerance,
+                                                        remove_cosmic_rays=remove_cosmic_rays, radius=radius),
                                                   batches), total=len(batches)))
                 print("[OPTICAM] Done.")
             else:
                 with Pool(self.number_of_processors) as pool:
                     results = pool.map(partial(self._extract_optimal_source_fluxes_from_batches, fltr=fltr,
                                                semimajor_sigma=semimajor_sigma, semiminor_sigma=semiminor_sigma,
-                                               tolerance=tolerance, remove_cosmic_rays=remove_cosmic_rays), batches)
+                                               tolerance=tolerance, background_method=background_method,
+                                               remove_cosmic_rays=remove_cosmic_rays), batches)
             
             # unpack results
             mjds, bdts, fluxes, flux_errors, detections = self._parse_batch_extraction_results(results)
@@ -2673,8 +2641,9 @@ class Reducer:
             self._plot_number_of_detections_per_source(detections, fltr)  # plot number of detections per source
     
     def _extract_optimal_source_fluxes_from_batches(self, batch: List[str], fltr: str, semimajor_sigma: float,
-                                                 semiminor_sigma: float, tolerance: float,
-                                                 remove_cosmic_rays: bool, radius: float) -> Tuple[float, float, List, List, ArrayLike]:
+                                                 semiminor_sigma: float, background_method: Literal['global', 'local'],
+                                                 tolerance: float, remove_cosmic_rays: bool,
+                                                 radius: float) -> Tuple[float, float, List, List, ArrayLike]:
         """
         Use the optimal photometry method of Naylor 1998, MNRAS, 296, 339 to extract the source flux from an image.
         Unlike the forced photometry methods, this method requires fitting for the source positions in each image; as
@@ -2695,6 +2664,10 @@ class Reducer:
             The semiminor axis of the (presumed 2D Gaussian) PSF.
         orientation : float
             The orientation of the (presumed 2D Gaussian) PSF.
+        background_method : Literal['global', 'local']
+            The method to use for background subtraction. 'global' uses the background attribute to compute the 2D
+            background across an entire image, while 'local' uses the local_background attribute to estimate the local
+            background around each source.
         tolerance : float
             The tolerance for source position matching in standard deviations. This parameter defines how far from the
             transformed catalog position a source can be while still being considered the same source. If the source is
@@ -2734,7 +2707,11 @@ class Reducer:
             
             bkg = self.background(data)
             clean_data = data - bkg.background
-            error = np.sqrt(data*self.gains[file])  # Poisson noise
+            
+            if background_method == "global":
+                error = calc_total_error(clean_data, bkg.background_rms, self.gains[file])
+            else:
+                error = np.sqrt(data*self.gains[file])  # Poisson noise
             
             # find sources in the image
             try:
@@ -2761,7 +2738,11 @@ class Reducer:
                 detections[i] += 1
                 
                 # compute source flux
-                flux, flux_error = self._compute_optimal_flux(data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]["orientation"][i].value, radius)
+                if background_method == "global":
+                    flux, flux_error = self._compute_optimal_flux(clean_data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]["orientation"][i].value, radius)
+                else:
+                    flux, flux_error = self._compute_optimal_flux(data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]["orientation"][i].value, radius, estimate_local_background=True)
+                
                 fluxes.append(flux)
                 flux_errors.append(flux_error)
             
@@ -2828,8 +2809,8 @@ class Reducer:
         
         plt.close(fig)
     
-    def _extract_normal_and_optimal_light_curves(self, tolerance: float, batch_size: int,
-                                                remove_cosmic_rays: bool, overwrite: bool) -> None:
+    def _extract_normal_and_optimal_light_curves(self, background_method: Literal['global', 'local'], tolerance: float,
+                                                 batch_size: int, remove_cosmic_rays: bool, overwrite: bool) -> None:
         """
         Extract both normal and optimal source fluxes from the images. This method is more efficient than calling
         _extract_normal_light_curve() and _extract_optimal_light_curve() separately since it only opens the file once.
@@ -2885,16 +2866,16 @@ class Reducer:
                     results = list(tqdm(pool.imap(partial(self._extract_normal_and_optimal_source_fluxes_from_batch,
                                                         fltr=fltr, semimajor_sigma=semimajor_sigma,
                                                         semiminor_sigma=semiminor_sigma,
-                                                        tolerance=tolerance, remove_cosmic_rays=remove_cosmic_rays,
-                                                        radius=radius),
+                                                        background_method=background_method, tolerance=tolerance,
+                                                        remove_cosmic_rays=remove_cosmic_rays, radius=radius),
                                                   batches), total=len(batches)))
                 print("[OPTICAM] Done.")
             else:
                 with Pool(self.number_of_processors) as pool:
                     results = pool.map(partial(self._extract_normal_and_optimal_source_fluxes_from_batch, fltr=fltr,
                                                semimajor_sigma=semimajor_sigma, semiminor_sigma=semiminor_sigma,
-                                               tolerance=tolerance, remove_cosmic_rays=remove_cosmic_rays,
-                                               radius=radius), batches)
+                                               background_method=background_method, tolerance=tolerance,
+                                               remove_cosmic_rays=remove_cosmic_rays, radius=radius), batches)
             
             # unpack results
             mjds, bdts, normal_fluxes, normal_flux_errors, optimal_fluxes, optimal_flux_errors, detections = self._parse_batch_extraction_results_both(results)
@@ -2913,8 +2894,11 @@ class Reducer:
             self._plot_number_of_detections_per_source(detections, fltr)  # plot number of detections per source
     
     def _extract_normal_and_optimal_source_fluxes_from_batch(self, batch: List[str], fltr: str, semimajor_sigma: float,
-                                                            semiminor_sigma: float, tolerance: float,
-                                                            remove_cosmic_rays: bool, radius: float) -> Tuple[List[float], List[float], List[List[float]], List[List[float]], List[List[float]], List[List[float]], ArrayLike]:
+                                                            semiminor_sigma: float,
+                                                            background_method: Literal['global', 'local'],
+                                                            tolerance: float,
+                                                            remove_cosmic_rays: bool,
+                                                            radius: float) -> Tuple[List[float], List[float], List[List[float]], List[List[float]], List[List[float]], List[List[float]], ArrayLike]:
         """
         Extract both normal and optimal source fluxes from an image. This method is more efficient than calling
         _extract_normal_light_curve() and _extract_optimal_light_curve() separately since it only opens the file once.
@@ -2975,8 +2959,11 @@ class Reducer:
             
             bkg = self.background(data)
             clean_data = data - bkg.background
-            error = np.sqrt(data*self.gains[file])  # Poisson noise
             
+            if background_method == "global":
+                error = calc_total_error(clean_data, bkg.background_rms, self.gains[file])
+            else:
+                error = np.sqrt(data*self.gains[file])  # Poisson noise
             
             # find sources in the image
             try:
@@ -3005,10 +2992,17 @@ class Reducer:
                 detections[i] += 1
                 
                 # compute source flux
-                normal_flux, normal_flux_error = self._compute_normal_flux(clean_data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]["orientation"][i].value)
+                if background_method == 'global':
+                    normal_flux, normal_flux_error = self._compute_normal_flux(clean_data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]["orientation"][i].value)
+                else:
+                    normal_flux, normal_flux_error = self._compute_normal_flux(data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]["orientation"][i].value, estimate_local_background=True)
                 normal_fluxes.append(normal_flux)
                 normal_flux_errors.append(normal_flux_error)            
-                optimal_flux, optimal_flux_error = self._compute_optimal_flux(data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]["orientation"][i].value, radius)
+                
+                if background_method == 'global':
+                    optimal_flux, optimal_flux_error = self._compute_optimal_flux(clean_data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]["orientation"][i].value, radius)
+                else:
+                    optimal_flux, optimal_flux_error = self._compute_optimal_flux(data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]["orientation"][i].value, radius, estimate_local_background=True)
                 optimal_fluxes.append(optimal_flux)
                 optimal_flux_errors.append(optimal_flux_error)
             
@@ -3021,15 +3015,16 @@ class Reducer:
         
         return batch_mjds, batch_bdts, batch_normal_fluxes, batch_normal_flux_errors, batch_optimal_fluxes, batch_optimal_flux_errors, detections
     
-    def _compute_normal_flux(self, clean_data: ArrayLike, error: ArrayLike, position: ArrayLike, semimajor_sigma: float,
-                             semiminor_sigma: float, orientation: float) -> Tuple[float, float]:
+    def _compute_normal_flux(self, data: ArrayLike, error: ArrayLike, position: ArrayLike, semimajor_sigma: float,
+                             semiminor_sigma: float, orientation: float,
+                             estimate_local_background: bool = False) -> Tuple[float, float]:
         """
         Compute the flux at a given position using simple aperture photometry.
         
         Parameters
         ----------
         clean_data : ArrayLike
-            The background subtracted image.
+            The image.
         error : ArrayLike
             The total error in the image.
         position : ArrayLike
@@ -3040,6 +3035,9 @@ class Reducer:
             The semiminor axis of the (presumed 2D Gaussian) PSF.
         orientation : float
             The orientation of the (presumed 2D Gaussian) PSF.
+        estimate_local_background : bool, optional
+            Whether to estimate the local background. If True, the local background will be estimated using the
+            local_background attribute, otherwise the data are assumed to be background subtracted.
         
         Returns
         -------
@@ -3047,20 +3045,29 @@ class Reducer:
             The flux and its error.
         """
         
-        aperture = EllipticalAperture(position, self.fwhm_scale * semimajor_sigma, self.fwhm_scale * semiminor_sigma, orientation)  # define aperture
-        phot_table = aperture_photometry(clean_data, aperture, error=error)  # perform aperture photometry
+        aperture = EllipticalAperture(position, self.fwhm_scale * semimajor_sigma, self.fwhm_scale * semiminor_sigma,
+                                      orientation)  # define aperture
+        phot_table = aperture_photometry(data, aperture, error=error)  # perform aperture photometry
         
-        return phot_table["aperture_sum"].value[0], phot_table["aperture_sum_err"].value[0]
+        if estimate_local_background:
+            local_background_per_pixel, local_background_error_per_pixel = self.local_background(data, error, self.scale * semimajor_sigma, self.scale * semiminor_sigma, orientation, position)
+            aperture_area = aperture.area_overlap(data)  # compute aperture area
+            aperture_background, aperture_background_error = aperture_area * local_background_per_pixel, aperture_area * local_background_error_per_pixel  # compute aperture background
+            
+            return phot_table['aperture_sum'].value[0] - aperture_background, np.sqrt(phot_table['aperture_sum_err'].value[0]**2 + aperture_background_error**2)
+        else:
+            return phot_table["aperture_sum"].value[0], phot_table["aperture_sum_err"].value[0]
     
     def _compute_optimal_flux(self, data: NDArray, error: NDArray, position: ArrayLike, semimajor_sigma: float,
-                                semiminor_sigma: float, orientation: float, radius: float) -> Tuple[float, float]:
+                                semiminor_sigma: float, orientation: float, radius: float,
+                                estimate_local_background: bool = False) -> Tuple[float, float]:
         """
         Compute the flux at a given position using the optimal photometry method of Naylor 1998, MNRAS, 296, 339.
         
         Parameters
         ----------
         data : NDArray
-            The image (NOT background subtracted).
+            The image.
         error : NDArray
             The total error in the image.
         position : ArrayLike
@@ -3073,26 +3080,23 @@ class Reducer:
             The orientation of the (presumed 2D Gaussian) PSF.
         radius : float
             The aperture radius.
-        
+        estimate_local_background : bool
+            Whether to estimate the local background. If True, the local background will be estimated using the
+            local_background attribute, otherwise the data are assumed to be background subtracted.
         Returns
         -------
         Tuple[float, float]
             The flux and its error.
         """
         
-        r_in = self.r_in_scale*radius
-        r_out = self.r_out_scale*radius
-        sigma_clip = self.local_background_sigma_clip
-        
-        # define aperture
-        annulus = CircularAnnulus(position, r_in=r_in, r_out=r_out)
-        annustats = ApertureStats(data, annulus, error=error, sigma_clip=sigma_clip)
-        
-        local_background_per_pixel = annustats.median
-        local_background_error_per_pixel = annustats.mad_std
-        
-        clean_data = data - local_background_per_pixel  # subtract local background
-        error = np.sqrt(error**2 + local_background_error_per_pixel**2)  # add local background error in quadrature
+        if estimate_local_background:
+            # compute local background
+            local_background_per_pixel, local_background_error_per_pixel = self.local_background(data, error, self.scale * semimajor_sigma, self.scale * semiminor_sigma, orientation, position)
+            clean_data = data - local_background_per_pixel  # subtract local background
+            error = np.sqrt(error**2 + local_background_error_per_pixel**2)  # add local background error in quadrature
+        else:
+            # assume data are background subtracted
+            clean_data = data
         
         # optimal photometry
         y, x = np.ogrid[:clean_data.shape[0], :clean_data.shape[1]]  # define pixel coordinates
