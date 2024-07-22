@@ -1940,7 +1940,7 @@ class Reducer:
         phot_table = aperture_photometry(data, aperture, error=error)
         
         # estimate local background per pixel
-        local_background_per_pixel, local_background_error_per_pixel = self.local_background(data, error, radius, position)
+        local_background_per_pixel, local_background_error_per_pixel = self.local_background(data, error, radius, radius, None, position)
         
         # calculate total background in aperture
         total_bkg = local_background_per_pixel * aperture_area
@@ -3050,7 +3050,7 @@ class Reducer:
         phot_table = aperture_photometry(data, aperture, error=error)  # perform aperture photometry
         
         if estimate_local_background:
-            local_background_per_pixel, local_background_error_per_pixel = self.local_background(data, error, self.scale*max(semimajor_sigma, semiminor_sigma), position)
+            local_background_per_pixel, local_background_error_per_pixel = self.local_background(data, error, self.scale * semimajor_sigma, self.scale * semiminor_sigma, orientation, position)
             aperture_area = aperture.area_overlap(data)  # compute aperture area
             aperture_background, aperture_background_error = aperture_area * local_background_per_pixel, aperture_area * local_background_error_per_pixel  # compute aperture background
             
@@ -3091,7 +3091,7 @@ class Reducer:
         
         if estimate_local_background:
             # compute local background
-            local_background_per_pixel, local_background_error_per_pixel = self.local_background(data, error, self.scale*max(semimajor_sigma, semiminor_sigma), position)
+            local_background_per_pixel, local_background_error_per_pixel = self.local_background(data, error, self.scale * semimajor_sigma, self.scale * semiminor_sigma, orientation, position)
             clean_data = data - local_background_per_pixel  # subtract local background
             error = np.sqrt(error**2 + local_background_error_per_pixel**2)  # add local background error in quadrature
         else:
