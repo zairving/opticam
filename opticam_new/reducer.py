@@ -56,7 +56,6 @@ class Reducer:
         data_directory: str,
         out_directory: str,
         threshold: float = 5,
-        rotation_threshold: float = 5,
         background: Callable = None,
         local_background: Callable = None,
         finder: Union[Literal['crowded', 'default'], Callable] = 'default',
@@ -79,9 +78,6 @@ class Reducer:
         threshold: float, optional
             The threshold for source finding, by default 5. The threshold is the background RMS factor above which
             sources are detected. For faint sources, a lower threshold may be required.
-        rotation_threshold: float, optional
-            The threshold for image rotation in degrees, by default 10. The rotation threshold is the maximum rotation
-            angle allowed for image alignment. If the rotation angle exceeds the threshold, the image is not aligned.
         background: Callable, optional
             The background calculator, by default None. If None, the default background calculator is used.
         local_background: Callable, optional
@@ -157,7 +153,6 @@ class Reducer:
         self.aperture_selector = default_aperture_selector if aperture_selector is None else aperture_selector
         self.scale = scale
         self.threshold = threshold
-        self.rotation_threshold = rotation_threshold
         self.remove_cosmic_rays = remove_cosmic_rays
         self.number_of_processors = number_of_processors
         self.show_plots = show_plots
@@ -484,7 +479,9 @@ class Reducer:
 
 
 
-    def initialise_catalogs(self, n_alignment_sources: int = 3, batch_size: int = None, overwrite: bool = False) -> None:
+    def initialise_catalogs(self, n_alignment_sources: int = 3,
+                            transform_type: Literal['euclidean', 'similarity', 'translation'] = 'translation',
+                            batch_size: int = None, overwrite: bool = False) -> None:
         """
         Initialise the source catalogs for each camera. Some aspects of this method are parallelised for speed.
         
@@ -542,10 +539,10 @@ class Reducer:
             if self.verbose:
                 print('[OPTICAM] Aligning and stacking ' + fltr + ' images in batches ...')
                 with Pool(self.number_of_processors) as pool:
-                    results = list(tqdm(pool.imap(partial(self._align_and_stack_image_batch, reference_image=reference_image, reference_coords=reference_coords, n_sources=n_alignment_sources), batches), total=len(batches)))
+                    results = list(tqdm(pool.imap(partial(self._align_and_stack_image_batch, reference_image=reference_image, reference_coords=reference_coords, n_sources=n_alignment_sources, transform_type=transform_type), batches), total=len(batches)))
             else:
                 with Pool(self.number_of_processors) as pool:
-                    results = pool.map(partial(self._align_and_stack_image_batch, reference_image=reference_image, reference_coords=reference_coords, n_sources=n_alignment_sources), batches)
+                    results = pool.map(partial(self._align_and_stack_image_batch, reference_image=reference_image, reference_coords=reference_coords, n_sources=n_alignment_sources, transform_type=transform_type), batches)
             
             # parse batch results
             stacked_image, background_median[fltr], background_rms[fltr] = self._parse_batch_alignment_and_stacking_results(results, reference_image.copy())
@@ -594,7 +591,7 @@ class Reducer:
                 for file in self.unaligned_files:
                     unaligned_file.write(file + "\n")
     
-    def _align_and_stack_image_batch(self, batch: List[str], reference_image: ArrayLike, reference_coords, n_sources) -> Tuple[Dict[str, List], List, ArrayLike, List, List]:
+    def _align_and_stack_image_batch(self, batch: List[str], reference_image: NDArray, reference_coords, n_sources, transform_type) -> Tuple[Dict[str, List], List, ArrayLike, List, List]:
         """
         Align and stack a batch of images.
         
@@ -648,15 +645,19 @@ class Reducer:
                 unaligned_files.append(file)  # store unaligned file in list
                 continue
             
-            transform = estimate_transform('euclidean', reference_coords[reference_indices], coords[indices])  # compute transform
             
-            if abs(transform.rotation) <= self.rotation_threshold*np.pi/180:
-                transforms.update({file: transform.params.tolist()})  # store transform in dictionary
-                stacked_image += warp(data_clean, transform.inverse, output_shape=stacked_image.shape, order=3, mode='constant', cval=np.nanmedian(data), clip=True, preserve_range=True)  # align and stack image
+            # compute transform
+            if transform_type == 'translation':
+                dx = np.mean(reference_coords[reference_indices, 0] - coords[indices, 0])
+                dy = np.mean(reference_coords[reference_indices, 1] - coords[indices, 1])
+                r = np.sqrt(dx**2 + dy**2)
+                transform = SimilarityTransform(translation=[dx, dy])
             else:
-                print('[OPTICAM] ' + file + ' exceeded rotation threshold. If this is intended, increase rotation_threshold. Alternatively, consider reducing threshold and/or increasing n_alignment_sources.')
-                unaligned_files.append(file)
+                transform = estimate_transform(transform_type, reference_coords[reference_indices], coords[indices])
             
+            transforms.update({file: transform.params.tolist()})  # store transform in dictionary
+            stacked_image += warp(data_clean, transform.inverse, output_shape=stacked_image.shape, order=3, mode='constant', cval=np.nanmedian(data), clip=True, preserve_range=True)  # align and stack image
+        
         return transforms, unaligned_files, stacked_image, background_median, background_rms
     
     def _parse_batch_alignment_and_stacking_results(self, results: List[Tuple[Dict[str, List], List, ArrayLike, List, List]], stacked_image: ArrayLike) -> Tuple[ArrayLike, ArrayLike, ArrayLike]:
