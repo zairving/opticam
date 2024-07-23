@@ -648,9 +648,9 @@ class Reducer:
             
             # compute transform
             if transform_type == 'translation':
-                dx = np.mean(reference_coords[reference_indices, 0] - coords[indices, 0])
-                dy = np.mean(reference_coords[reference_indices, 1] - coords[indices, 1])
-                r = np.sqrt(dx**2 + dy**2)
+                dx = np.mean(coords[indices, 0] - reference_coords[reference_indices, 0])
+                dy = np.mean(coords[indices, 1] - reference_coords[reference_indices, 1])
+                # r = np.sqrt(dx**2 + dy**2)
                 transform = SimilarityTransform(translation=[dx, dy])
             else:
                 transform = estimate_transform(transform_type, reference_coords[reference_indices], coords[indices])
