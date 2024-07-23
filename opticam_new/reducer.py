@@ -1262,9 +1262,9 @@ class Reducer:
                 
                 ax.add_patch(Circle(xy=(aperture_position), radius=radius,
                                         edgecolor=self.colours[i % len(self.colours)], facecolor="none", lw=1))
-                ax.add_patch(Circle(xy=(aperture_position), radius=self.r_in_scale*radius,
+                ax.add_patch(Circle(xy=(aperture_position), radius=self.local_background.r_in_scale*radius,
                                     edgecolor=self.colours[i % len(self.colours)], facecolor="none", lw=1, ls=":"))
-                ax.add_patch(Circle(xy=(aperture_position), radius=self.r_out_scale*radius,
+                ax.add_patch(Circle(xy=(aperture_position), radius=self.local_background.r_out_scale*radius,
                                     edgecolor=self.colours[i % len(self.colours)], facecolor="none", lw=1, ls=":"))
                 ax.text(aperture_position[0] + 1.05*radius, aperture_position[1] + 1.05*radius, i + 1,
                             color=self.colours[i % len(self.colours)])
