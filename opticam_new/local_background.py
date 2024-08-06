@@ -11,8 +11,7 @@ class LocalBackground(ABC):
     Base class for local background estimators.
     """
     
-    def __init__(self, r_in_scale: float = 1, r_out_scale: float = 2, method: Literal['mean', 'median'] = 'median',
-                 sigma_clip: SigmaClip = SigmaClip(maxiters=10)):
+    def __init__(self, r_in_scale: float = 1, r_out_scale: float = 2, sigma_clip: SigmaClip = SigmaClip(maxiters=10)):
         """
         Local background estimator using an elliptical annulus.
         
@@ -22,24 +21,41 @@ class LocalBackground(ABC):
             The inner axes of the annulus (in units of aperture semi-major/semi-minor axes or radius), by default 1.
         r_out_scale : float, optional
             The outer axes of the annulus (in units of aperture semi-major/semi-minor axes or radius), by default 2.
-        method : Literal['mean', 'median'], optional
-            The method to use to compute the local background. If 'mean', the mean and standard deviation of the pixel
-            values in the annulus are used. If 'median', the median and the median absolute deviation are used,
-            by default 'median'.
         sigma_clip : SigmaClip, optional
             The sigma clipper for removing outlier pixels in the annulus, by default SigmaClip(maxiters=10).
         """
         
-        assert method in ['mean', 'median'], "[OPTICAM] method attribute of local background estimator must be either 'mean' or 'median'."
-        
         self.r_in_scale = r_in_scale
         self.r_out_scale = r_out_scale
-        self.method = method
         self.sigma_clip = sigma_clip
     
     @abstractmethod
     def __call__(self, data: NDArray, error: NDArray, semimajor_axis: float, semiminor_axis: float,
                  theta: float, position: Tuple[float, float]) -> Tuple[float, float]:
+        """
+        Compute the local background and its error at a given position (*per pixel*).
+        
+        Parameters
+        ----------
+        data : NDArray
+            The image data.
+        error : NDArray
+            The error in the image data.
+        semimajor_axis : float
+            The semi-major axis of the aperture.
+        semiminor_axis : float
+            The semi-minor axis of the aperture.
+        theta : float
+            The rotation angle of the PSF.
+        position : Tuple[float, float]
+            The x, y position at which to compute the local background.
+        
+        Returns
+        -------
+        Tuple[float, float]
+            The local background and its error per pixel.
+        """
+        
         pass
 
 
@@ -64,7 +80,7 @@ class CircularLocalBackground(LocalBackground):
             The semi-major axis of the aperture.
         semiminor_axis : float
             The semi-minor axis of the aperture.
-        psf_theta : float
+        theta : float
             The rotation angle of the PSF.
         position : ArrayLike[float, float]
             The x, y position at which to compute the local background.
@@ -80,10 +96,7 @@ class CircularLocalBackground(LocalBackground):
         annulus = CircularAnnulus(position, self.r_in_scale * psf_radius, self.r_out_scale * psf_radius)
         stats = ApertureStats(data, annulus, error=error, sigma_clip=self.sigma_clip)
         
-        if self.method == 'mean':
-            return stats.mean, stats.std
-        else:
-            return stats.median, stats.mad_std
+        return stats.mean, stats.std
 
 
 class EllipticalLocalBackground(LocalBackground):
@@ -106,7 +119,7 @@ class EllipticalLocalBackground(LocalBackground):
             The semi-major axis of the aperture.
         semiminor_axis : float
             The semi-minor axis of the aperture.
-        psf_theta : float
+        theta : float
             The rotation angle of the PSF.
         position : ArrayLike[float, float]
             The x, y position at which to compute the local background.
@@ -121,7 +134,4 @@ class EllipticalLocalBackground(LocalBackground):
                                     self.r_out_scale * semiminor_axis, self.r_in_scale * semiminor_axis, theta)
         stats = ApertureStats(data, annulus, error=error, sigma_clip=self.sigma_clip)
         
-        if self.method == 'mean':
-            return stats.mean, stats.std
-        else:
-            return stats.median, stats.mad_std
+        return stats.mean, stats.std
