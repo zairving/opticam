@@ -130,23 +130,20 @@ class Reducer:
             if self.verbose:
                 print(f"[OPTICAM] {self.out_directory} not found, attempting to create ...")
             # create output directory if it does not exist
-            directories = self.out_directory.split("/")[1:-1]  # remove leading and trailing slashes
-            for i in range(len(directories)):
-                if not os.path.isdir("/" + "/".join(directories[:i + 1])):
-                    try:
-                        os.mkdir("/" + "/".join(directories[:i + 1]))
-                    except:
-                        raise FileNotFoundError(f"[OPTICAM] Could not create directory {directories[:i + 1]}")
+            try:
+                os.makedirs(self.out_directory)
+            except:
+                raise FileNotFoundError(f"[OPTICAM] Could not create directory {self.out_directory}")
             if self.verbose:
                 print(f"[OPTICAM] {self.out_directory} created.")
         
         # create subdirectories
         if not os.path.isdir(self.out_directory + "cat"):
-            os.mkdir(self.out_directory + "cat")
+            os.makedirs(self.out_directory + "cat")
         if not os.path.isdir(self.out_directory + "diag"):
-            os.mkdir(self.out_directory + "diag")
+            os.makedirs(self.out_directory + "diag")
         if not os.path.isdir(self.out_directory + "misc"):
-            os.mkdir(self.out_directory + "misc")
+            os.makedirs(self.out_directory + "misc")
         
         # set parameters
         self.fwhm_scale = 2 * np.sqrt(2 * np.log(2))  # FWHM scale factor
@@ -1945,7 +1942,7 @@ class Reducer:
         
         # calculate total background in aperture
         total_bkg = local_background_per_pixel * aperture_area
-        total_bkg_error = local_background_error_per_pixel * np.sqrt(aperture_area)
+        total_bkg_error = np.sqrt(local_background_error_per_pixel * aperture_area)
         
         flux = phot_table["aperture_sum"].value[0] - total_bkg
         flux_error = np.sqrt(phot_table["aperture_sum_err"].value[0]**2 + total_bkg_error**2)
@@ -3053,7 +3050,7 @@ class Reducer:
         if estimate_local_background:
             local_background_per_pixel, local_background_error_per_pixel = self.local_background(data, error, self.scale * semimajor_sigma, self.scale * semiminor_sigma, orientation, position)
             aperture_area = aperture.area_overlap(data)  # compute aperture area
-            aperture_background, aperture_background_error = aperture_area * local_background_per_pixel, aperture_area * local_background_error_per_pixel  # compute aperture background
+            aperture_background, aperture_background_error = aperture_area * local_background_per_pixel, np.sqrt(aperture_area * local_background_error_per_pixel)  # compute aperture background
             
             return phot_table['aperture_sum'].value[0] - aperture_background, np.sqrt(phot_table['aperture_sum_err'].value[0]**2 + aperture_background_error**2)
         else:
