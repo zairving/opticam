@@ -2,11 +2,12 @@ from photutils.background import Background2D, SExtractorBackground, StdBackgrou
 from typing import Callable, Union, Tuple, Dict
 from astropy.stats import SigmaClip
 from numpy.typing import ArrayLike
+from abc import ABC, abstractmethod
 
 from opticam_new.helpers import get_data
 
 
-class Background:
+class Background(ABC):
     
     def __init__(self, box_size: Union[int, Tuple[int, int]], sigma_clip: SigmaClip = SigmaClip(sigma=3, maxiters=10),
                  bkg_estimator: Callable = SExtractorBackground(), bkgrms_estimator: Callable = StdBackgroundRMS()):
