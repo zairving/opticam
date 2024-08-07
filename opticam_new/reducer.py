@@ -12,7 +12,7 @@ from astropy.visualization.mpl_normalize import simple_norm
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 from photutils.segmentation import SourceCatalog, detect_threshold
-from photutils.aperture import ApertureStats, aperture_photometry, CircularAperture, CircularAnnulus, EllipticalAperture, EllipticalAnnulus
+from photutils.aperture import ApertureStats, aperture_photometry, CircularAperture, EllipticalAperture, EllipticalAnnulus
 from photutils.background import Background2D
 from photutils.utils import calc_total_error
 from skimage.transform import estimate_transform, warp, matrix_transform, SimilarityTransform
@@ -43,7 +43,6 @@ except:
 
 # TODO: check input and output signatures
 # TODO: add FWHM column to catalog tables
-# TODO: optimal photometry with annulus
 
 
 class Reducer:
@@ -237,16 +236,9 @@ class Reducer:
             except:
                 pass
     
-    def _scan_data_directory(self, batch_size: int = None) -> None:
+    def _scan_data_directory(self) -> None:
         """
         Scan the data directory for files and extract the MJD, filter, binning, and gain from the file headers.
-        
-        Parameters
-        ----------
-        batch_size : int, optional
-            The number of images to process in each batch, by default the batch size is based on the number of images, 
-            the number of unique filters, and the number of processors. For the best performance, the number of batches
-            should not be less than the number of processors.
         
         Raises
         ------
@@ -256,9 +248,7 @@ class Reducer:
             If the binning is not consistent.
         """
         
-        if batch_size is None:
-            batch_size = 1 + int(len(self.file_names)/self.number_of_processors)
-        
+        batch_size = 1 + int(len(self.file_names)/self.number_of_processors)
         batches = [self.file_names[i:i + batch_size] for i in range(0, len(self.file_names), batch_size)]
         
         if self.verbose:
@@ -478,7 +468,7 @@ class Reducer:
 
     def initialise_catalogs(self, n_alignment_sources: int = 3,
                             transform_type: Literal['euclidean', 'similarity', 'translation'] = 'translation',
-                            batch_size: int = None, overwrite: bool = False) -> None:
+                            overwrite: bool = False) -> None:
         """
         Initialise the source catalogs for each camera. Some aspects of this method are parallelised for speed.
         
@@ -487,10 +477,6 @@ class Reducer:
         n_alignment_sources : int, optional
             The number of sources to use for image alignment, by default 3. Must be >= 3. The brightest
             n_alignment_sources sources are used for image alignment.
-        batch_size : int, optional
-            The number of images to process in each batch, by default the batch size is based on the number of images, 
-            the number of unique filters, and the number of processors. For the best performance, the number of batches
-            should not be less than the number of processors.
         overwrite : bool, optional
             Whether to overwrite existing catalogs, by default False.
         """
@@ -499,10 +485,6 @@ class Reducer:
         if os.path.isfile(self.out_directory + 'cat/catalogs.png') and not overwrite:
             print('[OPTICAM] Catalogs already exist. To overwrite, set overwrite to True.')
             return
-        
-        # automatically determine a suitable batch size
-        if batch_size is None:
-            infer_batch_size = True
         
         if self.verbose:
             print('[OPTICAM] Initialising catalogs ...')
@@ -526,10 +508,8 @@ class Reducer:
                 print('[OPTICAM] Not enough sources detected in ' + fltr + ' for image alignment. Consider reducing threshold and/or n_alignment_sources.')
                 continue
             
-            if infer_batch_size:
-                batch_size = 1 + int(len(self.camera_files[fltr])/self.number_of_processors)
-            
             # split files into batches for improved performance
+            batch_size = 1 + int(len(self.camera_files[fltr])/self.number_of_processors)
             batches = [self.camera_files[fltr][i:i + batch_size] for i in range(0, len(self.camera_files[fltr]), batch_size)]
             
             # align and stack images
@@ -893,272 +873,11 @@ class Reducer:
             plt.show()
         else:
             plt.close(fig)
-    
-    
-    def _show_source_psfs(self, stacked_images: Dict[str, ArrayLike]) -> None:
-        
-        # for each filter
-        for fltr in list(self.catalogs.keys()):
-            
-            if not os.path.isdir(self.out_directory + 'diag/' + fltr + '_apertures'):
-                os.mkdir(self.out_directory + 'diag/' + fltr + '_apertures')
-            
-            # for each source
-            for source in range(len(self.catalogs[fltr])):
-                
-                #isolate region around source
-                x = self.catalogs[fltr]["xcentroid"][source]
-                x_shift = x - int(x)
-                y = self.catalogs[fltr]["ycentroid"][source]
-                y_shift = y - int(y)
-                size = 10*self.catalogs[fltr]["semimajor_sigma"][source].value
-                
-                row_mask = np.zeros(stacked_images[fltr].shape[0], dtype=bool)
-                row_mask[int(y - size):int(y + size)] = True
-                
-                col_mask = np.zeros(stacked_images[fltr].shape[1], dtype=bool)
-                col_mask[int(x - size):int(x + size)] = True
-                
-                source_img = stacked_images[fltr][row_mask][:, col_mask]
-                img_x, img_y = source_img.shape[0] / 2 + x_shift, source_img.shape[1] / 2 + y_shift
-                
-                norm = simple_norm(stacked_images[fltr], stretch="log")
-                
-                self._get_flux_profile(source_img, img_x, img_y, self.catalogs[fltr]['semimajor_sigma'][source].value,
-                                       self.catalogs[fltr]['semiminor_sigma'][source].value,
-                                       self.catalogs[fltr]['orientation'][source].value, fltr, source, norm)
-                
-                #show PSF
-                fig, axs = plt.subplots(ncols=2, tight_layout=True, figsize=(10, 5))
-                
-                axs[0].imshow(np.clip(source_img, 0, None), origin="lower",
-                              cmap="Greys_r", interpolation="nearest", norm=norm)
-                
-                axs[0].add_patch(Ellipse(xy=(img_x, img_y),
-                                         width=self.catalogs[fltr]['semiminor_sigma'][source].value,
-                                         height=self.catalogs[fltr]['semimajor_sigma'][source].value,
-                                         angle=self.catalogs[fltr]['orientation'][source].value / np.pi * 180,
-                                         edgecolor='red', facecolor='none', lw=1))
-                
-                axs[1].hist(source_img.flatten(), bins='auto', histtype='step', color='black', lw=1)
-                
-                axs1_ = axs[1].twinx()
-                
-                aperture_mask = np.zeros_like(source_img, dtype=bool)
-                aperture_mask = EllipticalAperture([img_x, img_y], self.catalogs[fltr]['semimajor_sigma'][source].value,
-                                                   self.catalogs[fltr]['semimajor_sigma'][source].value,
-                                                   self.catalogs[fltr]['orientation'][source].value).to_mask(method='center')
-                
-                axs1_.hist(aperture_mask.get_values(source_img).flatten(), bins='auto', histtype='step', color='red',
-                           lw=1, ls='--')
-                
-                axs[0].set_title(f"{fltr} source {source + 1}")
-                axs[0].set_xlabel("X")
-                axs[0].set_ylabel("Y")
-                
-                axs[1].set_yscale('log')
-                axs[1].set_xlabel("Flux")
-                
-                fig.savefig(self.out_directory + f"diag/{fltr}_apertures/source_{source + 1}_psf.png")
-                
-                plt.close(fig)
-    
-    def _get_flux_profile(self, img, x_centroid, y_centroid, semimajor_sigma, semiminor_sigma, orientation, fltr,
-                          source, norm):
-        
-        scale = self.fwhm_scale * semimajor_sigma  # get PSF FWHM
-        semimajor_sigma /= 2 * scale  # normalise to 1 pixel 'diameter'
-        semiminor_sigma /= 2 * scale  # normalise to 1 pixel 'diameter'
-        
-        major, minor, circle = [], [], []
-        major_alt, minor_alt, circle_alt = [], [], []
-        
-        semimajor_in = 0
-        semimajor_out = semimajor_sigma
-        semiminor_in = 0
-        semiminor_out = semiminor_sigma
-        
-        while semimajor_out < img.shape[0] / 2:
-            major.append(self._get_flux(img, (x_centroid, y_centroid), semimajor_in, semimajor_out, semiminor_out, semiminor_in, orientation))  # ellipse parallel to major axis
-            minor.append(self._get_flux(img, (x_centroid, y_centroid), semimajor_in, semimajor_out, semiminor_out, semiminor_in, orientation + np.pi / 2))  # ellipse perpendicular to major axis
-            circle.append(self._get_flux(img, (x_centroid, y_centroid), semimajor_in, semimajor_out, semimajor_out, semimajor_in, 0))  # circle
-            
-            major_alt.append(self._get_flux(img, (x_centroid, y_centroid), 0, semimajor_out, semiminor_out, 0, orientation))
-            minor_alt.append(self._get_flux(img, (x_centroid, y_centroid), 0, semimajor_out, semiminor_out, 0, orientation + np.pi / 2))
-            circle_alt.append(self._get_flux(img, (x_centroid, y_centroid), 0, semimajor_out, semimajor_out, 0, 0))
-            
-            semimajor_in = semimajor_out
-            semimajor_out += semimajor_sigma
-            semiminor_in = semiminor_out
-            semiminor_out += semiminor_sigma
-        
-        fig, axs = plt.subplots(ncols=2, tight_layout=True, figsize=(10, 5))
-        
-        axs[0].imshow(np.clip(img, 0, None), origin="lower", cmap="Greys_r", interpolation="nearest", 
-                      norm=norm)
-        
-        axs[0].add_patch(Ellipse(xy=(x_centroid, y_centroid), width=semiminor_sigma * 2 * scale, height=semimajor_sigma * 2 * scale,
-                                 angle=orientation / np.pi * 180, edgecolor='red', facecolor='none', lw=1))
-        
-        axs[0].add_patch(Ellipse(xy=(x_centroid, y_centroid), width=semiminor_sigma * 2 * scale, height=semimajor_sigma * 2 * scale,
-                                 angle=90 + orientation / np.pi * 180, edgecolor='blue', facecolor='none', lw=1, ls='--'))
-        
-        axs[0].add_patch(Ellipse(xy=(x_centroid, y_centroid), width=semimajor_sigma * 2 * scale, height=semimajor_sigma * 2 * scale,
-                                 angle=0, edgecolor='green', facecolor='none', lw=1, ls=':'))
-        
-        axs[0].set_ylabel("Y")
-        axs[0].set_xlabel("X")
-        
-        axs[1].plot(np.arange(1, len(major) + 1), major, "rx-", lw=1, label="Parallel")
-        axs[1].plot(np.arange(1, len(minor) + 1), minor, "b+--", lw=1, label="Perpendicular")
-        axs[1].plot(np.arange(1, len(circle) + 1), circle, "g1-.", lw=1, label="Circle")
-        axs[1].axvline(semimajor_sigma * 2 * scale, color='black', ls='--', lw=1, label='PSF FWHM')
-        
-        axs[1].legend()
-        axs[1].set_xlabel('Radius/semi-major length [pixels]')
-        axs[1].set_ylabel('Flux')
-        axs[1].set_title(f"{fltr} source {source + 1}")
-        axs[1].minorticks_on()
-        axs[1].tick_params(which='both', direction='in', top=True, right=True)
-        
-        fig.savefig(self.out_directory + f"diag/{fltr}_apertures/source_{source + 1}_flux_profile.png", dpi=300)
-        plt.close(fig)
-        
-        
-        fig, axs = plt.subplots(ncols=2, tight_layout=True, figsize=(10, 5))
-        
-        axs[0].imshow(np.clip(img, 0, None), origin="lower", cmap="Greys_r", interpolation="nearest", 
-                      norm=norm)
-        
-        axs[0].add_patch(Ellipse(xy=(x_centroid, y_centroid), width=semiminor_sigma * 2 * scale, height=semimajor_sigma * 2 * scale,
-                                 angle=orientation / np.pi * 180, edgecolor='red', facecolor='none', lw=1))
-        
-        axs[0].add_patch(Ellipse(xy=(x_centroid, y_centroid), width=semiminor_sigma * 2 * scale, height=semimajor_sigma * 2 * scale,
-                                 angle=90 + orientation / np.pi * 180, edgecolor='blue', facecolor='none', lw=1, ls='--'))
-        
-        axs[0].add_patch(Ellipse(xy=(x_centroid, y_centroid), width=semimajor_sigma * 2 * scale, height=semimajor_sigma * 2 * scale,
-                                 angle=0, edgecolor='green', facecolor='none', lw=1, ls=':'))
-        
-        axs[0].set_ylabel("Y")
-        axs[0].set_xlabel("X")
-        
-        axs[1].plot(np.arange(1, len(major_alt) + 1), major_alt, "rx-", lw=1, label="Parallel")
-        axs[1].plot(np.arange(1, len(minor_alt) + 1), minor_alt, "b+--", lw=1, label="Perpendicular")
-        axs[1].plot(np.arange(1, len(circle_alt) + 1), circle_alt, "g1-.", lw=1, label="Circle")
-        axs[1].axvline(semimajor_sigma * 2 * scale, color='black', ls='--', lw=1, label='PSF FWHM')
-        
-        axs[1].legend()
-        axs[1].set_xlabel('Radius/semi-major length [pixels]')
-        axs[1].set_ylabel('Flux')
-        axs[1].set_title(f"{fltr} source {source + 1}")
-        axs[1].minorticks_on()
-        axs[1].tick_params(which='both', direction='in', top=True, right=True)
-        
-        fig.savefig(self.out_directory + f"diag/{fltr}_apertures/source_{source + 1}_flux_sum_profile.png")
-        plt.close(fig)
-    
-    def _get_flux(self, data, position, a_in, a_out, b_out, b_in, theta):
-        
-        if a_in == 0:
-            aperture = EllipticalAperture(position, a_out, b_out, theta)
-        else:
-            aperture = EllipticalAnnulus(position, a_in, a_out, b_out, b_in, theta)
-        
-        aperstats = ApertureStats(data, aperture)
-        
-        return aperstats.sum
-    
-    def _plot_stacked_backgrounds(self, stacked_images: Dict[str, ArrayLike]) -> None:
-        
-        fig, axs = plt.subplots(nrows=len(self.catalogs), tight_layout=True, figsize=(6.4, 4.8 * len(self.catalogs)))
-        
-        for i, fltr in enumerate(list(self.catalogs.keys())):
-            
-            plot_image = SigmaClip(3, maxiters=10)(stacked_images[fltr], axis=1, masked=False)
-            
-            axs[i].imshow(plot_image, origin="lower", cmap="Greys_r", interpolation="nearest",
-                          norm=simple_norm(plot_image, stretch="log"))
-            
-            axs[i].set_title(fltr)
-            axs[i].set_xlabel("X")
-            axs[i].set_ylabel("Y")
-        
-        fig.savefig(self.out_directory + "cat/stacked_backgrounds.png")
-        
-        if self.show_plots:
-            plt.show(fig)
-        else:
-            plt.close(fig)
-
-    
-    def _background(self):
-        
-        batch_size = 1 + int(len(self.file_names) / (len(self.catalogs) * self.number_of_processors))
-        
-        fig, ax = plt.subplots(ncols=len(self.catalogs), tight_layout=True, figsize=(len(self.catalogs) * 5, 5))
-        
-        stacked_images = []
-        
-        for fltr in list(self.catalogs.keys()):
-            
-            batches = [self.camera_files[fltr][i:i + batch_size] for i in range(0, len(self.camera_files[fltr]), batch_size)]
-            
-            reference_image = get_data(self.data_directory + self.reference_files[fltr])
-            
-            for i in  range(10):
-                median = np.median(reference_image)
-                std = np.std(reference_image)
-                temp = (reference_image - median) / std
-                outliers = np.abs(temp) > 3
-                reference_image[outliers] = median
-            
-            stacked_images.append(reference_image)
-            
-            with Pool(self.number_of_processors) as pool:
-                results = list(tqdm(pool.imap(partial(self.temp, reference_image=get_data(self.data_directory + self.reference_files[fltr]), fltr=fltr), batches), total=len(batches)))
-            
-            for result in results:
-                stacked_images[-1] += result
-        
-        for i, fltr in enumerate(list(self.catalogs.keys())):
-            
-            ax[i].imshow(stacked_images[i], origin="lower", cmap="Greys_r", interpolation="nearest",
-                        norm=simple_norm(stacked_images[i], stretch="sqrt"))
-            
-            ax[i].set_title(fltr)
-            ax[i].set_xlabel("X")
-            ax[i].set_ylabel("Y")
-        
-        fig.savefig(self.out_directory + "cat/stacked_backgrounds.png")
-    
-    def temp(self, batch, reference_image, fltr):
-        
-        stacked_image = np.zeros_like(reference_image)
-        
-        for file in batch:
-            
-            try:
-                itransform = SimilarityTransform(self.transforms[file]).inverse
-            except KeyError:
-                continue
-            
-            image = get_data(self.data_directory + file)
-            
-            for i in range(10):
-                median = np.median(image)
-                std = np.std(image)
-                temp = (image - median) / std
-                outliers = np.abs(temp) > 3
-                image[outliers] = median
-            
-            stacked_image += warp(image, itransform, output_shape=image.shape, order=3, mode='constant', cval=np.nanmedian(image), clip=True, preserve_range=True)
-        
-        return stacked_image
 
 
 
 
-    def create_gifs(self, keep_frames: bool = True, batch_size: int = None, overwrite: bool = False) -> None:
+    def create_gifs(self, keep_frames: bool = True, overwrite: bool = False) -> None:
         """
         Create alignment gifs for each camera. Some aspects of this method are parallelised for speed. The frames are 
         saved in out_directory/diag/*-band_gif_frames and the GIFs are saved in out_directory/cat.
@@ -1168,17 +887,9 @@ class Reducer:
         keep_frames : bool, optional
             Whether to save the GIF frames in out_directory/diag, by default True. If False, the frames will be deleted
             after the GIF is saved.
-        batch_size : int, optional
-            The number of images to process in each batch, by default the batch size is based on the number of images, 
-            the number of unique filters, and the number of processors. For the best performance, the number of batches
-            should not be less than the number of processors.
         overwrite : bool, optional
             Whether to overwrite existing GIFs, by default False.
         """
-        
-        if batch_size is None:
-            n_catalog_files = sum([len(self.camera_files[fltr]) for fltr in list(self.catalogs.keys())])
-            batch_size = 1 + int(n_catalog_files/(len(self.catalogs)*self.number_of_processors))
         
         # for each camera
         for fltr in list(self.catalogs.keys()):
@@ -1194,6 +905,7 @@ class Reducer:
             if not os.path.isdir(self.out_directory + f"diag/{fltr}_gif_frames"):
                 os.mkdir(self.out_directory + f"diag/{fltr}_gif_frames")
             
+            batch_size = 1 + int(len(self.camera_files[fltr])/self.number_of_processors)
             batches = [self.camera_files[fltr][i:i + batch_size] for i in range(0, len(self.camera_files[fltr]), batch_size)]
             
             if self.verbose:
@@ -1310,7 +1022,7 @@ class Reducer:
 
 
 
-    def background_gif(self, keep_frames=True, batch_size=None, overwrite=False):
+    def background_gif(self, keep_frames=True, overwrite=False):
             """
             Create alignment gifs for each camera. Some aspects of this method are parallelised for speed. The frames are 
             saved in out_directory/diag/*-band_gif_frames and the GIFs are saved in out_directory/cat.
@@ -1320,17 +1032,9 @@ class Reducer:
             keep_frames : bool, optional
                 Whether to save the GIF frames in out_directory/diag, by default True. If False, the frames will be deleted
                 after the GIF is saved.
-            batch_size : int, optional
-                The number of images to process in each batch, by default the batch size is based on the number of images, 
-                the number of unique filters, and the number of processors. For the best performance, the number of batches
-                should not be less than the number of processors.
             overwrite : bool, optional
                 Whether to overwrite existing GIFs, by default False.
             """
-            
-            if batch_size is None:
-                n_catalog_files = sum([len(self.camera_files[fltr]) for fltr in list(self.catalogs.keys())])
-                batch_size = 1 + int(n_catalog_files/(len(self.catalogs)*self.number_of_processors))
             
             # for each camera
             for fltr in list(self.catalogs.keys()):
@@ -1346,6 +1050,7 @@ class Reducer:
                 if not os.path.isdir(self.out_directory + f"diag/{fltr}_background_gif_frames"):
                     os.mkdir(self.out_directory + f"diag/{fltr}_background_gif_frames")
                 
+                batch_size = 1 + int(len(self.camera_files[fltr])/self.number_of_processors)
                 batches = [self.camera_files[fltr][i:i + batch_size] for i in range(0, len(self.camera_files[fltr]), batch_size)]
                 
                 if self.verbose:
@@ -1403,7 +1108,7 @@ class Reducer:
 
 
     def forced_photometry(self, phot_type: Literal["aperture", "annulus", "both"] = "both",
-                          batch_size: int = None, remove_cosmic_rays: bool = False, overwrite: bool = False) -> None:
+                          remove_cosmic_rays: bool = False, overwrite: bool = False) -> None:
         """
         Perform forced photometry on the images in out_directory to extract source fluxes.
         
@@ -1414,10 +1119,6 @@ class Reducer:
             If "annulus", only annulus photometry is performed. If "both", both aperture and annulus photometry are
             performed simultaneously (this is more efficient that performing both separately since it only opens the
             file once).
-        batch_size : int, optional
-            The number of images to process in each batch, by default the batch size is based on the number of images, 
-            the number of unique filters, and the number of processors. For the best performance, the number of batches
-            should not be less than the number of processors.
         remove_cosmic_rays : bool, optional
             Whether to remove cosmic rays from the images before performing photometry, by default False. Removing
             cosmic rays can reduce the number of outliers that appear in the resulting light curves, but doing so can
@@ -1430,26 +1131,23 @@ class Reducer:
         ValueError
             If phot_type is not recognised.
         """
-        n_catalog_files = sum([len(self.camera_files[fltr]) for fltr in list(self.catalogs.keys())])
-        batch_size = 1 + int(n_catalog_files/(len(self.catalogs)*self.number_of_processors))
         
         # determine which photometry function to use
         if phot_type == "aperture":
-            self._extract_aperture_light_curves(batch_size, remove_cosmic_rays, overwrite)
+            self._extract_aperture_light_curves(remove_cosmic_rays, overwrite)
         elif phot_type == "annulus":
-            self._extract_annulus_light_curves(batch_size, remove_cosmic_rays, overwrite)
+            self._extract_annulus_light_curves(remove_cosmic_rays, overwrite)
         elif phot_type == "both":
-            self._extract_aperture_and_annulus_light_curves(batch_size, remove_cosmic_rays, overwrite)
+            self._extract_aperture_and_annulus_light_curves(remove_cosmic_rays, overwrite)
         else:
             raise ValueError(f"[OPTICAM] Photometry type {phot_type} not recognised.")
     
-    def _extract_aperture_light_curves(self, batch_size: int, remove_cosmic_rays: bool,
-                                       overwrite: bool) -> None:
+    def _extract_aperture_light_curves(self, remove_cosmic_rays: bool, overwrite: bool) -> None:
         """
         Perform forced simple aperture photometry on all the images in out_directory.
         
-        batch_size : int
-            The number of images to process in each batch.
+        Parameters
+        ----------
         remove_cosmic_rays : bool
             Whether to remove cosmic rays from the images before performing photometry. Removing cosmic rays can reduce
             the number of outliers that appear in the resulting light curves, but doing so can significantly increase the
@@ -1483,6 +1181,7 @@ class Reducer:
                 # skip cameras with no sources
                 continue
             
+            batch_size = 1 + int(len(self.camera_files[fltr])/self.number_of_processors)
             batches = [self.camera_files[fltr][i:i + batch_size] for i in range(0, len(self.camera_files[fltr]), batch_size)]
             
             if self.verbose:
@@ -1715,14 +1414,12 @@ class Reducer:
         
         plt.close(fig)
     
-    def _extract_annulus_light_curves(self,  batch_size: int, remove_cosmic_rays: bool, overwrite: bool) -> None:
+    def _extract_annulus_light_curves(self, remove_cosmic_rays: bool, overwrite: bool) -> None:
         """
         Perform forced aperture photometry with local background subtractions on all the images in out_directory.
         
         Parameters
         ----------
-        batch_size : int
-            The number of images to process in each batch.
         remove_cosmic_rays : bool
             Whether to remove cosmic rays from the images before performing photometry. Removing cosmic rays can reduce
             the number of outliers that appear in the resulting light curves, but doing so can significantly increase the
@@ -1756,6 +1453,7 @@ class Reducer:
                 # skip cameras with no sources
                 continue
             
+            batch_size = 1 + int(len(self.camera_files[fltr])/self.number_of_processors)
             batches = [self.camera_files[fltr][i:i + batch_size] for i in range(0, len(self.camera_files[fltr]), batch_size)]
             
             if self.verbose:
@@ -2029,7 +1727,7 @@ class Reducer:
         fig.savefig(self.out_directory + f"annulus_light_curves/{fltr}_source_{source_index + 1}.png")
         plt.close(fig)
     
-    def _extract_aperture_and_annulus_light_curves(self, batch_size: int, remove_cosmic_rays: bool,
+    def _extract_aperture_and_annulus_light_curves(self, remove_cosmic_rays: bool,
                                                    overwrite: bool) -> None:
         """
         Extract both simple aperture and local-background-subtracted aperture fluxes. This method is more efficient than
@@ -2038,8 +1736,6 @@ class Reducer:
         
         Parameters
         ----------
-        batch_size : int
-            The number of images to process in each batch.
         remove_cosmic_rays : bool
             Whether to remove cosmic rays from the images before performing photometry. Removing cosmic rays can reduce
             the number of outliers that appear in the resulting light curves, but doing so can significantly increase the
@@ -2075,6 +1771,7 @@ class Reducer:
                 # skip cameras with no sources
                 continue
             
+            batch_size = 1 + int(len(self.camera_files[fltr])/self.number_of_processors)
             batches = [self.camera_files[fltr][i:i + batch_size] for i in range(0, len(self.camera_files[fltr]), batch_size)]
             
             if self.verbose:
@@ -2263,25 +1960,21 @@ class Reducer:
             Whether to overwrite existing light curves, by default False.
         """
         
-        # TODO: change batch size to be set per filter
-        n_catalog_files = sum([len(self.camera_files[fltr]) for fltr in list(self.catalogs.keys())])
-        batch_size = 1 + int(n_catalog_files/(len(self.catalogs)*self.number_of_processors))
-        
         # determine which photometry function to use
         if phot_type == "normal":
-            return self._extract_normal_light_curves(background_method, tolerance, batch_size, remove_cosmic_rays,
+            return self._extract_normal_light_curves(background_method, tolerance, remove_cosmic_rays,
                                                      overwrite)
         elif phot_type == "optimal":
-            return self._extract_optimal_light_curves(background_method, tolerance, batch_size, remove_cosmic_rays,
+            return self._extract_optimal_light_curves(background_method, tolerance, remove_cosmic_rays,
                                                       overwrite)
         elif phot_type == "both":
-            self._extract_normal_and_optimal_light_curves(background_method, tolerance, batch_size, remove_cosmic_rays,
+            self._extract_normal_and_optimal_light_curves(background_method, tolerance, remove_cosmic_rays,
                                                           overwrite)
         else:
             raise ValueError(f"[OPTICAM] Photometry type {phot_type} not recognised.")
     
     def _extract_normal_light_curves(self, background_method: Literal['global', 'local'], tolerance: float,
-                                     batch_size: int, remove_cosmic_rays: bool, overwrite: bool) -> None:
+                                     remove_cosmic_rays: bool, overwrite: bool) -> None:
         """
         Extract the source fluxes from the images using simple aperture photometry. Unlike the forced photometry methods,
         this method requires fitting for the source positions in each image; as such, this method can be significantly
@@ -2298,8 +1991,6 @@ class Reducer:
             transformed catalog position a source can be while still being considered the same source. If the alignments
             are good and the field is crowded, consider reducing this value. For poor alignments and/or uncrowded fields,
             this value can be increased.
-        batch_size : int
-            The number of images to process in each batch.
         remove_cosmic_rays : bool
             Whether to remove cosmic rays from the images before performing photometry. Removing cosmic rays can reduce
             the number of outliers that appear in the resulting light curves, but doing so can significantly increase the
@@ -2331,6 +2022,7 @@ class Reducer:
             semimajor_sigma = self.aperture_selector(self.catalogs[fltr]["semimajor_sigma"].value)
             semiminor_sigma = self.aperture_selector(self.catalogs[fltr]["semiminor_sigma"].value)
             
+            batch_size = 1 + int(len(self.camera_files[fltr])/self.number_of_processors)
             batches = [self.camera_files[fltr][i:i + batch_size] for i in range(0, len(self.camera_files[fltr]), batch_size)]
             
             if self.verbose:
@@ -2552,7 +2244,7 @@ class Reducer:
         plt.close(fig)
     
     def _extract_optimal_light_curves(self, background_method: Literal['global', 'local'], tolerance: float,
-                                      batch_size:  int, remove_cosmic_rays: bool, overwrite: bool) -> None:
+                                      remove_cosmic_rays: bool, overwrite: bool) -> None:
         """
         Use the optimal photometry method of Naylor 1998, MNRAS, 296, 339 to extract source fluxes from the images.
         Unlike the forced photometry methods, this method requires fitting for the source positions in each image; as
@@ -2571,8 +2263,6 @@ class Reducer:
             further than this tolerance, it will be considered a different source. If the alignments are good and the
             field is crowded, consider reducing this value. For poor alignments and/or uncrowded fields, this value can
             be increased.
-        batch_size : int
-            The number of images to process in each batch.
         remove_cosmic_rays : bool
             Whether to remove cosmic rays from the images before performing photometry. Removing cosmic rays can reduce
             the number of outliers that appear in the resulting light curves, but doing so can significantly increase the
@@ -2605,6 +2295,7 @@ class Reducer:
             semiminor_sigma = self.aperture_selector(self.catalogs[fltr]["semiminor_sigma"].value)
             radius = self.scale*self.aperture_selector(self.catalogs[fltr]["semimajor_sigma"].value)
             
+            batch_size = 1 + int(len(self.camera_files[fltr])/self.number_of_processors)
             batches = [self.camera_files[fltr][i:i + batch_size] for i in range(0, len(self.camera_files[fltr]), batch_size)]
             
             if self.verbose:
@@ -2808,7 +2499,7 @@ class Reducer:
         plt.close(fig)
     
     def _extract_normal_and_optimal_light_curves(self, background_method: Literal['global', 'local'], tolerance: float,
-                                                 batch_size: int, remove_cosmic_rays: bool, overwrite: bool) -> None:
+                                                 remove_cosmic_rays: bool, overwrite: bool) -> None:
         """
         Extract both normal and optimal source fluxes from the images. This method is more efficient than calling
         _extract_normal_light_curve() and _extract_optimal_light_curve() separately since it only opens the file once.
@@ -2820,8 +2511,6 @@ class Reducer:
             transformed catalog position a source can be while still being considered the same source. If the alignments
             are good and the field is crowded, consider reducing this value. For poor alignments and/or uncrowded fields,
             this value can be increased.
-        batch_size : int
-            The number of images to process in each batch.
         remove_cosmic_rays : bool
             Whether to remove cosmic rays from the images before performing photometry. Removing cosmic rays can reduce
             the number of outliers that appear in the resulting light curves, but doing so can significantly increase the
@@ -2856,6 +2545,7 @@ class Reducer:
             semiminor_sigma = self.aperture_selector(self.catalogs[fltr]["semiminor_sigma"].value)
             radius = self.scale*self.aperture_selector(self.catalogs[fltr]["semimajor_sigma"].value)
             
+            batch_size = 1 + int(len(self.camera_files[fltr])/self.number_of_processors)
             batches = [self.camera_files[fltr][i:i + batch_size] for i in range(0, len(self.camera_files[fltr]), batch_size)]
             
             if self.verbose:
