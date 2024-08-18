@@ -10,12 +10,12 @@ from astropy.visualization.mpl_normalize import simple_norm
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 from photutils.segmentation import SourceCatalog, detect_threshold
-from photutils.aperture import ApertureStats, aperture_photometry, CircularAperture, EllipticalAperture, EllipticalAnnulus
+from photutils.aperture import aperture_photometry, CircularAperture, EllipticalAperture
 from photutils.background import Background2D
 from photutils.utils import calc_total_error
 from skimage.transform import estimate_transform, warp, matrix_transform, SimilarityTransform
 from matplotlib import pyplot as plt
-from matplotlib.patches import Circle, Ellipse
+from matplotlib.patches import Circle
 import matplotlib.colors as mcolors
 from multiprocessing import Pool, cpu_count
 from functools import partial
@@ -1131,7 +1131,9 @@ class Reducer:
     def forced_photometry(self, phot_type: Literal["aperture", "annulus", "both"] = "both",
                           remove_cosmic_rays: bool = False, overwrite: bool = False) -> None:
         """
-        Perform forced photometry on the images in out_directory to extract source fluxes.
+        Perform forced photometry on the images in out_directory. The light curves produced by this method are generally
+        going to have lower signal-to-noise ratios than those produced by the photometry() method, but they have the
+        benefit of being able to extract light curves for sources that are not detected in all images.
         
         Parameters
         ----------
@@ -1178,18 +1180,19 @@ class Reducer:
             if len(self.camera_files[fltr]) == 0:
                 continue
             
+            # get list of possible light curve files
             if phot_type == 'aperture':
-                if os.path.isfile(self.out_directory + f"aperture_light_curves/{fltr}_source_1.csv") and not overwrite:
-                    print(f'[OPTICAM] {fltr} light curves already exist. To overwrite, set overwrite to True.')
-                    continue
+                light_curve_files = [self.out_directory + f"aperture_light_curves/{fltr}_source_{i}.csv" for i in range(len(self.catalogs[fltr]))]
             elif phot_type == 'annulus':
-                if os.path.isfile(self.out_directory + f"annulus_light_curves/{fltr}_source_1.csv") and not overwrite:
-                    print(f'[OPTICAM] {fltr} light curves already exist. To overwrite, set overwrite to True.')
-                    continue
+                light_curve_files = [self.out_directory + f"annulus_light_curves/{fltr}_source_{i}.csv" for i in range(len(self.catalogs[fltr]))]
             else:
-                if (os.path.isfile(self.out_directory + f"aperture_light_curves/{fltr}_source_1.csv") or os.path.isfile(self.out_directory + f"annulus_light_curves/{fltr}_source_1.csv")) and not overwrite:
-                    print(f'[OPTICAM] {fltr} light curves already exist. To overwrite, set overwrite to True.')
-                    continue
+                light_curve_files = [self.out_directory + f"aperture_light_curves/{fltr}_source_{i}.csv" for i in range(len(self.catalogs[fltr]))]
+                light_curve_files += [self.out_directory + f"annulus_light_curves/{fltr}_source_{i}.csv" for i in range(len(self.catalogs[fltr]))]
+            
+            # check if light curves already exist
+            if any([os.path.isfile(file) for file in light_curve_files]) and not overwrite:
+                print(f'[OPTICAM] {fltr} light curves already exist. To overwrite, set overwrite to True.')
+                continue
             
             # get aperture radius
             try:
@@ -1198,44 +1201,55 @@ class Reducer:
                 # skip cameras with no sources
                 continue
             
+            # create batches
             batch_size = 1 + int(len(self.camera_files[fltr])/self.number_of_processors)
             batches = [self.camera_files[fltr][i:i + batch_size] for i in range(0, len(self.camera_files[fltr]), batch_size)]
             
+            # perform forced photometry
             if self.verbose:
                 print(f"[OPTICAM] Processing {fltr} files ...")
                 with Pool(self.number_of_processors) as pool:
                     results = list(tqdm(pool.imap(partial(self._perform_forced_photometry_on_batch, fltr=fltr, radius=radius, phot_type=phot_type, remove_cosmic_rays=remove_cosmic_rays), batches), total=len(batches)))
                 print("[OPTICAM] Done.")
+            else:
+                with Pool(self.number_of_processors) as pool:
+                    results = pool.map(partial(self._perform_forced_photometry_on_batch, fltr=fltr, radius=radius, phot_type=phot_type, remove_cosmic_rays=remove_cosmic_rays), batches)
             
+            # get image time stamps
             mjds = [self.mjds[file] for file in self.camera_files[fltr]]
             bdts = [self.bdts[file] for file in self.camera_files[fltr]]
             
             if self.verbose:
                 print('[OPTICAM] Writing light curves to file ...')
             
+            # save light curves
             if phot_type == 'aperture':
+                # parse results
                 aperture_fluxes, aperture_flux_errors, flags = self._parse_forced_photometry_results(results, phot_type)
                 
+                # save light curves
                 if self.verbose:
                     for i in tqdm(range(len(self.catalogs[fltr]))):
                         self._save_aperture_light_curve(mjds, bdts, aperture_fluxes, aperture_flux_errors, flags, fltr, i)
                 else:
                     for i in range(len(self.catalogs[fltr])):
                         self._save_aperture_light_curve(mjds, bdts, aperture_fluxes, aperture_flux_errors, flags, fltr, i)
-            
             elif phot_type == 'annulus':
+                # parse results
                 annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags = self._parse_forced_photometry_results(results, phot_type)
                 
+                # save light curves
                 if self.verbose:
                     for i in tqdm(range(len(self.catalogs[fltr]))):
                         self._save_annulus_light_curve(mjds, bdts, annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags, fltr, i)
                 else:
                     for i in range(len(self.catalogs[fltr])):
                         self._save_annulus_light_curve(mjds, bdts, annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags, fltr, i)
-            
             else:
+                # parse results
                 aperture_fluxes, aperture_flux_errors, annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags = self._parse_forced_photometry_results(results, phot_type)
                 
+                # save light curves
                 if self.verbose:
                     for i in tqdm(range(len(self.catalogs[fltr]))):
                         self._save_aperture_light_curve(mjds, bdts, aperture_fluxes, aperture_flux_errors, flags, fltr, i)
@@ -1268,19 +1282,22 @@ class Reducer:
             The photometric results.
         """
         
+        # define lists to store results
         batch_aperture_fluxes, batch_aperture_flux_errors = [], []
         batch_annulus_fluxes, batch_annulus_flux_errors = [], []
         batch_local_backgrounds, batch_local_background_errors = [], []
         batch_local_backgrounds_per_pixel, batch_local_background_errors_per_pixel = [], []
         flags = []
         
+        # for each file
         for file in batch:
-            
+            # define lists to store results for each file
             aperture_fluxes, aperture_flux_errors = [], []
             annulus_fluxes, annulus_flux_errors = [], []
             local_backgrounds, local_background_errors = [], []
             local_backgrounds_per_pixel, local_background_errors_per_pixel = [], []
             
+            # get image transform and determine quality flag
             if file == self.camera_files[fltr][self.reference_indices[fltr]]:
                 flags.append('A')
             elif file not in self.transforms.keys():
@@ -1289,22 +1306,27 @@ class Reducer:
                 flags.append('A')
                 transform = self.transforms[file]
             
+            # get image data and its error
             data, error = self._get_image_and_error(file, remove_cosmic_rays)
             
+            # get background subtracted image and its error if required
             if phot_type in ['aperture', 'both']:
                 bkg = self.background(data)
                 clean_data = data - bkg.background
                 clean_error = calc_total_error(clean_data, bkg.background_rms, error)
             
+            # for each source
             for i in range(len(self.catalogs[fltr])):
-                
+                # load the source's catalog position
                 catalog_position = (self.catalogs[fltr]["xcentroid"][i], self.catalogs[fltr]["ycentroid"][i])
                 
+                # try to transform the catalog position using the image transform, otherwise use the catalog position
                 try:
                     position = matrix_transform(catalog_position, transform)[0]
                 except:
                     position = catalog_position
                 
+                # perform photometry
                 if phot_type == 'aperture':
                     flux, flux_error = self._compute_aperture_flux(clean_data, clean_error, position, radius)
                     aperture_fluxes.append(flux)
@@ -1322,7 +1344,6 @@ class Reducer:
                     flux, flux_error = self._compute_aperture_flux(clean_data, clean_error, position, radius)
                     aperture_fluxes.append(flux)
                     aperture_flux_errors.append(flux_error)
-                    
                     # annulus
                     flux, flux_error, local_background, local_background_error, local_background_per_pixel, local_background_error_per_pixel = self._compute_annulus_flux(data, error, position, radius)
                     annulus_fluxes.append(flux)
@@ -1332,6 +1353,7 @@ class Reducer:
                     local_backgrounds_per_pixel.append(local_background_per_pixel)
                     local_background_errors_per_pixel.append(local_background_error_per_pixel)
             
+            # append results for this file to the batch lists
             batch_aperture_fluxes.append(aperture_fluxes)
             batch_aperture_flux_errors.append(aperture_flux_errors)
             batch_annulus_fluxes.append(annulus_fluxes)
@@ -1341,6 +1363,7 @@ class Reducer:
             batch_local_backgrounds_per_pixel.append(local_backgrounds_per_pixel)
             batch_local_background_errors_per_pixel.append(local_background_errors_per_pixel)
         
+        # return the results in the correct format for the specified phot_type
         if phot_type == 'aperture':
             return batch_aperture_fluxes, batch_aperture_flux_errors, flags
         elif phot_type == 'annulus':
@@ -1356,9 +1379,9 @@ class Reducer:
         ----------
         results : Tuple
             The photometric results.
-        phot_type : Literal[&quot;aperture&quot;, &quot;annulus&quot;, &quot;both&quot;]
+        phot_type : Literal['aperture', 'annulus', 'both']
             The type of photometry that has been performed.
-
+        
         Returns
         -------
         Tuple
@@ -1396,7 +1419,7 @@ class Reducer:
                 flags += batch_flags[i]
             
             return annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags
-            
+        
         else:
             batch_aperture_fluxes, batch_aperture_flux_errors, batch_annulus_fluxes, batch_annulus_flux_errors, batch_local_backgrounds, batch_local_background_errors, batch_local_backgrounds_per_pixel, batch_local_background_errors_per_pixel, batch_flags = zip(*results)
             
@@ -1628,9 +1651,9 @@ class Reducer:
                    background_method: Literal['global', 'local'] = 'global', tolerance: float = 5.,
                    remove_cosmic_rays: bool = False, overwrite: bool = False) -> None:
         """
-        Perform photometry by fitting for the source positions in each image. This method can misidentify sources if the
-        field is crowded or the alignments are poor. That said, this method can also yield light curves with higher
-        signal-to-noise ratios than forced photometry.
+        Perform photometry by fitting for the source positions in each image. In general, this method should produce
+        light curves with better signal-to-noise ratios than forced photometry. However, this method can misidentify
+        sources if the field is crowded or the alignments are poor.
         
         Parameters
         ----------
@@ -1680,25 +1703,29 @@ class Reducer:
             if len(self.camera_files[fltr]) == 0:
                 continue
             
+            # get list of possible light curve files
             if phot_type == 'normal':
-                if os.path.isfile(self.out_directory + f"normal_light_curves/{fltr}_source_1.csv") and not overwrite:
-                    print(f'[OPTICAM] {fltr} light curves already exist. To overwrite, set overwrite to True.')
-                    continue
+                light_curve_files = [self.out_directory + f"normal_light_curves/{fltr}_source_{i}.csv" for i in range(len(self.catalogs[fltr]))]
             elif phot_type == 'optimal':
-                if os.path.isfile(self.out_directory + f"optimal_light_curves/{fltr}_source_1.csv") and not overwrite:
-                    print(f'[OPTICAM] {fltr} light curves already exist. To overwrite, set overwrite to True.')
-                    continue
+                light_curve_files = [self.out_directory + f"optimal_light_curves/{fltr}_source_{i}.csv" for i in range(len(self.catalogs[fltr]))]
             else:
-                if (os.path.isfile(self.out_directory + f"normal_light_curves/{fltr}_source_1.csv") or os.path.isfile(self.out_directory + f"optimal_light_curves/{fltr}_source_1.csv")) and not overwrite:
-                    print(f'[OPTICAM] {fltr} light curves already exist. To overwrite, set overwrite to True.')
-                    continue
+                light_curve_files = [self.out_directory + f"normal_light_curves/{fltr}_source_{i}.csv" for i in range(len(self.catalogs[fltr]))]
+                light_curve_files += [self.out_directory + f"optimal_light_curves/{fltr}_source_{i}.csv" for i in range(len(self.catalogs[fltr]))]
             
+            # check if light curves already exist
+            if any([os.path.isfile(file) for file in light_curve_files]) and not overwrite:
+                print(f'[OPTICAM] {fltr} light curves already exist. To overwrite, set overwrite to True.')
+                continue
+            
+            # get PSF parameters
             semimajor_sigma = self.aperture_selector(self.catalogs[fltr]["semimajor_sigma"].value)
             semiminor_sigma = self.aperture_selector(self.catalogs[fltr]["semiminor_sigma"].value)
             
+            # create batches
             batch_size = 1 + int(len(self.camera_files[fltr])/self.number_of_processors)
             batches = [self.camera_files[fltr][i:i + batch_size] for i in range(0, len(self.camera_files[fltr]), batch_size)]
             
+            # perform photometry
             if self.verbose:
                 print(f'[OPTICAM] Processing {fltr} files ...')
                 with Pool(self.number_of_processors) as pool:
@@ -1708,6 +1735,7 @@ class Reducer:
                 with Pool(self.number_of_processors) as pool:
                     results = pool.map(partial(self._perform_photometry_on_batch, fltr=fltr, semimajor_sigma=semimajor_sigma, semiminor_sigma=semiminor_sigma, background_method=background_method, tolerance=tolerance, phot_type=phot_type, remove_cosmic_rays=remove_cosmic_rays), batches)
             
+            # parse results
             if phot_type in ['normal', 'optimal']:
                 mjds, bdts, fluxes, flux_errors, detections = self._parse_photometry_results(results, phot_type)
             else:
@@ -1716,6 +1744,7 @@ class Reducer:
             if self.verbose:
                 print('[OPTICAM] Writing light curves to file ...')
             
+            # save light curves
             if self.verbose:
                 for i in tqdm(range(len(self.catalogs[fltr]))):
                     if phot_type == 'normal':
@@ -1735,6 +1764,7 @@ class Reducer:
                         self._save_normal_light_curve(mjds, bdts, normal_fluxes, normal_flux_errors, fltr, i)
                         self._save_optimal_light_curve(mjds, bdts, optimal_fluxes, optimal_flux_errors, fltr, i)
             
+            # plot number of detections per source
             self._plot_number_of_detections_per_source(detections, fltr)
     
     def _perform_photometry_on_batch(self, batch: List[str], fltr: str, semimajor_sigma: float, semiminor_sigma: float,
@@ -1768,87 +1798,114 @@ class Reducer:
             The photometric results.
         """
         
+        # define lists to store results
         batch_normal_fluxes, batch_normal_flux_errors = [], []
         batch_optimal_fluxes, batch_optimal_flux_errors = [], []
         detections = np.zeros(len(self.catalogs[fltr]))
         batch_mjds, batch_bdts = [], []
         
+        # for each file in the batch
         for file in batch:
             # if file does not have a transform, and it's not the reference image, skip it
             if file not in self.transforms.keys() and file != self.camera_files[fltr][self.reference_indices[fltr]]:
                 continue
             
+            # define lists to store results for each file
             normal_fluxes, normal_flux_errors = [], []
             optimal_fluxes, optimal_flux_errors = [], []
             
+            # get image data
             data = get_data(self.data_directory + file)
             
+            # remove cosmic rays if required
             if remove_cosmic_rays:
                 data = cosmicray_lacosmic(data, gain_apply=False)[0]
             
+            # get background subtracted image for source detection
             bkg = self.background(data)
             clean_data = data - bkg.background
             
+            # get error in the background subtracted image using the specified background method
             if background_method == 'global':
                 error = calc_total_error(clean_data, bkg.background_rms, self.gains[file])
             else:
                 error = np.sqrt(data * self.gains[file])
             
+            # find sources in the background subtracted image
             try:
                 segment_map = self.finder(clean_data, threshold=self.threshold * bkg.background_rms)
             except:
                 continue
             
+            # create source table
             file_cat = SourceCatalog(clean_data, segment_map, background=bkg.background)
             file_tbl = file_cat.to_table()
             
+            # for each source in the catalog
             for i in range(len(self.catalogs[fltr])):
+                # locate source in the source table
                 try:
                     position = self._get_position_of_nearest_source(file_tbl, i, fltr, file, tolerance)
                 except:
+                    # if source is not found, append None to results
                     normal_fluxes.append(None)
                     normal_flux_errors.append(None)
                     optimal_fluxes.append(None)
                     optimal_flux_errors.append(None)
                     continue
                 
+                # if source is found, increment the detection counter
                 detections[i] += 1
                 
+                # perform photometry
                 if phot_type == 'normal':
                     if background_method == 'global':
+                        # compute normal flux using global background
                         flux, flux_error = self._compute_normal_flux(clean_data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]['orientation'][i].value)
                     else:
+                        # compute normal flux using local background
                         flux, flux_error = self._compute_normal_flux(data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]['orientation'][i].value, True)
                     
+                    # append results to lists
                     normal_fluxes.append(flux)
                     normal_flux_errors.append(flux_error)
                 
                 elif phot_type == 'optimal':
                     if background_method == 'global':
+                        # compute optimal flux using global background
                         flux, flux_error = self._compute_optimal_flux(clean_data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]['orientation'][i].value)
                     else:
+                        # compute optimal flux using local background
                         flux, flux_error = self._compute_optimal_flux(data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]['orientation'][i].value, True)
                     
+                    # append results to lists
                     optimal_fluxes.append(flux)
                     optimal_flux_errors.append(flux_error)
                 
                 else:
                     if background_method == 'global':
+                        # compute normal flux using global background
                         flux, flux_error = self._compute_normal_flux(clean_data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]['orientation'][i].value)
                     else:
+                        # compute normal flux using local background
                         flux, flux_error = self._compute_normal_flux(data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]['orientation'][i].value, True)
                     
+                    # append results to lists
                     normal_fluxes.append(flux)
                     normal_flux_errors.append(flux_error)
                     
                     if background_method == 'global':
+                        # compute optimal flux using global background
                         flux, flux_error = self._compute_optimal_flux(clean_data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]['orientation'][i].value)
                     else:
+                        # compute optimal flux using local background
                         flux, flux_error = self._compute_optimal_flux(data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]['orientation'][i].value, True)
                     
+                    # append results to lists
                     optimal_fluxes.append(flux)
                     optimal_flux_errors.append(flux_error)
             
+            # append results for this file to the batch lists
             batch_mjds.append(self.mjds[file])
             batch_bdts.append(self.bdts[file])
             batch_normal_fluxes.append(normal_fluxes)
@@ -1856,6 +1913,7 @@ class Reducer:
             batch_optimal_fluxes.append(optimal_fluxes)
             batch_optimal_flux_errors.append(optimal_flux_errors)
         
+        # return the results in the correct format for the specified phot_type
         if phot_type == 'normal':
             return batch_mjds, batch_bdts, batch_normal_fluxes, batch_normal_flux_errors, detections
         elif phot_type == 'optimal':
@@ -1866,14 +1924,14 @@ class Reducer:
     def _parse_photometry_results(self, results: Tuple, phot_type: Literal['normal', 'optimal', 'both']) -> Tuple:
         """
         Parse the photometry results.
-
+        
         Parameters
         ----------
         results : Tuple
             The photometry results.
         phot_type : Literal[&#39;normal&#39;, &#39;optimal&#39;, &#39;both&#39;]
             The type of photometry that has been performed.
-
+        
         Returns
         -------
         Tuple
