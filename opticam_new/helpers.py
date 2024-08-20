@@ -1,6 +1,6 @@
 from astropy.io import fits
 import numpy as np
-from numpy.typing import ArrayLike
+from numpy.typing import ArrayLike, NDArray
 from typing import Literal, Tuple
 from astropy.time import Time
 from astropy.coordinates import EarthLocation, SkyCoord
@@ -195,6 +195,7 @@ def euclidean_distance(p1: Tuple[float, float], p2: Tuple[float, float]) -> floa
     
     return np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
 
+
 def find_closest_pair(point: ArrayLike, points: ArrayLike, threshold: int) -> ArrayLike:
     
     distances = [(euclidean_distance(point, point2), point2) for point2 in points]  # compute distances
@@ -206,6 +207,7 @@ def find_closest_pair(point: ArrayLike, points: ArrayLike, threshold: int) -> Ar
     
     # return the closest pair
     return distances[0][1]
+
 
 def clip_extended_sources(table: QTable):
     
@@ -223,3 +225,31 @@ def clip_extended_sources(table: QTable):
     table['label'] = np.arange(1, len(table) + 1)  # renumber labels
     
     return table
+
+
+def rebin_image(image: NDArray, factor: int) -> NDArray:
+    """
+    Rebin an image by a given factor.
+    
+    Parameters
+    ----------
+    image : NDArray
+        The image to rebin.
+    factor : int
+        The factor to rebin by.
+    
+    Returns
+    -------
+    NDArray
+        The rebinned image.
+    """
+    
+    if image.shape[0] % factor != 0 or image.shape[1] % factor != 0:
+        raise ValueError("[OPTICAM] The dimensions of the input data must be divisible by the rebinning factor.")
+    
+    # reshape the array to make it ready for block summation
+    shape = (image.shape[0] // factor, factor, image.shape[1] // factor, factor)
+    reshaped_data = image.reshape(shape)
+    
+    # return rebinned image
+    return reshaped_data.sum(axis=(1, 3))

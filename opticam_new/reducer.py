@@ -29,7 +29,7 @@ from scipy.spatial.distance import cdist
 from scipy.optimize import linear_sum_assignment
 from ccdproc import cosmicray_lacosmic
 
-from opticam_new.helpers import get_data, log_binnings, log_filters, default_aperture_selector, apply_barycentric_correction, clip_extended_sources
+from opticam_new.helpers import get_data, log_binnings, log_filters, default_aperture_selector, apply_barycentric_correction, clip_extended_sources, rebin_image
 from opticam_new.background import Background
 from opticam_new.local_background import EllipticalLocalBackground
 from opticam_new.finder import CrowdedFinder, Finder
@@ -51,6 +51,7 @@ class Reducer:
         self,
         data_directory: str,
         out_directory: str,
+        rebin_factor: int = 1,
         threshold: float = 5,
         background: Callable = None,
         local_background: Callable = None,
@@ -71,6 +72,10 @@ class Reducer:
             The path to the directory containing the data.
         out_directory: str
             The path to the directory to save the output files.
+        rebin_factor: int, optional
+            The rebinning factor, by default 1 (no rebinning). The rebinning factor is the factor by which the image is
+            rebinned in both dimensions (i.e., a rebin_factor of 2 will reduce the image size by a factor of 4).
+            Rebinning can improve the detectability of faint sources.
         threshold: float, optional
             The threshold for source finding, by default 5. The threshold is the background RMS factor above which
             sources are detected. For faint sources, a lower threshold may be required.
@@ -142,6 +147,7 @@ class Reducer:
             os.makedirs(self.out_directory + "misc")
         
         # set parameters
+        self.rebin_factor = rebin_factor
         self.fwhm_scale = 2 * np.sqrt(2 * np.log(2))  # FWHM scale factor
         self.aperture_selector = default_aperture_selector if aperture_selector is None else aperture_selector
         self.scale = scale
@@ -179,7 +185,7 @@ class Reducer:
         
         # define background calculator and write input parameters to file
         if background is None:
-            self.background = Background(box_size=int(64/self.binning_scale))
+            self.background = Background(box_size=int(64 / (self.binning_scale * self.rebin_factor)))
         else:
             self.background = background
         # TODO: improve parameter logging to file
@@ -196,9 +202,9 @@ class Reducer:
         
         # define source finder and write input parameters to file
         if finder == 'default':
-            self.finder = Finder(npixels=int(128 / (self.binning_scale * 2)), border_width=int(64 / (self.binning_scale * 2)))
+            self.finder = Finder(npixels=int(128 / (self.binning_scale * self.rebin_factor)**2), border_width=int(64 / (self.binning_scale * self.rebin_factor)))
         elif finder == 'crowded':
-            self.finder = CrowdedFinder(npixels=int(128 / (self.binning_scale * 2)), border_width=int(64 / (self.binning_scale * 2)))
+            self.finder = CrowdedFinder(npixels=int(128 / (self.binning_scale * self.rebin_factor)**2), border_width=int(64 / (self.binning_scale * self.rebin_factor)))
         elif callable(finder):
             self.finder = finder
         else:
@@ -477,6 +483,9 @@ class Reducer:
         
         data = get_data(self.data_directory + file)
         
+        if self.rebin_factor > 1:
+                data = rebin_image(data, self.rebin_factor)
+        
         if remove_cosmic_rays:
             data = cosmicray_lacosmic(data, gain_apply=False)[0]
         
@@ -523,6 +532,8 @@ class Reducer:
                 continue
             
             reference_image = get_data(self.data_directory + self.camera_files[fltr][self.reference_indices[fltr]])  # get reference image
+            if self.rebin_factor > 1:
+                reference_image = rebin_image(reference_image, self.rebin_factor)
             reference_coords = self.get_source_coords_from_image(reference_image)  # get source coordinates in descending order of brightness
             
             if len(reference_coords) < n_alignment_sources:
@@ -615,6 +626,9 @@ class Reducer:
         
         for file in batch:
             data = get_data(self.data_directory + file)  # get image data
+            
+            if self.rebin_factor > 1:
+                data = rebin_image(data, self.rebin_factor)
             
             if self.remove_cosmic_rays:
                 data = cosmicray_lacosmic(data, gain_apply=False)[0]
@@ -958,6 +972,9 @@ class Reducer:
         for file in batch:
             data = get_data(self.data_directory + file)
             
+            if self.rebin_factor > 1:
+                data = rebin_image(data, self.rebin_factor)
+            
             bkg = self.background(data)
             clean_data = data - bkg.background
             
@@ -1092,6 +1109,9 @@ class Reducer:
         
         for file in batch:
             data = get_data(self.data_directory + file)
+            
+            if self.rebin_factor > 1:
+                data = rebin_image(data, self.rebin_factor)
             
             clipped_data = SigmaClip(3, maxiters=10)(data, axis=1, masked=False)
             
@@ -1816,6 +1836,9 @@ class Reducer:
             
             # get image data
             data = get_data(self.data_directory + file)
+            
+            if self.rebin_factor > 1:
+                data = rebin_image(data, self.rebin_factor)
             
             # remove cosmic rays if required
             if remove_cosmic_rays:
