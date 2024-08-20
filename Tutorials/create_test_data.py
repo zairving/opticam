@@ -24,7 +24,7 @@ def variable_function(i: float) -> float:
     return 10*np.sin(2*np.pi*i/50)
 
 
-def main():
+def main(overwrite: bool = False):
     # create directory if it does not exist
     if not os.path.isdir('Data/'):
         os.mkdir('Data/')
@@ -77,7 +77,10 @@ def main():
             hdu.header["UT"] = f"2024-01-01 {hh}:{mm}:{ss}"
             
             # save fits file
-            hdu.writeto(f"Data/{fltr}-band_image_{i}.fits", overwrite=True)
+            try:
+                hdu.writeto(f"Data/{fltr}-band_image_{i}.fits", overwrite=overwrite)
+            except:
+                continue
 
 
 if __name__ == "__main__":
