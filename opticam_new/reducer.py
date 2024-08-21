@@ -435,7 +435,7 @@ class Reducer:
 
 
 
-    def get_source_coords_from_image(self, image: ArrayLike, bkg: Background2D = None) -> ArrayLike:
+    def get_source_coords_from_image(self, image: ArrayLike, bkg: Background2D = None) -> NDArray:
         """
         Get an array of source coordinates from an image in descending order of source brightness.
         
@@ -498,7 +498,7 @@ class Reducer:
 
     def initialise_catalogs(self, n_alignment_sources: int = 3,
                             transform_type: Literal['euclidean', 'similarity', 'translation'] = 'translation',
-                            overwrite: bool = False) -> None:
+                            overwrite: bool = False, show_diagnostic_plots: bool = False) -> None:
         """
         Initialise the source catalogs for each camera. Some aspects of this method are parallelised for speed.
         
@@ -507,8 +507,14 @@ class Reducer:
         n_alignment_sources : int, optional
             The number of sources to use for image alignment, by default 3. Must be >= 3. The brightest
             n_alignment_sources sources are used for image alignment.
+        transform_type : Literal['euclidean', 'similarity', 'translation'], optional
+            The type of transform to use for image alignment, by default 'translation'. 'translation' performs simple
+            x, y translations, while 'euclidean' includes rotation and 'similarity' includes rotation and scaling.
         overwrite : bool, optional
             Whether to overwrite existing catalogs, by default False.
+        show_diagnostic_plots : bool, optional
+            Whether to show diagnostic plots, by default False. Diagnostic plots are saved to out_directory, so this
+            parameter only affects whether the plots are displayed in the console.
         """
         
         # if catalogs already exist, skip
@@ -565,7 +571,7 @@ class Reducer:
             
             try:
                 # identify sources in stacked image
-                segment_map = self.finder(stacked_image, self.threshold*threshold)
+                segment_map = self.finder(stacked_image, threshold)
             except:
                 if self.verbose:
                     print('[OPTICAM] No sources detected in the stacked ' + fltr + ' image.')
@@ -582,13 +588,15 @@ class Reducer:
             self.catalogs[fltr].write(self.out_directory + f"cat/{fltr}_catalog.ecsv", format="ascii.ecsv",
                                             overwrite=True)
         
-        # render plots
+        # compile catalog
         self._plot_catalog(stacked_images)
-        # self._show_source_psfs(stacked_images)
-        # self._plot_background_meshes(stacked_images, stacked_backgrounds)
-        self._plot_time_between_files()  # plot time between observations
-        self._plot_backgrounds(background_median, background_rms)  # plot background medians and RMSs
-        # self._plot_stacked_backgrounds(stacked_images)
+        
+        # diagnostic plots
+        self._plot_time_between_files(show_diagnostic_plots)  # plot time between observations
+        self._plot_backgrounds(background_median, background_rms, show_diagnostic_plots)  # plot background medians and RMSs
+        self._plot_background_meshes(stacked_images, show_diagnostic_plots)  # plot background meshes
+        for (fltr, stacked_image) in stacked_images.items():
+            self._visualise_psfs(stacked_image, fltr, show_diagnostic_plots)
         
         # save transforms to file
         with open(self.out_directory + "cat/transforms.json", "w") as file:
@@ -600,7 +608,9 @@ class Reducer:
                 for file in self.unaligned_files:
                     unaligned_file.write(file + "\n")
     
-    def _align_and_stack_image_batch(self, batch: List[str], reference_image: NDArray, reference_coords, n_sources, transform_type) -> Tuple[Dict[str, List], List, ArrayLike, List, List]:
+    def _align_and_stack_image_batch(self, batch: List[str], reference_image: NDArray,
+                                     reference_coords: NDArray, n_sources: int,
+                                     transform_type: Literal['euclidean', 'similarity', 'translation']) -> Tuple:
         """
         Align and stack a batch of images.
         
@@ -608,12 +618,18 @@ class Reducer:
         ----------
         batch : List[str]
             The list of file names in the batch.
-        reference_image : ArrayLike
-            The reference image to align the batch images to.
+        reference_image : NDArray
+            The reference image.
+        reference_coords : NDArray
+            The source coordinates in the reference image.
+        n_sources : int
+            The number of sources to use for image alignment.
+        transform_type : Literal['euclidean', 'similarity', 'translation']
+            The type of transform to use for image alignment.
         
         Returns
         -------
-        Tuple[Dict[str, List], List, ArrayLike, List, List]
+        Tuple[Dict[str, List], List, NDArray, List, List]
             The transforms, unaligned files, stacked image, background medians, and background RMSs.
         """
         
@@ -755,20 +771,30 @@ class Reducer:
         else:
             plt.close(fig)
     
-    def _plot_background_meshes(self, stacked_images: Dict[str, ArrayLike],
-                                stacked_backgrounds: Dict[str, ArrayLike]) -> None:
+    def _plot_background_meshes(self, stacked_images: Dict[str, ArrayLike], show: bool) -> None:
+        """
+        Plot the background meshes on top of the catalog images.
+        
+        Parameters
+        ----------
+        stacked_images : Dict[str, ArrayLike]
+            The stacked images for each camera.
+        show : bool
+            Whether to display the plot.
+        """
         
         fig, ax = plt.subplots(ncols=len(self.catalogs), tight_layout=True, figsize=(len(self.catalogs) * 5, 5))
         
         for i, fltr in enumerate(list(self.catalogs.keys())):
             
             plot_image = np.clip(stacked_images[fltr], 0, None)
+            bkg = self.background(stacked_images[fltr])
             
             try:
                 # plot background mesh
                 ax[i].imshow(plot_image, origin="lower", cmap="Greys_r", interpolation="nearest",
                              norm=simple_norm(plot_image, stretch="log"))
-                stacked_backgrounds[fltr].plot_meshes(ax=ax[i], outlines=True, marker='.', color='cyan', alpha=0.3)
+                bkg.plot_meshes(ax=ax[i], outlines=True, marker='.', color='cyan', alpha=0.3)
                 
                 #label plot
                 ax[i].set_title(fltr)
@@ -778,7 +804,7 @@ class Reducer:
                 # plot background mesh
                 ax.imshow(plot_image, origin="lower", cmap="Greys_r", interpolation="nearest",
                           norm=simple_norm(plot_image, stretch="log"))
-                stacked_backgrounds[fltr].plot_meshes(ax=ax, outlines=True, marker='.', color='cyan', alpha=0.3)
+                bkg.plot_meshes(ax=ax, outlines=True, marker='.', color='cyan', alpha=0.3)
                 
                 # label plot
                 ax.set_title(fltr)
@@ -787,14 +813,19 @@ class Reducer:
         
         fig.savefig(self.out_directory + "diag/background_meshes.png")
         
-        if self.show_plots:
+        if show and self.show_plots:
             plt.show(fig)
         else:
             plt.close(fig)
     
-    def _plot_time_between_files(self) -> None:
+    def _plot_time_between_files(self, show: bool) -> None:
         """
         Plot the times between each file for each camera.
+        
+        Parameters
+        ----------
+        show : bool
+            Whether to display the plot.
         """
         
         fig, axs = plt.subplots(nrows=2, ncols=len(self.catalogs), tight_layout=True, figsize=((2 * len(self.catalogs) / 3) * 6.4, 2 * 4.8))
@@ -839,12 +870,12 @@ class Reducer:
         
         fig.savefig(self.out_directory + "diag/header_times.png")
         
-        if self.show_plots:
+        if show and self.show_plots:
             plt.show(fig)
         else:
             plt.close(fig)
     
-    def _plot_backgrounds(self, background_median: Dict[str, List], background_rms: Dict[str, List]) -> None:
+    def _plot_backgrounds(self, background_median: Dict[str, List], background_rms: Dict[str, List], show: bool) -> None:
         """
         Plot the time-varying background for each camera.
         
@@ -854,6 +885,8 @@ class Reducer:
             The median background for each camera.
         background_rms : Dict[str, List]
             The background RMS for each camera.
+        show: bool
+            Whether to display the plot.
         """
         
         fig, axs = plt.subplots(nrows=2, ncols=len(self.catalogs), tight_layout=True, figsize=((2 * len(self.catalogs) / 3) * 6.4, 2 * 4.8), sharex='col')
@@ -904,10 +937,80 @@ class Reducer:
         fig.savefig(self.out_directory + "diag/background.png")
         
         # either show or close plot
-        if self.show_plots:
+        if show and self.show_plots:
             plt.show()
         else:
             plt.close(fig)
+    
+    def _visualise_psfs(self, image: NDArray, fltr: str, show: bool) -> None:
+        """
+        Generate PSF plots for each source in an image.
+        
+        Parameters
+        ----------
+        image : NDArray
+            The image (not background subtracted).
+        fltr : str
+            The image filter.
+        show: bool
+            Whether to display the plot.
+        """
+        
+        # estimate source threshold
+        try:
+            threshold = detect_threshold(image, nsigma=self.threshold, sigma_clip=SigmaClip(sigma=3, maxiters=10))
+        except:
+            print('[OPTICAM] Unable to estimate source detection threshold when trying to visualise source PSFs.')
+            return
+        
+        # find sources in image
+        try:
+            segm = self.finder(image, threshold) 
+        except:
+            print('[OPTICAM] No sources detected when trying to visualise source PSFs.')
+            return
+        
+        # get source table
+        tbl = SourceCatalog(image, segm).to_table()
+        
+        
+        for source in tbl['label']:
+            # get pixel ranges for source
+            x_range = np.arange(int(tbl['xcentroid'][source - 1]) - int(tbl['semimajor_sigma'][source - 1].value) * 5, int(tbl['xcentroid'][source - 1]) + int(tbl['semimajor_sigma'][source - 1].value) * 5)
+            y_range = np.arange(int(tbl['ycentroid'][source - 1]) - int(tbl['semimajor_sigma'][source - 1].value) * 5, int(tbl['ycentroid'][source - 1]) + int(tbl['semimajor_sigma'][source - 1].value) * 5)
+            
+            # create mask
+            mask = np.zeros_like(image, dtype=bool)
+            for x in x_range:
+                for y in y_range:
+                    mask[y, x] = True
+            
+            # isolate source
+            rows_to_keep = np.any(mask, axis=1)
+            star_data = image[rows_to_keep, :]
+            cols_to_keep = np.any(mask, axis=0)
+            star_data = star_data[:, cols_to_keep]
+            
+            fig = plt.figure()
+            ax = fig.add_subplot(projection='3d')
+            
+            x, y = np.meshgrid(x_range, y_range)
+            
+            ax.plot_surface(x, y, star_data, edgecolor='r', rstride=2, cstride=2, color='none', lw=.5)
+            ax.contour(x, y, star_data, 20, zdir='x', offset=ax.set_xlim()[0], colors='black', linewidths=.5)
+            ax.contour(x, y, star_data, 20, zdir='y', offset=ax.set_ylim()[1], colors='black', linewidths=.5)
+            ax.contour(x, y, star_data, 10, zdir='z', offset=ax.set_zlim()[0], colors='black', linewidths=.5)
+            
+            ax.view_init(30, -45, 0)
+            
+            ax.set_title(f'{fltr} source {source}')
+            
+            fig.savefig(self.out_directory + f'diag/{fltr}_source_{source}_psf.png')
+            
+            if show and self.show_plots:
+                plt.show()
+            else:
+                plt.close(fig)
 
 
 
