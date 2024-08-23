@@ -49,8 +49,11 @@ class Reducer:
     
     def __init__(
         self,
-        data_directory: str,
         out_directory: str,
+        data_directory: str = None,
+        c1_directory: str = None,
+        c2_directory: str = None,
+        c3_directory: str = None,
         rebin_factor: int = 1,
         threshold: float = 5,
         background: Callable = None,
@@ -68,10 +71,21 @@ class Reducer:
         
         Parameters
         ----------
-        data_directory: str
-            The path to the directory containing the data.
         out_directory: str
             The path to the directory to save the output files.
+        data_directory: str, optional
+            The path to the directory containing the data, by default None. If None, any of c1_directory, c2_directory,
+            or c3_directory must be defined. If data_directory is defined, c1_directory, c2_directory, and c3_directory
+            are ignored.
+        c1_directory: str, optional
+            The path to the directory containing the C1 data, by default None. If None, any of data_directory,
+            c2_directory, or c3_directory must be defined. This parameter is ignored if data_directory is defined.
+        c2_directory: str, optional
+            The path to the directory containing the C2 data, by default None. If None, any of data_directory,
+            c1_directory, or c3_directory must be defined. This parameter is ignored if data_directory is defined.
+        c3_directory: str, optional
+            The path to the directory containing the C3 data, by default None. If None, any of data_directory,
+            c1_directory, or c2_directory must be defined. This parameter is ignored if data_directory is defined.
         rebin_factor: int, optional
             The rebinning factor, by default 1 (no rebinning). The rebinning factor is the factor by which the image is
             rebinned in both dimensions (i.e., a rebin_factor of 2 will reduce the image size by a factor of 4).
@@ -118,10 +132,6 @@ class Reducer:
         
         self.verbose = verbose
         
-        self.data_directory = data_directory
-        if not self.data_directory[-1].endswith("/"):
-            self.data_directory += "/"
-        
         self.out_directory = out_directory
         if not self.out_directory.endswith("/"):
             self.out_directory += "/"
@@ -146,6 +156,27 @@ class Reducer:
         if not os.path.isdir(self.out_directory + "misc"):
             os.makedirs(self.out_directory + "misc")
         
+        self.data_directory = data_directory
+        self.c1_directory = c1_directory
+        self.c2_directory = c2_directory
+        self.c3_directory = c3_directory
+        
+        assert self.data_directory is not None or self.c1_directory is not None or self.c2_directory is not None or self.c3_directory is not None, "[OPTICAM] At least one of data_directory, c1_directory, c2_directory, or c3_directory must be defined."
+        
+        if self.data_directory is not None:
+            if not self.data_directory[-1].endswith("/"):
+                self.data_directory += "/"
+        else:
+            if self.c1_directory is not None:
+                if not self.c1_directory[-1].endswith("/"):
+                    self.c1_directory += "/"
+            if self.c2_directory is not None:
+                if not self.c2_directory[-1].endswith("/"):
+                    self.c2_directory += "/"
+            if self.c3_directory is not None:
+                if not self.c3_directory[-1].endswith("/"):
+                    self.c3_directory += "/"
+        
         # set parameters
         self.rebin_factor = rebin_factor
         self.fwhm_scale = 2 * np.sqrt(2 * np.log(2))  # FWHM scale factor
@@ -156,7 +187,30 @@ class Reducer:
         self.number_of_processors = number_of_processors
         self.show_plots = show_plots
         
-        self.file_names = sorted(os.listdir(self.data_directory))  # get list of file names
+        # define file paths
+        self.file_paths = []
+        if self.data_directory is not None:
+            file_names = sorted(os.listdir(self.data_directory))
+            for file in file_names:
+                if file.endswith('.fit') or file.endswith('.fits') or file.endswith('.fit.gz') or file.endswith('.fits.gz'):
+                    self.file_paths.append(self.data_directory + file)
+        else:
+            if self.c1_directory is not None:
+                file_names = sorted(os.listdir(self.c1_directory))
+                for file in file_names:
+                    if file.endswith('.fit') or file.endswith('.fits') or file.endswith('.fit.gz') or file.endswith('.fits.gz'):
+                        self.file_paths.append(self.c1_directory + file)
+            if self.c2_directory is not None:
+                file_names = sorted(os.listdir(self.c2_directory))
+                for file in file_names:
+                    if file.endswith('.fit') or file.endswith('.fits') or file.endswith('.fit.gz') or file.endswith('.fits.gz'):
+                        self.file_paths.append(self.c2_directory + file)
+            if self.c3_directory is not None:
+                file_names = sorted(os.listdir(self.c3_directory))
+                for file in file_names:
+                    if file.endswith('.fit') or file.endswith('.fits') or file.endswith('.fit.gz') or file.endswith('.fits.gz'):
+                        self.file_paths.append(self.c3_directory + file)
+        
         self._scan_data_directory()  # scan data directory
         
         # define colours for circling sources in catalogs
@@ -178,7 +232,7 @@ class Reducer:
             "aperture scale": scale,
             "threshold": threshold,
         }
-        param_dict.update({"number of files": len(self.file_names)})
+        param_dict.update({"number of files": len(self.file_paths)})
         param_dict.update({f"number of {fltr} files": len(self.camera_files[fltr]) for fltr in list(self.camera_files.keys())})
         with open(self.out_directory + "misc/reducer_input.json", "w") as file:
             json.dump(param_dict, file, indent=4)
@@ -251,8 +305,8 @@ class Reducer:
             If the binning is not consistent.
         """
         
-        batch_size = 1 + int(len(self.file_names)/self.number_of_processors)
-        batches = [self.file_names[i:i + batch_size] for i in range(0, len(self.file_names), batch_size)]
+        batch_size = 1 + int(len(self.file_paths)/self.number_of_processors)
+        batches = [self.file_paths[i:i + batch_size] for i in range(0, len(self.file_paths), batch_size)]
         
         if self.verbose:
             print("[OPTICAM] Scanning files ...")
@@ -277,10 +331,14 @@ class Reducer:
             self.camera_files.update({fltr + '-band': []})  # prepare dictionary entry
             
             # for each file
-            for file in self.file_names:
+            for file in self.file_paths:
                 # if the file filter matches the current filter
                 if filters[file] == fltr:
                     self.camera_files[fltr + '-band'].append(file)  # add file name to dict list
+        
+        # sort camera files so filters match camera order
+        key_order = {'g-band': 0, 'u-band': 0, 'r-band': 1, 'i-band': 2, 'z-band': 2}
+        self.camera_files = dict(sorted(self.camera_files.items(), key=lambda x: key_order[x[0]]))
         
         # sort files by time
         for key in list(self.camera_files.keys()):
@@ -330,7 +388,7 @@ class Reducer:
         gains = {}
         
         for file in batch:
-            with fits.open(self.data_directory + file) as hdul:
+            with fits.open(file) as hdul:
                 binnings[file] = hdul[0].header["BINNING"]
                 gains[file] = hdul[0].header["GAIN"]
                 
@@ -414,7 +472,7 @@ class Reducer:
         # ensure there are no more than three filters
         unique_filters = np.unique(list(filters.values()))
         if unique_filters.size > 3:
-            log_filters(self.data_directory, self.out_directory)
+            log_filters(self.file_paths, self.out_directory)
             raise ValueError("[OPTICAM] More than 3 filters found. Image filters have been logged to {self.out_directory}misc/filters.json.")
         else:
             with open(self.out_directory + "misc/filters.txt", "w") as file:
@@ -424,7 +482,7 @@ class Reducer:
         # ensure there is at most one type of binning
         unique_binning = np.unique(list(binnings.values()))
         if len(unique_binning) > 1:
-            log_binnings(self.data_directory, self.out_directory)
+            log_binnings(self.file_paths, self.out_directory)
             raise ValueError(f"[OPTICAM] Inconsistent binning detected. All images must have the same binning. Image binnings have been logged to {self.out_directory}diag/binnings.json.")
         else:
             self.binning = unique_binning[0]
@@ -481,7 +539,7 @@ class Reducer:
             The image and its error.
         """
         
-        data = get_data(self.data_directory + file)
+        data = get_data(file)
         
         if self.rebin_factor > 1:
                 data = rebin_image(data, self.rebin_factor)
@@ -537,7 +595,7 @@ class Reducer:
             if len(self.camera_files[fltr]) == 0:
                 continue
             
-            reference_image = get_data(self.data_directory + self.camera_files[fltr][self.reference_indices[fltr]])  # get reference image
+            reference_image = get_data(self.camera_files[fltr][self.reference_indices[fltr]])  # get reference image
             if self.rebin_factor > 1:
                 reference_image = rebin_image(reference_image, self.rebin_factor)
             reference_coords = self.get_source_coords_from_image(reference_image)  # get source coordinates in descending order of brightness
@@ -641,7 +699,7 @@ class Reducer:
         stacked_image = np.zeros_like(reference_image)
         
         for file in batch:
-            data = get_data(self.data_directory + file)  # get image data
+            data = get_data(file)  # get image data
             
             if self.rebin_factor > 1:
                 data = rebin_image(data, self.rebin_factor)
@@ -736,6 +794,10 @@ class Reducer:
             # plot stacked image
             ax[i].imshow(plot_image, origin="lower", cmap="Greys_r", interpolation="nearest",
                             norm=simple_norm(plot_image, stretch="log"))
+            
+            # plot aperture
+            ax[i].add_patch(Circle(xy=(plot_image.shape[1] / 2, plot_image.shape[0] / 2),
+                                   radius=0.5*plot_image.shape[1], edgecolor='red', facecolor='none', lw=1, ls='--'))
             
             # get aperture radius
             radius = self.scale*self.aperture_selector(self.catalogs[fltr]["semimajor_sigma"].value)
@@ -1073,7 +1135,7 @@ class Reducer:
         """
         
         for file in batch:
-            data = get_data(self.data_directory + file)
+            data = get_data(file)
             
             if self.rebin_factor > 1:
                 data = rebin_image(data, self.rebin_factor)
@@ -1211,7 +1273,7 @@ class Reducer:
     def _create_background_gif_frames(self, batch: List[str], fltr: str) -> None:
         
         for file in batch:
-            data = get_data(self.data_directory + file)
+            data = get_data(file)
             
             if self.rebin_factor > 1:
                 data = rebin_image(data, self.rebin_factor)
@@ -1938,7 +2000,7 @@ class Reducer:
             optimal_fluxes, optimal_flux_errors = [], []
             
             # get image data
-            data = get_data(self.data_directory + file)
+            data = get_data(file)
             
             if self.rebin_factor > 1:
                 data = rebin_image(data, self.rebin_factor)
