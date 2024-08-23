@@ -1035,11 +1035,14 @@ class Reducer:
         # get source table
         tbl = SourceCatalog(image, segm).to_table()
         
+        x_lo, x_hi = 0, image.shape[1]
+        y_lo, y_hi = 0, image.shape[0]
         
         for source in tbl['label']:
-            # get pixel ranges for source
-            x_range = np.arange(int(tbl['xcentroid'][source - 1]) - int(tbl['semimajor_sigma'][source - 1].value) * 5, int(tbl['xcentroid'][source - 1]) + int(tbl['semimajor_sigma'][source - 1].value) * 5)
-            y_range = np.arange(int(tbl['ycentroid'][source - 1]) - int(tbl['semimajor_sigma'][source - 1].value) * 5, int(tbl['ycentroid'][source - 1]) + int(tbl['semimajor_sigma'][source - 1].value) * 5)
+            x, y = int(tbl['xcentroid'][source - 1]), int(tbl['ycentroid'][source - 1])  # source position
+            w = int(tbl['semimajor_sigma'][source - 1].value) * 5  # source width
+            x_range = np.arange(min(x_lo, int(x - w)), max(x_hi, int(x + w)))  # x range
+            y_range = np.arange(min(y_lo, int(y - w)), max(y_hi, int(y + w)))  # y range
             
             # create mask
             mask = np.zeros_like(image, dtype=bool)
