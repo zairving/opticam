@@ -1,14 +1,13 @@
 from astropy.io import fits
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
-from typing import Literal, Tuple
+from typing import Literal, List, Tuple
 from astropy.time import Time
 from astropy.coordinates import EarthLocation, SkyCoord
 import astropy.units as u
 import os
 from astropy.io import fits
 import json
-import itertools
 from astropy.table import QTable
 
 
@@ -86,12 +85,12 @@ def get_time(file: str, date_key: Literal["UT", "GPSTIME"]) -> float:
     return time
 
 
-def log_binnings(data_directory: str, out_directory: str):
+def log_binnings(file_paths: List[str], out_directory: str):
     
     file_binnings = {}
     
-    for file in sorted(os.listdir(data_directory)):
-        with fits.open(data_directory + file) as hdul:
+    for file in file_paths:
+        with fits.open(file) as hdul:
             binning = hdul[0].header["BINNING"]
             if binning in file_binnings:
                 file_binnings[binning].append(file)
@@ -102,12 +101,12 @@ def log_binnings(data_directory: str, out_directory: str):
         json.dump(file_binnings, f, indent=4)
 
 
-def log_filters(data_directory: str, out_directory: str):
+def log_filters(file_paths: List[str], out_directory: str):
     
     file_filters = {}
     
-    for file in sorted(os.listdir(data_directory)):
-        with fits.open(data_directory + file) as hdul:
+    for file in file_paths:
+        with fits.open(file) as hdul:
             fltr = hdul[0].header["FILTER"]
             if fltr in file_filters:
                 file_filters[fltr].append(file)
