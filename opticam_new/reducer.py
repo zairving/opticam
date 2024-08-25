@@ -308,19 +308,14 @@ class Reducer:
         batch_size = 1 + int(len(self.file_paths)/self.number_of_processors)
         batches = [self.file_paths[i:i + batch_size] for i in range(0, len(self.file_paths), batch_size)]
         
-        if self.verbose:
-            print("[OPTICAM] Scanning files ...")
-        
         self.camera_files = {}  # filter : [files]
         
         if self.verbose:
-            # scan files in parallel with progress bar
-            with Pool(self.number_of_processors) as pool:
-                results = list(tqdm(pool.imap(self._scan_batch, batches), total=len(batches)))
-        else:
-            # scan files in parallel without progress bar
-            with Pool(self.number_of_processors) as pool:
-                results = pool.map(self._scan_batch, batches)
+            print("[OPTICAM] Scanning files ...")
+        
+        # scan files in batches
+        with Pool(self.number_of_processors) as pool:
+            results = pool.map(self._scan_batch, batches)
         
         # unpack results
         self.mjds, self.bdts, filters, self.gains = self._parse_batch_scanning_results(results)
@@ -387,7 +382,7 @@ class Reducer:
         binnings = {}
         gains = {}
         
-        for file in batch:
+        for file in tqdm(batch, disable=not self.verbose):
             with fits.open(file) as hdul:
                 binnings[file] = hdul[0].header["BINNING"]
                 gains[file] = hdul[0].header["GAIN"]
@@ -608,14 +603,12 @@ class Reducer:
             batch_size = 1 + int(len(self.camera_files[fltr])/self.number_of_processors)
             batches = [self.camera_files[fltr][i:i + batch_size] for i in range(0, len(self.camera_files[fltr]), batch_size)]
             
-            # align and stack images
             if self.verbose:
                 print('[OPTICAM] Aligning and stacking ' + fltr + ' images in batches ...')
-                with Pool(self.number_of_processors) as pool:
-                    results = list(tqdm(pool.imap(partial(self._align_and_stack_image_batch, reference_image=reference_image, reference_coords=reference_coords, n_sources=n_alignment_sources, transform_type=transform_type), batches), total=len(batches)))
-            else:
-                with Pool(self.number_of_processors) as pool:
-                    results = pool.map(partial(self._align_and_stack_image_batch, reference_image=reference_image, reference_coords=reference_coords, n_sources=n_alignment_sources, transform_type=transform_type), batches)
+            
+            # align and stack images in batches
+            with Pool(self.number_of_processors) as pool:
+                results = pool.map(partial(self._align_and_stack_image_batch, reference_image=reference_image, reference_coords=reference_coords, n_sources=n_alignment_sources, transform_type=transform_type), batches)
             
             # parse batch results
             stacked_image, background_median[fltr], background_rms[fltr] = self._parse_batch_alignment_and_stacking_results(results, reference_image.copy())
@@ -698,7 +691,7 @@ class Reducer:
         
         stacked_image = np.zeros_like(reference_image)
         
-        for file in batch:
+        for file in tqdm(batch, disable=not self.verbose):
             data = get_data(file)  # get image data
             
             if self.rebin_factor > 1:
@@ -1112,15 +1105,11 @@ class Reducer:
             batches = [self.camera_files[fltr][i:i + batch_size] for i in range(0, len(self.camera_files[fltr]), batch_size)]
             
             if self.verbose:
-                # create gif frames in parallel with progress bar
                 print(f"[OPTICAM] Creating {fltr} GIF frames ...")
-                with Pool(self.number_of_processors) as pool:
-                    results = list(tqdm(pool.imap(partial(self._create_gif_frames, fltr=fltr), batches), total=len(batches)))
-                print(f"[OPTICAM] Done.")
-            else:
-                # create gif frames in parallel without progress bar
-                with Pool(self.number_of_processors) as pool:
-                    results = pool.map(partial(self._create_gif_frames, fltr=fltr), batches)
+            
+            # create gif frames in batches
+            with Pool(self.number_of_processors) as pool:
+                results = pool.map(partial(self._create_gif_frames, fltr=fltr), batches)
             
             # save GIF
             self._compile_gif(fltr, keep_frames)
@@ -1137,7 +1126,7 @@ class Reducer:
             The filter.
         """
         
-        for file in batch:
+        for file in tqdm(batch, disable=not self.verbose):
             data = get_data(file)
             
             if self.rebin_factor > 1:
@@ -1260,22 +1249,18 @@ class Reducer:
                 batches = [self.camera_files[fltr][i:i + batch_size] for i in range(0, len(self.camera_files[fltr]), batch_size)]
                 
                 if self.verbose:
-                    # create gif frames in parallel with progress bar
                     print(f"[OPTICAM] Creating {fltr} background GIF frames ...")
-                    with Pool(self.number_of_processors) as pool:
-                        results = list(tqdm(pool.imap(partial(self._create_background_gif_frames, fltr=fltr), batches), total=len(batches)))
-                    print(f"[OPTICAM] Done.")
-                else:
-                    # create gif frames in parallel without progress bar
-                    with Pool(self.number_of_processors) as pool:
-                        results = pool.map(partial(self._create_background_gif_frames, fltr=fltr), batches)
+                
+                # create gif frames in batches
+                with Pool(self.number_of_processors) as pool:
+                    results = pool.map(partial(self._create_background_gif_frames, fltr=fltr), batches)
                 
                 # save GIF
                 self._compile_background_gif(fltr, keep_frames)
     
     def _create_background_gif_frames(self, batch: List[str], fltr: str) -> None:
         
-        for file in batch:
+        for file in tqdm(batch, disable=not self.verbose):
             data = get_data(file)
             
             if self.rebin_factor > 1:
@@ -1393,15 +1378,12 @@ class Reducer:
             batch_size = 1 + int(len(self.camera_files[fltr])/self.number_of_processors)
             batches = [self.camera_files[fltr][i:i + batch_size] for i in range(0, len(self.camera_files[fltr]), batch_size)]
             
-            # perform forced photometry
             if self.verbose:
                 print(f"[OPTICAM] Processing {fltr} files ...")
-                with Pool(self.number_of_processors) as pool:
-                    results = list(tqdm(pool.imap(partial(self._perform_forced_photometry_on_batch, fltr=fltr, radius=radius, phot_type=phot_type, remove_cosmic_rays=remove_cosmic_rays), batches), total=len(batches)))
-                print("[OPTICAM] Done.")
-            else:
-                with Pool(self.number_of_processors) as pool:
-                    results = pool.map(partial(self._perform_forced_photometry_on_batch, fltr=fltr, radius=radius, phot_type=phot_type, remove_cosmic_rays=remove_cosmic_rays), batches)
+            
+            # perform forced photometry in batches
+            with Pool(self.number_of_processors) as pool:
+                results = pool.map(partial(self._perform_forced_photometry_on_batch, fltr=fltr, radius=radius, phot_type=phot_type, remove_cosmic_rays=remove_cosmic_rays), batches)
             
             # get image time stamps
             mjds = [self.mjds[file] for file in self.camera_files[fltr]]
@@ -1416,36 +1398,23 @@ class Reducer:
                 aperture_fluxes, aperture_flux_errors, flags = self._parse_forced_photometry_results(results, phot_type)
                 
                 # save light curves
-                if self.verbose:
-                    for i in tqdm(range(len(self.catalogs[fltr]))):
-                        self._save_aperture_light_curve(mjds, bdts, aperture_fluxes, aperture_flux_errors, flags, fltr, i)
-                else:
-                    for i in range(len(self.catalogs[fltr])):
-                        self._save_aperture_light_curve(mjds, bdts, aperture_fluxes, aperture_flux_errors, flags, fltr, i)
+                for i in tqdm(range(len(self.catalogs[fltr])), disable=not self.verbose):
+                    self._save_aperture_light_curve(mjds, bdts, aperture_fluxes, aperture_flux_errors, flags, fltr, i)
             elif phot_type == 'annulus':
                 # parse results
                 annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags = self._parse_forced_photometry_results(results, phot_type)
                 
                 # save light curves
-                if self.verbose:
-                    for i in tqdm(range(len(self.catalogs[fltr]))):
-                        self._save_annulus_light_curve(mjds, bdts, annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags, fltr, i)
-                else:
-                    for i in range(len(self.catalogs[fltr])):
-                        self._save_annulus_light_curve(mjds, bdts, annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags, fltr, i)
+                for i in tqdm(range(len(self.catalogs[fltr])), disable=not self.verbose):
+                    self._save_annulus_light_curve(mjds, bdts, annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags, fltr, i)
             else:
                 # parse results
                 aperture_fluxes, aperture_flux_errors, annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags = self._parse_forced_photometry_results(results, phot_type)
                 
                 # save light curves
-                if self.verbose:
-                    for i in tqdm(range(len(self.catalogs[fltr]))):
-                        self._save_aperture_light_curve(mjds, bdts, aperture_fluxes, aperture_flux_errors, flags, fltr, i)
-                        self._save_annulus_light_curve(mjds, bdts, annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags, fltr, i)
-                else:
-                    for i in range(len(self.catalogs[fltr])):
-                        self._save_aperture_light_curve(mjds, bdts, aperture_fluxes, aperture_flux_errors, flags, fltr, i)
-                        self._save_annulus_light_curve(mjds, bdts, annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags, fltr, i)
+                for i in tqdm(range(len(self.catalogs[fltr])), disable=not self.verbose):
+                    self._save_aperture_light_curve(mjds, bdts, aperture_fluxes, aperture_flux_errors, flags, fltr, i)
+                    self._save_annulus_light_curve(mjds, bdts, annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags, fltr, i)
     
     def _perform_forced_photometry_on_batch(self, batch: List[str], fltr: str, radius: float, phot_type: Literal["aperture", "annulus", "both"], remove_cosmic_rays: bool) -> Tuple:
         """
@@ -1478,7 +1447,7 @@ class Reducer:
         flags = []
         
         # for each file
-        for file in batch:
+        for file in tqdm(batch, disable=not self.verbose):
             # define lists to store results for each file
             aperture_fluxes, aperture_flux_errors = [], []
             annulus_fluxes, annulus_flux_errors = [], []
@@ -1913,15 +1882,12 @@ class Reducer:
             batch_size = 1 + int(len(self.camera_files[fltr])/self.number_of_processors)
             batches = [self.camera_files[fltr][i:i + batch_size] for i in range(0, len(self.camera_files[fltr]), batch_size)]
             
-            # perform photometry
             if self.verbose:
                 print(f'[OPTICAM] Processing {fltr} files ...')
-                with Pool(self.number_of_processors) as pool:
-                    results = list(tqdm(pool.imap(partial(self._perform_photometry_on_batch, fltr=fltr, semimajor_sigma=semimajor_sigma, semiminor_sigma=semiminor_sigma, background_method=background_method, tolerance=tolerance, phot_type=phot_type, remove_cosmic_rays=remove_cosmic_rays), batches), total=len(batches)))
-                print('[OPTICAM] Done.')
-            else:
-                with Pool(self.number_of_processors) as pool:
-                    results = pool.map(partial(self._perform_photometry_on_batch, fltr=fltr, semimajor_sigma=semimajor_sigma, semiminor_sigma=semiminor_sigma, background_method=background_method, tolerance=tolerance, phot_type=phot_type, remove_cosmic_rays=remove_cosmic_rays), batches)
+            
+            # perform photometry in batches
+            with Pool(self.number_of_processors) as pool:
+                results = pool.map(partial(self._perform_photometry_on_batch, fltr=fltr, semimajor_sigma=semimajor_sigma, semiminor_sigma=semiminor_sigma, background_method=background_method, tolerance=tolerance, phot_type=phot_type, remove_cosmic_rays=remove_cosmic_rays), batches)
             
             # parse results
             if phot_type in ['normal', 'optimal']:
@@ -1933,24 +1899,14 @@ class Reducer:
                 print('[OPTICAM] Writing light curves to file ...')
             
             # save light curves
-            if self.verbose:
-                for i in tqdm(range(len(self.catalogs[fltr]))):
-                    if phot_type == 'normal':
-                        self._save_normal_light_curve(mjds, bdts, fluxes, flux_errors, fltr, i)
-                    elif phot_type == 'optimal':
-                        self._save_optimal_light_curve(mjds, bdts, fluxes, flux_errors, fltr, i)
-                    else:
-                        self._save_normal_light_curve(mjds, bdts, normal_fluxes, normal_flux_errors, fltr, i)
-                        self._save_optimal_light_curve(mjds, bdts, optimal_fluxes, optimal_flux_errors, fltr, i)
-            else:
-                for i in range(len(self.catalogs[fltr])):
-                    if phot_type == 'normal':
-                        self._save_normal_light_curve(mjds, bdts, fluxes, flux_errors, fltr, i)
-                    elif phot_type == 'optimal':
-                        self._save_optimal_light_curve(mjds, bdts, fluxes, flux_errors, fltr, i)
-                    else:
-                        self._save_normal_light_curve(mjds, bdts, normal_fluxes, normal_flux_errors, fltr, i)
-                        self._save_optimal_light_curve(mjds, bdts, optimal_fluxes, optimal_flux_errors, fltr, i)
+            for i in tqdm(range(len(self.catalogs[fltr])), disable=not self.verbose):
+                if phot_type == 'normal':
+                    self._save_normal_light_curve(mjds, bdts, fluxes, flux_errors, fltr, i)
+                elif phot_type == 'optimal':
+                    self._save_optimal_light_curve(mjds, bdts, fluxes, flux_errors, fltr, i)
+                else:
+                    self._save_normal_light_curve(mjds, bdts, normal_fluxes, normal_flux_errors, fltr, i)
+                    self._save_optimal_light_curve(mjds, bdts, optimal_fluxes, optimal_flux_errors, fltr, i)
             
             # plot number of detections per source
             self._plot_number_of_detections_per_source(detections, fltr)
@@ -1993,7 +1949,7 @@ class Reducer:
         batch_mjds, batch_bdts = [], []
         
         # for each file in the batch
-        for file in batch:
+        for file in tqdm(batch, disable=not self.verbose):
             # if file does not have a transform, and it's not the reference image, skip it
             if file not in self.transforms.keys() and file != self.camera_files[fltr][self.reference_indices[fltr]]:
                 continue
