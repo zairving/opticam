@@ -1,9 +1,9 @@
 from ctypes import Union
 from photutils.segmentation import SourceFinder
 from typing import Literal, Union, Dict
-from numpy.typing import ArrayLike
+from numpy.typing import ArrayLike, NDArray
 
-from opticam_new.helpers import get_data
+
 
 
 class Finder:
@@ -18,12 +18,7 @@ class Finder:
         self.finder = SourceFinder(npixels=self.npixels, connectivity=self.connectivity, deblend=False,
                                    progress_bar=False)
     
-    def __call__(self, image: Union[ArrayLike, str], threshold: float) -> SourceFinder:
-        
-        if isinstance(image, str):
-            data = get_data(image)
-        else:
-            data = image
+    def __call__(self, data: NDArray, threshold: float) -> SourceFinder:
         
         segment_map = self.finder(data, threshold)
         segment_map.remove_border_labels(border_width=self.border_width, relabel=True)
