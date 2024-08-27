@@ -11,32 +11,6 @@ import json
 from astropy.table import QTable
 
 
-
-
-def get_data(file: str) -> ArrayLike:
-    """
-    Read 
-
-    Parameters
-    ----------
-    file : str
-        Directory path to file.
-
-    Returns
-    -------
-    ArrayLike
-        Image data as an np.ndarray.
-    """
-    
-    try:
-        with fits.open(file) as hdul:
-            data = np.array(hdul[0].data, dtype=np.float64)
-    except:
-        raise ValueError(f"[OPTICAM] Could not open file {file}.")
-    
-    return data
-
-
 def get_time(file: str, date_key: Literal["UT", "GPSTIME"]) -> float:
     """
     Parse the time from the header of a FITS file.
@@ -85,7 +59,17 @@ def get_time(file: str, date_key: Literal["UT", "GPSTIME"]) -> float:
     return time
 
 
-def log_binnings(file_paths: List[str], out_directory: str):
+def log_binnings(file_paths: List[str], out_directory: str) -> None:
+    """
+    Log the binning of each file to out_directory/diag/binnings.json.
+    
+    Parameters
+    ----------
+    file_paths : List[str]
+        The paths to the files.
+    out_directory : str
+        The directory to save the log.
+    """
     
     file_binnings = {}
     
@@ -101,7 +85,17 @@ def log_binnings(file_paths: List[str], out_directory: str):
         json.dump(file_binnings, f, indent=4)
 
 
-def log_filters(file_paths: List[str], out_directory: str):
+def log_filters(file_paths: List[str], out_directory: str) -> None:
+    """
+    Logs the filters used in each file to out_directory/diag/filters.json.
+    
+    Parameters
+    ----------
+    file_paths : List[str]
+        The paths to the files.
+    out_directory : str
+        The directory to save the log.
+    """
     
     file_filters = {}
     
