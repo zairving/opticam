@@ -29,10 +29,11 @@ from scipy.spatial.distance import cdist
 from scipy.optimize import linear_sum_assignment
 from ccdproc import cosmicray_lacosmic
 
-from opticam_new.helpers import get_data, log_binnings, log_filters, default_aperture_selector, apply_barycentric_correction, clip_extended_sources, rebin_image
+from opticam_new.helpers import log_binnings, log_filters, default_aperture_selector, apply_barycentric_correction, clip_extended_sources, rebin_image
 from opticam_new.background import Background
 from opticam_new.local_background import EllipticalLocalBackground
 from opticam_new.finder import CrowdedFinder, Finder
+from opticam_new.corrector import Corrector
 
 try:
     os.environ['OMP_NUM_THREADS'] = '1'  # set number of threads to 1 for better multiprocessing performance
@@ -55,6 +56,7 @@ class Reducer:
         c2_directory: str = None,
         c3_directory: str = None,
         rebin_factor: int = 1,
+        corrector: Corrector = None,
         threshold: float = 5,
         background: Callable = None,
         local_background: Callable = None,
@@ -90,6 +92,8 @@ class Reducer:
             The rebinning factor, by default 1 (no rebinning). The rebinning factor is the factor by which the image is
             rebinned in both dimensions (i.e., a rebin_factor of 2 will reduce the image size by a factor of 4).
             Rebinning can improve the detectability of faint sources.
+        corrector: Corrector, optional,
+            The corrector to use for image correction, by default None. If None, no image correction is applied.
         threshold: float, optional
             The threshold for source finding, by default 5. The threshold is the background RMS factor above which
             sources are detected. For faint sources, a lower threshold may be required.
@@ -179,6 +183,7 @@ class Reducer:
         
         # set parameters
         self.rebin_factor = rebin_factor
+        self.corrector = corrector
         self.fwhm_scale = 2 * np.sqrt(2 * np.log(2))  # FWHM scale factor
         self.aperture_selector = default_aperture_selector if aperture_selector is None else aperture_selector
         self.scale = scale
@@ -468,7 +473,7 @@ class Reducer:
         unique_filters = np.unique(list(filters.values()))
         if unique_filters.size > 3:
             log_filters(self.file_paths, self.out_directory)
-            raise ValueError("[OPTICAM] More than 3 filters found. Image filters have been logged to {self.out_directory}misc/filters.json.")
+            raise ValueError("[OPTICAM] More than three filters found. Image filters have been logged to {self.out_directory}diag/filters.json.")
         else:
             with open(self.out_directory + "misc/filters.txt", "w") as file:
                 for fltr in unique_filters:
@@ -487,6 +492,52 @@ class Reducer:
 
 
 
+
+    def get_data(self, file: str, return_error: bool = False) -> ArrayLike:
+        """
+        Get data from a file.
+        
+        Parameters
+        ----------
+        file : str
+            Directory path to file.
+        return_error : bool, optional
+            Whether to return the error array, by default False.
+        
+        Returns
+        -------
+        ArrayLike
+            Image data as an np.ndarray.
+        """
+        
+        try:
+            with fits.open(file) as hdul:
+                data = np.array(hdul[0].data, dtype=np.float64)
+                fltr = hdul[0].header["FILTER"] + '-band'
+        except:
+            raise ValueError(f"[OPTICAM] Could not open file {file}.")
+        
+        if return_error:
+            error = np.sqrt(data*self.gains[file])
+        
+        # try to apply flat corrections
+        try:
+            data = self.corrector.flat_correct(data, fltr)
+        except:
+            pass
+        
+        # remove cosmic rays if required
+        if self.remove_cosmic_rays:
+            data = cosmicray_lacosmic(data, gain_apply=False)[0]
+        
+        if self.rebin_factor > 1:
+            data = rebin_image(data, self.rebin_factor)
+            error = rebin_image(error, self.rebin_factor)
+        
+        if return_error:
+            return data, error
+        
+        return data
 
     def get_source_coords_from_image(self, image: ArrayLike, bkg: Background2D = None) -> NDArray:
         """
@@ -518,33 +569,6 @@ class Reducer:
         
         # return source coordinates in descending order of brightness
         return np.array([tbl["xcentroid"], tbl["ycentroid"]]).T
-    
-    def _get_image_and_error(self, file: str, remove_cosmic_rays: bool) -> Tuple[NDArray, NDArray]:
-        """
-        Get the image and error for a given file.
-        
-        Parameters
-        ----------
-        file : str
-            The name of the file.
-        
-        Returns
-        -------
-        Tuple[ArrayLike, ArrayLike]
-            The image and its error.
-        """
-        
-        data = get_data(file)
-        
-        if self.rebin_factor > 1:
-                data = rebin_image(data, self.rebin_factor)
-        
-        if remove_cosmic_rays:
-            data = cosmicray_lacosmic(data, gain_apply=False)[0]
-        
-        error = np.sqrt(data*self.gains[file])  # Poisson noise
-        
-        return data, error
 
 
 
@@ -590,9 +614,7 @@ class Reducer:
             if len(self.camera_files[fltr]) == 0:
                 continue
             
-            reference_image = get_data(self.camera_files[fltr][self.reference_indices[fltr]])  # get reference image
-            if self.rebin_factor > 1:
-                reference_image = rebin_image(reference_image, self.rebin_factor)
+            reference_image = self.get_data(self.camera_files[fltr][self.reference_indices[fltr]])  # get reference image
             reference_coords = self.get_source_coords_from_image(reference_image)  # get source coordinates in descending order of brightness
             
             if len(reference_coords) < n_alignment_sources:
@@ -692,10 +714,7 @@ class Reducer:
         stacked_image = np.zeros_like(reference_image)
         
         for file in tqdm(batch, disable=not self.verbose):
-            data = get_data(file)  # get image data
-            
-            if self.rebin_factor > 1:
-                data = rebin_image(data, self.rebin_factor)
+            data = self.get_data(file)  # get image data
             
             if self.remove_cosmic_rays:
                 data = cosmicray_lacosmic(data, gain_apply=False)[0]
@@ -788,9 +807,9 @@ class Reducer:
             ax[i].imshow(plot_image, origin="lower", cmap="Greys_r", interpolation="nearest",
                             norm=simple_norm(plot_image, stretch="log"))
             
-            # plot aperture
-            ax[i].add_patch(Circle(xy=(plot_image.shape[1] / 2, plot_image.shape[0] / 2),
-                                   radius=0.5*plot_image.shape[1], edgecolor='red', facecolor='none', lw=1, ls='--'))
+            # # plot aperture
+            # ax[i].add_patch(Circle(xy=(plot_image.shape[1] / 2, plot_image.shape[0] / 2),
+            #                        radius=0.5*plot_image.shape[1], edgecolor='red', facecolor='none', lw=1, ls='--'))
             
             # get aperture radius
             radius = self.scale*self.aperture_selector(self.catalogs[fltr]["semimajor_sigma"].value)
@@ -1127,10 +1146,7 @@ class Reducer:
         """
         
         for file in tqdm(batch, disable=not self.verbose):
-            data = get_data(file)
-            
-            if self.rebin_factor > 1:
-                data = rebin_image(data, self.rebin_factor)
+            data = self.get_data(file)
             
             bkg = self.background(data)
             clean_data = data - bkg.background
@@ -1261,10 +1277,7 @@ class Reducer:
     def _create_background_gif_frames(self, batch: List[str], fltr: str) -> None:
         
         for file in tqdm(batch, disable=not self.verbose):
-            data = get_data(file)
-            
-            if self.rebin_factor > 1:
-                data = rebin_image(data, self.rebin_factor)
+            data = self.get_data(file)
             
             clipped_data = SigmaClip(3, maxiters=10)(data, axis=1, masked=False)
             
@@ -1464,7 +1477,7 @@ class Reducer:
                 transform = self.transforms[file]
             
             # get image data and its error
-            data, error = self._get_image_and_error(file, remove_cosmic_rays)
+            data, error = self.get_data(file, return_error=True)
             
             # get background subtracted image and its error if required
             if phot_type in ['aperture', 'both']:
@@ -1959,24 +1972,15 @@ class Reducer:
             optimal_fluxes, optimal_flux_errors = [], []
             
             # get image data
-            data = get_data(file)
-            
-            if self.rebin_factor > 1:
-                data = rebin_image(data, self.rebin_factor)
-            
-            # remove cosmic rays if required
-            if remove_cosmic_rays:
-                data = cosmicray_lacosmic(data, gain_apply=False)[0]
+            data, error = self.get_data(file, return_error=True)
             
             # get background subtracted image for source detection
             bkg = self.background(data)
             clean_data = data - bkg.background
             
-            # get error in the background subtracted image using the specified background method
             if background_method == 'global':
-                error = calc_total_error(clean_data, bkg.background_rms, self.gains[file])
-            else:
-                error = np.sqrt(data * self.gains[file])
+                # combine error in background subtracted image
+                error = np.sqrt(error**2 + bkg.background_rms**2)
             
             # find sources in the background subtracted image
             try:
@@ -2419,4 +2423,3 @@ class Reducer:
             plt.show(fig)
         else:
             plt.close(fig)
-    
