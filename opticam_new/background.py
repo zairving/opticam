@@ -1,10 +1,8 @@
 from photutils.background import Background2D, SExtractorBackground, StdBackgroundRMS
 from typing import Callable, Union, Tuple, Dict
 from astropy.stats import SigmaClip
-from numpy.typing import ArrayLike
+from numpy.typing import ArrayLike, NDArray
 from abc import ABC, abstractmethod
-
-from opticam_new.helpers import get_data
 
 
 class Background(ABC):
@@ -33,25 +31,20 @@ class Background(ABC):
         self.bkg_estimator = bkg_estimator
         self.bkgrms_estimator = bkgrms_estimator
     
-    def __call__(self, image: Union[ArrayLike, str]) -> Background2D:
+    def __call__(self, data: NDArray) -> Background2D:
         """
         Compute the 2D background for file.
         
         Parameters
         ----------
-        file : Union[ArrayLike, str]
-            Image or directory path to an image.
+        data : NDArray
+            Image data.
         
         Returns
         -------
         Background2D
             2D image background.
         """
-        
-        if isinstance(image, str):
-            data = get_data(image)
-        else:
-            data = image
         
         return Background2D(data, self.box_size, sigma_clip=self.sigma_clip, bkg_estimator=self.bkg_estimator, bkgrms_estimator=self.bkgrms_estimator)
     
