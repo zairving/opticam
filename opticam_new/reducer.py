@@ -24,7 +24,7 @@ from skimage.transform import estimate_transform, warp, matrix_transform, Simila
 from matplotlib import pyplot as plt
 from matplotlib.patches import Circle
 import matplotlib.colors as mcolors
-from multiprocessing import cpu_count
+from multiprocessing import cpu_count, Pool
 from functools import partial
 from PIL import Image
 from typing import List, Dict, Literal, Callable, Tuple, Union
@@ -318,7 +318,8 @@ class Reducer:
         
         # scan files in batches
         results = process_map(self._get_header_info, self.file_paths, max_workers=self.number_of_processors,
-                              disable=not self.verbose, desc="[OPTICAM] Scanning data directory ...")
+                              disable=not self.verbose, desc="[OPTICAM] Scanning data directory ...",
+                              chunksize=2 * self.number_of_processors)
         
         # unpack results
         filters = self._parse_header_results(results)
@@ -627,7 +628,7 @@ class Reducer:
                                           translation_limit=translation_limit, rotation_limit=rotation_limit,
                                           scaling_limit=scaling_limit), self.camera_files[fltr],
                                   max_workers=self.number_of_processors, disable=not self.verbose,
-                                  desc=f'[OPTICAM] Aligning {fltr} images...')
+                                  desc=f'[OPTICAM] Aligning {fltr} images...', chunksize=2 * self.number_of_processors)
             
             # parse batch results
             stacked_image, background_median[fltr], background_rms[fltr] = self._parse_alignment_results(results,
@@ -751,7 +752,7 @@ class Reducer:
         
         return transform.params.tolist(), background_median, background_rms
     
-    def _parse_alignment_results(self, results, stacked_image: NDArray,
+    def _parse_alignment_results(self, results, reference_image: NDArray,
                                  fltr: str) -> Tuple[NDArray, Dict[str, float], Dict[str, float]]:
         """
         Parse the results of a batch of image alignment and stacking.
@@ -760,7 +761,7 @@ class Reducer:
         ----------
         results :
             The results.
-        stacked_image : NDArray
+        reference_image : NDArray
             The stacked image onto which the batch images are stacked.
         fltr : str
             The filter.
@@ -779,30 +780,44 @@ class Reducer:
         # unpack results
         raw_transforms, raw_background_medians, raw_background_rmss = zip(*results)
         
-        for i in tqdm(range(len(self.camera_files[fltr])), desc=f"[OPTICAM] Stacking {fltr} images ...",
-                      disable=not self.verbose):
+        for i in range(len(self.camera_files[fltr])):
             if raw_transforms[i] is None:
                 unaligned_files.append(self.camera_files[fltr][i])
             else:
                 transforms.update({self.camera_files[fltr][i]: raw_transforms[i]})
                 background_medians.update({self.camera_files[fltr][i]: raw_background_medians[i]})
                 background_rmss.update({self.camera_files[fltr][i]: raw_background_rmss[i]})
-                
-                # stack images
-                data = self.get_data(self.camera_files[fltr][i])
-                bkg = self.background(data)
-                data_clean = data - bkg.background
-                stacked_image += warp(data_clean, SimilarityTransform(raw_transforms[i]).inverse,
-                                      output_shape=stacked_image.shape, order=3, mode='constant',
-                                      cval=np.nanmedian(data), clip=True, preserve_range=True)
         
         self.transforms.update(transforms)  # update transforms
         self.unaligned_files += unaligned_files  # update unaligned files
+        
+        # stack images in batches
+        batch_size = round(len(self.camera_files[fltr]) / self.number_of_processors)
+        batches = [self.camera_files[fltr][i:i + batch_size] for i in range(0, len(self.camera_files[fltr]), batch_size)]
+        fn = partial(self._stack_images_in_batches, reference_image)
+        with Pool(self.number_of_processors) as pool:
+            results = pool.map(fn, batches)
+        stacked_image = reference_image + np.sum(results, axis=0)
         
         if self.verbose:
             print(f"[OPTICAM] Done. {len(unaligned_files)} image(s) could not be aligned.")
         
         return stacked_image, background_medians, background_rmss
+    
+    def _stack_images_in_batches(self, reference_image: NDArray, files: List[str]) -> NDArray:
+        stacked_image = np.zeros_like(reference_image)
+        
+        for file in files:
+            # stack images
+            data = self.get_data(file)
+            bkg = self.background(data)
+            data_clean = data - bkg.background
+            stacked_image += warp(data_clean, SimilarityTransform(self.transforms[file]).inverse,
+                                  output_shape=stacked_image.shape, order=3, mode='constant',
+                                  cval=np.nanmedian(data), clip=True, preserve_range=True)
+        
+        return stacked_image
+    
     
     def _plot_catalog(self, stacked_images: Dict[str, NDArray]) -> None:
         """
@@ -1138,7 +1153,7 @@ class Reducer:
             
             process_map(partial(self._create_gif_frames, fltr=fltr), self.camera_files[fltr],
                         max_workers=self.number_of_processors, disable=not self.verbose,
-                        desc=f"[OPTICAM] Creating {fltr} GIF frames ...")
+                        desc=f"[OPTICAM] Creating {fltr} GIF frames ...", chunksize=2 * self.number_of_processors)
             
             # save GIF
             self._compile_gif(fltr, keep_frames)
@@ -1203,6 +1218,9 @@ class Reducer:
         ax.set_title(title, color=colour)
         
         fig.savefig(self.out_directory + 'diag/' + fltr + '_gif_frames/' + file_name + '.png')
+        
+        # clear figure to avoid memory issues
+        fig.clear()
         plt.close(fig)
     
     def _compile_gif(self, fltr: str, keep_frames: bool) -> None:
@@ -1312,7 +1330,7 @@ class Reducer:
                                           phot_type=phot_type), self.camera_files[fltr],
                                   max_workers=self.number_of_processors,
                                   desc=f"[OPTICAM] Performing forced photometry on {fltr} images ...",
-                                  disable=not self.verbose)
+                                  disable=not self.verbose, chunksize=2 * self.number_of_processors)
             
             # get image time stamps
             mjds = [self.mjds[file] for file in self.camera_files[fltr]]
@@ -1704,6 +1722,8 @@ class Reducer:
             Whether to overwrite existing light curves, by default False.
         """
         
+        print(phot_type)
+        
         assert phot_type in ['normal', 'optimal', 'both'], f"[OPTICAM] Photometry type {phot_type} not recognised."
         
         # create output directories if they do not exist
@@ -1746,23 +1766,15 @@ class Reducer:
             semimajor_sigma = self.aperture_selector(self.catalogs[fltr]["semimajor_sigma"].value)
             semiminor_sigma = self.aperture_selector(self.catalogs[fltr]["semiminor_sigma"].value)
             
-            # create batches
-            batch_size = 1 + int(len(self.camera_files[fltr])/self.number_of_processors)
-            batches = [self.camera_files[fltr][i:i + batch_size] for i in range(0, len(self.camera_files[fltr]), batch_size)]
-            
             if self.verbose:
                 print(f'[OPTICAM] Processing {fltr} files ...')
-            
-            # # perform photometry in batches
-            # with Pool(self.number_of_processors) as pool:
-            #     results = pool.map(partial(self._perform_photometry_on_batch, fltr=fltr, semimajor_sigma=semimajor_sigma, semiminor_sigma=semiminor_sigma, background_method=background_method, tolerance=tolerance, phot_type=phot_type), batches)
             
             results = process_map(partial(self._perform_photometry_on_batch, fltr=fltr, semimajor_sigma=semimajor_sigma,
                                           semiminor_sigma=semiminor_sigma, background_method=background_method,
                                           tolerance=tolerance, phot_type=phot_type), self.camera_files[fltr],
                                   max_workers=self.number_of_processors,
                                   desc=f"[OPTICAM] Performing photometry on {fltr} images ...",
-                                  disable=not self.verbose)
+                                  disable=not self.verbose, chunksize=2 * self.number_of_processors)
             
             # parse results
             if phot_type in ['normal', 'optimal']:
@@ -1817,7 +1829,7 @@ class Reducer:
             if phot_type in ['normal', 'optimal']:
                 return None, None, None, None, None
             else:
-                return None, None, None, None, None, None, None, None
+                return None, None, None, None, None, None, np.zeros(len(self.catalogs[fltr]))
         
         # define lists to store results for each file
         normal_fluxes, normal_flux_errors = [], []
@@ -1839,10 +1851,11 @@ class Reducer:
         try:
             segment_map = self.finder(clean_data, threshold=self.threshold * bkg.background_rms)
         except:
+            # if no sources are found, return None for all results
             if phot_type in ['normal', 'optimal']:
                 return None, None, None, None, None
             else:
-                return None, None, None, None, None, None, None, None
+                return None, None, None, None, None, None, np.zeros(len(self.catalogs[fltr]))
         
         # create source table
         file_cat = SourceCatalog(clean_data, segment_map, background=bkg.background)
@@ -1854,10 +1867,12 @@ class Reducer:
             try:
                 position = self._get_position_of_nearest_source(file_tbl, i, fltr, file, tolerance)
             except:
-                if phot_type in ['normal', 'optimal']:
-                    return None, None, None, None, None
-                else:
-                    return None, None, None, None, None, None, None, None
+                # if source is not found, append None to results
+                normal_fluxes.append(None)
+                normal_flux_errors.append(None)
+                optimal_fluxes.append(None)
+                optimal_flux_errors.append(None)
+                continue
             
             # if source is found, increment the detection counter
             detections[i] += 1
@@ -1973,9 +1988,10 @@ class Reducer:
             
             # for each observation in which a source was detected
             for i in range(len(mjds)):
-                # if the source was detected
-                if fluxes[i][source_index] is not None:
+                try:
                     csvwriter.writerow([mjds[i], bdts[i], fluxes[i][source_index], flux_errors[i][source_index]])
+                except TypeError:
+                    continue
         
         df = pd.read_csv(self.out_directory + f"normal_light_curves/{fltr}_source_{source_index + 1}.csv")
         
@@ -2027,9 +2043,10 @@ class Reducer:
             
             # for each observation in which a source was detected
             for i in range(len(mjds)):
-                # if the source was detected
-                if fluxes[i][source_index] is not None:
+                try:
                     csvwriter.writerow([mjds[i], bdts[i], fluxes[i][source_index], flux_errors[i][source_index]])
+                except TypeError:
+                    continue
         
         df = pd.read_csv(self.out_directory + f"optimal_light_curves/{fltr}_source_{source_index + 1}.csv")
         
