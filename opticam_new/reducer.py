@@ -265,9 +265,11 @@ class Reducer:
         
         # define background calculator and write input parameters to file
         if background is None:
-            self.background = Background(box_size=int(128 / (self.binning_scale * self.rebin_factor)))
+            self.background_pixel_size = int(128 / (self.binning_scale * self.rebin_factor))
+            self.background = Background(box_size=self.background_pixel_size)
             self.logger.info(f"[OPTICAM] Using default background estimator with box_size={int(128 / (self.binning_scale * self.rebin_factor))}.")
         elif callable(background):
+            self.background_pixel_size = int(background.box_size)
             self.background = background
             self.logger.info("[OPTICAM] Using custom background estimator.")
         else:
@@ -594,14 +596,11 @@ class Reducer:
         coords = np.array([tbl["xcentroid"], tbl["ycentroid"]]).T
         
         if away_from_edge:
-            
-            edge = 2 * int(128 / (self.binning_scale * self.rebin_factor))
-            
+            edge = 2 * self.background_pixel_size
             for coord in coords:
                 if coord[0] < edge or coord[0] > image.shape[1] - edge or coord[1] < edge or coord[1] > image.shape[0] - edge:
                     coords = np.delete(coords, np.where(np.all(coords == coord, axis=1)), axis=0)
         
-        # return source coordinates in descending order of brightness
         return np.array(coords)
 
 
