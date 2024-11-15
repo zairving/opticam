@@ -36,6 +36,7 @@ from scipy.spatial.distance import cdist
 from scipy.optimize import linear_sum_assignment
 from ccdproc import cosmicray_lacosmic
 import logging
+import gc
 
 from opticam_new.helpers import log_binnings, log_filters, default_aperture_selector, apply_barycentric_correction, clip_extended_sources, rebin_image
 from opticam_new.background import Background
@@ -264,8 +265,9 @@ class Reducer:
         
         # define background calculator and write input parameters to file
         if background is None:
-            self.background = Background(box_size=int(64 / (self.binning_scale * self.rebin_factor)))
-            self.logger.info(f"[OPTICAM] Using default background estimator with box_size={int(64 / (self.binning_scale * self.rebin_factor))}.")
+            self.background = Background(box_size=int(128 / (self.binning_scale * self.rebin_factor)))
+            self.logger.info(f"[OPTICAM] Using default background estimator with box_size={int(128 / (self.binning_scale * self.rebin_factor))}.")
+
         elif callable(background):
             self.background = background
             self.logger.info("[OPTICAM] Using custom background estimator.")
@@ -559,7 +561,8 @@ class Reducer:
         
         return data
 
-    def get_source_coords_from_image(self, image: NDArray, bkg: Background2D = None) -> NDArray:
+    def get_source_coords_from_image(self, image: NDArray, bkg: Background2D = None,
+                                     away_from_edge: bool = False) -> NDArray:
         """
         Get an array of source coordinates from an image in descending order of source brightness.
         
@@ -570,6 +573,8 @@ class Reducer:
         bkg : Background2D, optional
             The background of the image, by default None. If None, the background is estimated from the image. Including
             this parameter can prevent the background from being estimated multiple times.
+        away_from_edge : bool, optional
+            Whether to exclude sources near the edge of the image, by default False.
         
         Returns
         -------
@@ -587,15 +592,25 @@ class Reducer:
         tbl = clip_extended_sources(tbl)
         tbl.sort('segment_flux', reverse=True)  # sort catalog by flux in descending order
         
+        coords = np.array([tbl["xcentroid"], tbl["ycentroid"]]).T.tolist()
+        
+        if away_from_edge:
+            
+            edge = 2 * int(128 / (self.binning_scale * self.rebin_factor))
+            
+            for coord in coords:
+                if coord[0] < edge or coord[0] > image.shape[1] - edge or coord[1] < edge or coord[1] > image.shape[0] - edge:
+                    coords.remove(coord)
+        
         # return source coordinates in descending order of brightness
-        return np.array([tbl["xcentroid"], tbl["ycentroid"]]).T
+        return np.array(coords)
 
 
 
 
     def initialise_catalogs(self, n_alignment_sources: int = 3,
                             transform_type: Literal['euclidean', 'similarity', 'translation'] = 'translation',
-                            translation_limit: int = np.inf, rotation_limit: int = np.inf, scaling_limit: int = np.inf,
+                            translation_limit: int = None, rotation_limit: int = None, scaling_limit: int = None,
                             overwrite: bool = False, show_diagnostic_plots: bool = False) -> None:
         """
         Initialise the source catalogs for each camera. Some aspects of this method are parallelised for speed.
@@ -629,6 +644,13 @@ class Reducer:
         if self.verbose:
             print('[OPTICAM] Initialising catalogs ...')
         
+        if translation_limit is None:
+            translation_limit = 128 / (self.binning_scale * self.rebin_factor)
+        if rotation_limit is None:
+            rotation_limit = 360
+        if scaling_limit is None:
+            scaling_limit = 1
+        
         background_median = {}
         background_rms = {}
         
@@ -644,7 +666,7 @@ class Reducer:
             reference_image = self.get_data(self.camera_files[fltr][self.reference_indices[fltr]])  # get reference image
             
             try:
-                reference_coords = self.get_source_coords_from_image(reference_image)  # get source coordinates in descending order of brightness
+                reference_coords = self.get_source_coords_from_image(reference_image, away_from_edge=True)  # get source coordinates in descending order of brightness
             except:
                 self.logger.info(f'[OPTICAM] No sources detected in {fltr} reference image ({self.camera_files[fltr][self.reference_indices[fltr]]}). Reducing threshold or npixels in the source finder may help.')
                 continue
@@ -699,8 +721,8 @@ class Reducer:
         self._plot_time_between_files(show_diagnostic_plots)  # plot time between observations
         # self._plot_backgrounds(background_median, background_rms, show_diagnostic_plots)  # plot background medians and RMSs
         self._plot_background_meshes(stacked_images, show_diagnostic_plots)  # plot background meshes
-        for (fltr, stacked_image) in stacked_images.items():
-            self._visualise_psfs(stacked_image, fltr, show_diagnostic_plots)
+        # for (fltr, stacked_image) in stacked_images.items():
+        #     self._visualise_psfs(stacked_image, fltr, show_diagnostic_plots)
         
         # save transforms to file
         with open(self.out_directory + "cat/transforms.json", "w") as file:
@@ -772,10 +794,10 @@ class Reducer:
         if transform_type == 'translation':
             dx = np.mean(coords[indices, 0] - reference_coords[reference_indices, 0])
             dy = np.mean(coords[indices, 1] - reference_coords[reference_indices, 1])
-            if dx < translation_limit and dy < translation_limit:
+            if abs(dx) < translation_limit and abs(dy) < translation_limit:
                 transform = SimilarityTransform(translation=[dx, dy])
             else:
-                self.logger.info(f'[OPTICAM] File {file} exceeded translation limit. Translation limit is {translation_limit}, but translation was ({dx}, {dy}).')
+                self.logger.info(f'[OPTICAM] File {file} exceeded translation limit. Translation limit is {translation_limit:.1f}, but translation was ({dx:.1f}, {dy:.1f}).')
                 return None, None, None, file
         else:
             transform = estimate_transform(transform_type, reference_coords[reference_indices], coords[indices])
@@ -1135,7 +1157,7 @@ class Reducer:
             cols_to_keep = np.any(mask, axis=0)
             star_data = star_data[:, cols_to_keep]
             
-            fig = plt.figure()
+            fig = plt.figure(num=1, clear=True)
             ax = fig.add_subplot(projection='3d')
             
             x, y = np.meshgrid(x_range, y_range)
@@ -1154,6 +1176,7 @@ class Reducer:
             if show and self.show_plots:
                 plt.show()
             else:
+                fig.clear()
                 plt.close(fig)
 
 
@@ -1189,7 +1212,7 @@ class Reducer:
             
             process_map(partial(self._create_gif_frames, fltr=fltr), self.camera_files[fltr],
                         max_workers=self.number_of_processors, disable=not self.verbose,
-                        desc=f"[OPTICAM] Creating {fltr} GIF frames ...", chunksize=len(self.camera_files[fltr]) // 100)
+                        desc=f"[OPTICAM] Creating {fltr} GIF frames", chunksize=len(self.camera_files[fltr]) // 100)
             
             # save GIF
             self._compile_gif(fltr, keep_frames)
@@ -1269,7 +1292,7 @@ class Reducer:
         
         # load frames
         frames = []
-        for file in tqdm(self.camera_files[fltr], disable=not self.verbose, desc=f"[OPTICAM] Loading {fltr} GIF frames ..."):
+        for file in tqdm(self.camera_files[fltr], disable=not self.verbose, desc=f"[OPTICAM] Loading {fltr} GIF frames"):
             try:
                 frames.append(Image.open(self.out_directory + 'diag/' + fltr + '_gif_frames/' + file.split('/')[-1].split(".")[0] + '.png'))
             except:
@@ -1287,7 +1310,7 @@ class Reducer:
         # delete frames after gif is saved
         if not keep_frames:
             for file in tqdm(os.listdir(self.out_directory + f"diag/{fltr}_gif_frames"), disable=not self.verbose,
-                             desc=f"[OPTICAM] Deleting {fltr} GIF frames ..."):
+                             desc=f"[OPTICAM] Deleting {fltr} GIF frames"):
                 os.remove(self.out_directory + f"diag/{fltr}_gif_frames/{file}")
 
 
@@ -1364,36 +1387,10 @@ class Reducer:
             results = process_map(partial(self._perform_forced_photometry, fltr=fltr, radius=radius,
                                           phot_type=phot_type), self.camera_files[fltr],
                                   max_workers=self.number_of_processors,
-                                  desc=f"[OPTICAM] Performing forced photometry on {fltr} images ...",
+                                  desc=f"[OPTICAM] Performing forced photometry on {fltr} images",
                                   disable=not self.verbose, chunksize=len(self.camera_files[fltr]) // 100)
             
-            # get image time stamps
-            mjds = [self.mjds[file] for file in self.camera_files[fltr]]
-            bdts = [self.bdts[file] for file in self.camera_files[fltr]]
-            
-            # save light curves
-            if phot_type == 'aperture':
-                # parse results
-                aperture_fluxes, aperture_flux_errors, flags = self._parse_forced_photometry_results(results, phot_type)
-                
-                # save light curves
-                for i in tqdm(range(len(self.catalogs[fltr])), disable=not self.verbose, desc=f"[OPTICAM] Saving {fltr} light curves"):
-                    self._save_aperture_light_curve(mjds, bdts, aperture_fluxes, aperture_flux_errors, flags, fltr, i)
-            elif phot_type == 'annulus':
-                # parse results
-                annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags = self._parse_forced_photometry_results(results, phot_type)
-                
-                # save light curves
-                for i in tqdm(range(len(self.catalogs[fltr])), disable=not self.verbose, desc=f"[OPTICAM] Saving {fltr} light curves"):
-                    self._save_annulus_light_curve(mjds, bdts, annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags, fltr, i)
-            else:
-                # parse results
-                aperture_fluxes, aperture_flux_errors, annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags = self._parse_forced_photometry_results(results, phot_type)
-                
-                # save light curves
-                for i in tqdm(range(len(self.catalogs[fltr])), disable=not self.verbose, desc=f"[OPTICAM] Saving {fltr} light curves"):
-                    self._save_aperture_light_curve(mjds, bdts, aperture_fluxes, aperture_flux_errors, flags, fltr, i)
-                    self._save_annulus_light_curve(mjds, bdts, annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags, fltr, i)
+            self._save_forced_photometry_results(results, phot_type, fltr)
 
     def _perform_forced_photometry(self, file: str, fltr: str, radius: float,
                                    phot_type: Literal["aperture", "annulus", "both"]):
@@ -1591,6 +1588,48 @@ class Reducer:
         
         return flux, flux_error, local_background, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel
 
+    def _save_forced_photometry_results(self, results: Tuple, phot_type: str, fltr: str) -> None:
+        """
+        Unpack and save the forced photometry results.
+        
+        Parameters
+        ----------
+        results : Tuple
+            The photometric results.
+        phot_type : str
+            The type of photometry that has been performed.
+        fltr : str
+            The filter.
+        """
+        
+        # get image time stamps
+        mjds = [self.mjds[file] for file in self.camera_files[fltr]]
+        bdts = [self.bdts[file] for file in self.camera_files[fltr]]
+        
+        # save light curves
+        if phot_type == 'aperture':
+            # parse results
+            aperture_fluxes, aperture_flux_errors, flags = self._parse_forced_photometry_results(results, phot_type)
+            
+            # save light curves
+            for i in tqdm(range(len(self.catalogs[fltr])), disable=not self.verbose, desc=f"[OPTICAM] Saving {fltr} light curves"):
+                self._save_aperture_light_curve(mjds, bdts, aperture_fluxes, aperture_flux_errors, flags, fltr, i)
+        elif phot_type == 'annulus':
+            # parse results
+            annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags = self._parse_forced_photometry_results(results, phot_type)
+            
+            # save light curves
+            for i in tqdm(range(len(self.catalogs[fltr])), disable=not self.verbose, desc=f"[OPTICAM] Saving {fltr} light curves"):
+                self._save_annulus_light_curve(mjds, bdts, annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags, fltr, i)
+        else:
+            # parse results
+            aperture_fluxes, aperture_flux_errors, annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags = self._parse_forced_photometry_results(results, phot_type)
+            
+            # save light curves
+            for i in tqdm(range(len(self.catalogs[fltr])), disable=not self.verbose, desc=f"[OPTICAM] Saving {fltr} light curves"):
+                self._save_aperture_light_curve(mjds, bdts, aperture_fluxes, aperture_flux_errors, flags, fltr, i)
+                self._save_annulus_light_curve(mjds, bdts, annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags, fltr, i)
+
     def _save_aperture_light_curve(self, mjds: List[float], bdts: List[float], fluxes: List[List[float]],
                                    flux_errors: List[List[float]], flags: List[str], fltr: str,
                                    source_index: int) -> None:
@@ -1645,6 +1684,8 @@ class Reducer:
         
         # save light curve plot to file
         fig.savefig(self.out_directory + f"aperture_light_curves/{fltr}_source_{source_index + 1}.png")
+        fig.clear()
+        plt.close(fig)
 
     def _save_annulus_light_curve(self, mjds: List[float], bdts: List[float], fluxes: List[List[float]],
                                   flux_errors: List[List[float]], local_backgrounds: List[List[float]],
@@ -1723,6 +1764,8 @@ class Reducer:
             ax.tick_params(which="both", direction="in", top=True, right=True)
         
         fig.savefig(self.out_directory + f"annulus_light_curves/{fltr}_source_{source_index + 1}.png")
+        fig.clear()
+        plt.close(fig)
 
 
 
@@ -1782,12 +1825,12 @@ class Reducer:
             
             # get list of possible light curve files
             if phot_type == 'normal':
-                light_curve_files = [self.out_directory + f"normal_light_curves/{fltr}_source_{i}.csv" for i in range(len(self.catalogs[fltr]))]
+                light_curve_files = [self.out_directory + f"normal_light_curves/{fltr}_source_{i + 1}.csv" for i in range(len(self.catalogs[fltr]))]
             elif phot_type == 'optimal':
-                light_curve_files = [self.out_directory + f"optimal_light_curves/{fltr}_source_{i}.csv" for i in range(len(self.catalogs[fltr]))]
+                light_curve_files = [self.out_directory + f"optimal_light_curves/{fltr}_source_{i + 1}.csv" for i in range(len(self.catalogs[fltr]))]
             else:
-                light_curve_files = [self.out_directory + f"normal_light_curves/{fltr}_source_{i}.csv" for i in range(len(self.catalogs[fltr]))]
-                light_curve_files += [self.out_directory + f"optimal_light_curves/{fltr}_source_{i}.csv" for i in range(len(self.catalogs[fltr]))]
+                light_curve_files = [self.out_directory + f"normal_light_curves/{fltr}_source_{i + 1}.csv" for i in range(len(self.catalogs[fltr]))]
+                light_curve_files += [self.out_directory + f"optimal_light_curves/{fltr}_source_{i + 1}.csv" for i in range(len(self.catalogs[fltr]))]
             
             # check if light curves already exist
             if all([os.path.isfile(file) for file in light_curve_files]) and not overwrite:
@@ -1805,24 +1848,7 @@ class Reducer:
                                   desc=f"[OPTICAM] Performing photometry on {fltr} images",
                                   disable=not self.verbose, chunksize=len(self.camera_files[fltr]) // 100)
             
-            # parse results
-            if phot_type in ['normal', 'optimal']:
-                mjds, bdts, fluxes, flux_errors, detections = self._parse_photometry_results(results, phot_type)
-            else:
-                mjds, bdts, normal_fluxes, normal_flux_errors, optimal_fluxes, optimal_flux_errors, detections = self._parse_photometry_results(results, phot_type)
-            
-            # save light curves
-            for i in tqdm(range(len(self.catalogs[fltr])), disable=not self.verbose, desc=f"[OPTICAM] Saving {fltr} light curves"):
-                if phot_type == 'normal':
-                    self._save_normal_light_curve(mjds, bdts, fluxes, flux_errors, fltr, i)
-                elif phot_type == 'optimal':
-                    self._save_optimal_light_curve(mjds, bdts, fluxes, flux_errors, fltr, i)
-                else:
-                    self._save_normal_light_curve(mjds, bdts, normal_fluxes, normal_flux_errors, fltr, i)
-                    self._save_optimal_light_curve(mjds, bdts, optimal_fluxes, optimal_flux_errors, fltr, i)
-            
-            # plot number of detections per source
-            self._plot_number_of_detections_per_source(detections, fltr)
+            self._save_photometry_results(results, phot_type, fltr)
 
     def _perform_photometry_on_batch(self, file: str, fltr: str, semimajor_sigma: float, semiminor_sigma: float,
                                     background_method: Literal['global', 'local'], tolerance: float,
@@ -1989,6 +2015,39 @@ class Reducer:
             mjds, bdts, normal_fluxes, normal_flux_errors, optimal_fluxes, optimal_flux_errors, detections = zip(*results)
             return list(mjds), list(bdts), list(normal_fluxes), list(normal_flux_errors), list(optimal_fluxes), list(optimal_flux_errors), np.sum(detections, axis=0)
 
+    def _save_photometry_results(self, results: Tuple, phot_type: str, fltr: str) -> None:
+        """
+        Save the photometry results.
+        
+        Parameters
+        ----------
+        results : Tuple
+            The photometry results.
+        phot_type : str
+            The type of photometry that has been performed.
+        fltr : str
+            The filter.
+        """
+        
+        # parse results
+        if phot_type in ['normal', 'optimal']:
+            mjds, bdts, fluxes, flux_errors, detections = self._parse_photometry_results(results, phot_type)
+        else:
+            mjds, bdts, normal_fluxes, normal_flux_errors, optimal_fluxes, optimal_flux_errors, detections = self._parse_photometry_results(results, phot_type)
+        
+        # save light curves
+        for i in tqdm(range(len(self.catalogs[fltr])), disable=not self.verbose, desc=f"[OPTICAM] Saving {fltr} light curves"):
+            if phot_type == 'normal':
+                self._save_normal_light_curve(mjds, bdts, fluxes, flux_errors, fltr, i)
+            elif phot_type == 'optimal':
+                self._save_optimal_light_curve(mjds, bdts, fluxes, flux_errors, fltr, i)
+            else:
+                self._save_normal_light_curve(mjds, bdts, normal_fluxes, normal_flux_errors, fltr, i)
+                self._save_optimal_light_curve(mjds, bdts, optimal_fluxes, optimal_flux_errors, fltr, i)
+        
+        # plot number of detections per source
+        self._plot_number_of_detections_per_source(detections, fltr)
+
     def _save_normal_light_curve(self, mjds: List[float], bdts: List[float], fluxes: List[List[float]],
                                  flux_errors: List[List[float]], fltr: str, source_index: int) -> None:
         """
@@ -2041,7 +2100,7 @@ class Reducer:
         
         # save light curve plot to file
         fig.savefig(self.out_directory + f"normal_light_curves/{fltr}_source_{source_index + 1}.png")
-        
+        fig.clear()
         plt.close(fig)
 
     def _save_optimal_light_curve(self, mjds: List[float], bdts: List[float], fluxes: List[List[float]],
@@ -2098,7 +2157,7 @@ class Reducer:
         
         # save light curve plot to file
         fig.savefig(self.out_directory + f"optimal_light_curves/{fltr}_source_{source_index + 1}.png")
-        
+        fig.clear()
         plt.close(fig)
 
     def _compute_normal_flux(self, data: NDArray, error: NDArray, position: NDArray, semimajor_sigma: float,
