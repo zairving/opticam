@@ -591,7 +591,7 @@ class Reducer:
         tbl = clip_extended_sources(tbl)
         tbl.sort('segment_flux', reverse=True)  # sort catalog by flux in descending order
         
-        coords = np.array([tbl["xcentroid"], tbl["ycentroid"]]).T.tolist()
+        coords = np.array([tbl["xcentroid"], tbl["ycentroid"]]).T
         
         if away_from_edge:
             
@@ -599,7 +599,7 @@ class Reducer:
             
             for coord in coords:
                 if coord[0] < edge or coord[0] > image.shape[1] - edge or coord[1] < edge or coord[1] > image.shape[0] - edge:
-                    coords.remove(coord)
+                    coords = np.delete(coords, np.where(np.all(coords == coord, axis=1)), axis=0)
         
         # return source coordinates in descending order of brightness
         return np.array(coords)
@@ -673,6 +673,8 @@ class Reducer:
             if len(reference_coords) < n_alignment_sources:
                 self.logger.info(f'[OPTICAM] Not enough sources detected in {fltr} reference image ({self.camera_files[fltr][self.reference_indices[fltr]]}) for alignment. Reducing threshold and/or n_alignment_sources may help.')
                 continue
+            elif len(reference_coords) > n_alignment_sources:
+                reference_coords = reference_coords[:n_alignment_sources]
             
             # align and stack images
             results = process_map(partial(self._align_image, reference_coords=reference_coords,
