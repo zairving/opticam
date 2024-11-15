@@ -676,6 +676,8 @@ class Reducer:
             elif len(reference_coords) > n_alignment_sources:
                 reference_coords = reference_coords[:n_alignment_sources]
             
+            self.logger.info(f'[OPTICAM] Alignment source coordinates: {reference_coords}')
+            
             # align and stack images
             results = process_map(partial(self._align_image, reference_coords=reference_coords,
                                           n_sources=n_alignment_sources, transform_type=transform_type,
