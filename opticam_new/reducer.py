@@ -267,6 +267,7 @@ class Reducer:
         if background is None:
             self.background = Background(box_size=int(128 / (self.binning_scale * self.rebin_factor)))
             self.logger.info(f"[OPTICAM] Using default background estimator with box_size={int(128 / (self.binning_scale * self.rebin_factor))}.")
+
         elif callable(background):
             self.background = background
             self.logger.info("[OPTICAM] Using custom background estimator.")
@@ -1796,6 +1797,8 @@ class Reducer:
         overwrite : bool, optional
             Whether to overwrite existing light curves, by default False.
         """
+        
+        print(phot_type)
         
         assert phot_type in ['normal', 'optimal', 'both'], f"[OPTICAM] Photometry type {phot_type} not recognised."
         
