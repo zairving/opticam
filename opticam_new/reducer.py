@@ -38,7 +38,7 @@ from ccdproc import cosmicray_lacosmic
 import logging
 import gc
 
-from opticam_new.helpers import log_binnings, log_filters, default_aperture_selector, apply_barycentric_correction, clip_extended_sources, rebin_image
+from opticam_new.helpers import log_binnings, log_filters, default_aperture_selector, apply_barycentric_correction, clip_extended_sources, rebin_image, get_time
 from opticam_new.background import Background
 from opticam_new.local_background import EllipticalLocalBackground
 from opticam_new.finder import CrowdedFinder, Finder
@@ -289,10 +289,10 @@ class Reducer:
         
         # define source finder and write input parameters to file
         if finder == 'default':
-            self.finder = Finder(npixels=int(64 / (self.binning_scale * self.rebin_factor)**2), border_width=int(64 / (self.binning_scale * self.rebin_factor)))
+            self.finder = Finder(npixels=int(128 / (self.binning_scale * self.rebin_factor)**2), border_width=int(64 / (self.binning_scale * self.rebin_factor)))
             self.logger.info(f"[OPTICAM] Using default source finder with npixels={int(64 / (self.binning_scale * self.rebin_factor)**2)} and border_width={int(64 / (self.binning_scale * self.rebin_factor))}.")
         elif finder == 'crowded':
-            self.finder = CrowdedFinder(npixels=int(64 / (self.binning_scale * self.rebin_factor)**2), border_width=int(64 / (self.binning_scale * self.rebin_factor)))
+            self.finder = CrowdedFinder(npixels=int(128 / (self.binning_scale * self.rebin_factor)**2), border_width=int(64 / (self.binning_scale * self.rebin_factor)))
             self.logger.info(f"[OPTICAM] Using crowded source finder with npixels={int(64 / (self.binning_scale * self.rebin_factor)**2)} and border_width={int(64 / (self.binning_scale * self.rebin_factor))}.")
         elif callable(finder):
             self.finder = finder
@@ -407,48 +407,33 @@ class Reducer:
             If the file header does not contain the required keys.
         """
         
-        with fits.open(file) as hdul:
-            binning = hdul[0].header["BINNING"]
-            gain = hdul[0].header["GAIN"]
+        try:
+            with fits.open(file) as hdul:
+                binning = hdul[0].header["BINNING"]
+                gain = hdul[0].header["GAIN"]
+                
+                try:
+                    ra = hdul[0].header["RA"]
+                    dec = hdul[0].header["DEC"]
+                except:
+                    self.logger.info(f"[OPTICAM] Could not find RA and DEC keys in {file} header.")
+                    pass
+                
+                mjd = get_time(hdul, file)
+                
+                # separate files by filter
+                fltr = hdul[0].header["FILTER"]
             
             try:
-                ra = hdul[0].header["RA"]
-                dec = hdul[0].header["DEC"]
+                # try to compute barycentric dynamical time
+                coords = SkyCoord(ra, dec, unit=(u.hourangle, u.deg))
+                bdt = apply_barycentric_correction(mjd, coords)
             except:
-                self.logger.info(f"[OPTICAM] Could not find RA and DEC keys in {file} header.")
-                pass
-            
-            # parse file time
-            if "GPSTIME" in hdul[0].header.keys():
-                gpstime = hdul[0].header["GPSTIME"]
-                split_gpstime = gpstime.split(" ")
-                date = split_gpstime[0]  # get date
-                time = split_gpstime[1].split(".")[0]  # get time (ignoring decimal seconds)
-                mjd = Time(date + "T" + time, format="fits").mjd
-            elif "UT" in hdul[0].header.keys():
-                try:
-                    mjd = Time(hdul[0].header["UT"].replace(" ", "T"), format="fits").mjd
-                except:
-                    try:
-                        date = hdul[0].header['DATE-OBS']
-                        time = hdul[0].header['UT'].split('.')[0]
-                        mjd = Time(date + 'T' + time, format='fits').mjd
-                    except:
-                        raise ValueError('Could not parse time from ' + file + ' header.')
-            else:
-                raise KeyError(f"[OPTICAM] Could not find GPSTIME or UT key in {file} header.")
-            
-            # separate files by filter
-            fltr = hdul[0].header["FILTER"]
-        
-        try:
-            # try to compute barycentric dynamical time
-            coords = SkyCoord(ra, dec, unit=(u.hourangle, u.deg))
-            bdt = apply_barycentric_correction(mjd, coords)
+                bdt = mjd
+                self.logger.info(f"[OPTICAM] Could not compute BDT for {file}.")
         except:
-            bdt = mjd
-            self.logger.info(f"[OPTICAM] Could not compute BDT for {file}.")
-            
+            raise ValueError(f'[OPTICAM] Could not parse header information from {file}.')
+        
         return mjd, bdt, fltr, binning, gain
 
     def _parse_header_results(self, results: Tuple[float, float, str, str, float]) -> Dict[str, str]:
@@ -675,7 +660,7 @@ class Reducer:
             elif len(reference_coords) > n_alignment_sources:
                 reference_coords = reference_coords[:n_alignment_sources]
             
-            self.logger.info(f'[OPTICAM] Alignment source coordinates: {reference_coords}')
+            self.logger.info(f'[OPTICAM] {fltr} alignment source coordinates: {reference_coords}')
             
             # align and stack images
             results = process_map(partial(self._align_image, reference_coords=reference_coords,
@@ -783,11 +768,8 @@ class Reducer:
             return None, None, None, file
         
         distance_matrix = cdist(reference_coords, coords)  # compute distance matrix
-        reference_indices, indices = linear_sum_assignment(distance_matrix)  # solve assignment problem
-        
         try:
-            reference_indices = reference_indices[:n_sources]
-            indices = indices[:n_sources]
+            reference_indices, indices = linear_sum_assignment(distance_matrix)  # solve assignment problem
         except:
             self.logger.info('[OPTICAM] Could not align ' + file + '. Reducing threshold and/or n_alignment_sources may help.')
             return None, None, None, file
