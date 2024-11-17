@@ -9,19 +9,20 @@ import os
 from astropy.io import fits
 import json
 from astropy.table import QTable
+from tqdm import tqdm
 
 
-def get_time(file: str, date_key: Literal["UT", "GPSTIME"]) -> float:
+def get_time(hdul, file: str) -> float:
     """
     Parse the time from the header of a FITS file.
 
     Parameters
     ----------
+    hdul
+        The FITS file.
     file : str
-        Directory path to file.
-    date_key : Literal[&quot;UT&quot;, &quot;GPSTIME&quot;]
-        Header key that gives the observation date and time.
-
+        The path to the file.
+    
     Returns
     -------
     float
@@ -37,26 +38,27 @@ def get_time(file: str, date_key: Literal["UT", "GPSTIME"]) -> float:
         _description_
     """
     
-    with fits.open(file) as hdul:
-        if date_key == "UT":
+    # parse file time
+    if "GPSTIME" in hdul[0].header.keys():
+        gpstime = hdul[0].header["GPSTIME"]
+        split_gpstime = gpstime.split(" ")
+        date = split_gpstime[0]  # get date
+        time = split_gpstime[1].split(".")[0]  # get time (ignoring decimal seconds)
+        mjd = Time(date + "T" + time, format="fits").mjd
+    elif "UT" in hdul[0].header.keys():
+        try:
+            mjd = Time(hdul[0].header["UT"].replace(" ", "T"), format="fits").mjd
+        except:
             try:
-                time = Time(hdul[0].header["UT"].replace(" ", "T"), format="fits").mjd
+                date = hdul[0].header['DATE-OBS']
+                time = hdul[0].header['UT'].split('.')[0]
+                mjd = Time(date + 'T' + time, format='fits').mjd
             except:
-                raise KeyError(f"[OPTICAM] Could not find {date_key} key in header.")
-        elif date_key == "GPSTIME":
-            try:
-                temp = hdul[0].header["GPSTIME"]
-            except:
-                raise KeyError(f"[OPTICAM] Could not find {date_key} key in header.")
-            try:
-                split_temp = temp.split(" ")
-                date = split_temp[0]
-                gps_time = split_temp[1].split(".")[0]  # remove decimal seconds
-                time = Time(date + "T" + gps_time, format="fits").mjd
-            except:
-                raise ValueError(f"[OPTICAM] Could not parse {date_key} key in header.")
-
-    return time
+                raise ValueError('Could not parse time from ' + file + ' header.')
+    else:
+        raise KeyError(f"[OPTICAM] Could not find GPSTIME or UT key in {file} header.")
+    
+    return mjd
 
 
 def log_binnings(file_paths: List[str], out_directory: str) -> None:
@@ -246,3 +248,36 @@ def rebin_image(image: NDArray, factor: int) -> NDArray:
     
     # return rebinned image
     return reshaped_data.sum(axis=(1, 3))
+
+
+def identify_gaps(files: List[str], log_dir: str):
+    """
+    Identify gaps in the observation sequence and logs them to log_dir/diag/gaps.txt.
+    
+    Parameters
+    ----------
+    files : List[str]
+        The list of files for a single filter.
+    """
+    
+    file_times = {}
+    
+    for file in tqdm(files, desc='[OPTICAM] Identifying gaps'):
+        with fits.open(file) as hdul:
+            file_times[file] = get_time(hdul, file)
+    
+    sorted_files = dict(sorted(file_times.items(), key=lambda x: x[1]))
+    times = np.array(sorted_files.values()).flatten()
+    diffs = np.diff(times)
+    median_exposure_time = np.median(diffs)
+    
+    gaps = np.where(diffs > 2*median_exposure_time)[0]
+    
+    if len(gaps) > 0:
+        print(f"[OPTICAM] Found {len(gaps)} gaps in the observation sequence.")
+        with open(log_dir + "diag/gaps.txt", "w") as file:
+            file.write(f"Median exposure time: {median_exposure_time} d\n")
+            for gap in gaps:
+                file.write(f"Gap between {list(sorted_files.keys())[gap]} and {list(sorted_files.keys())[gap + 1]}: {diffs[gap]} d\n")
+    else:
+        print("[OPTICAM] No gaps found in the observation sequence.")
