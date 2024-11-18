@@ -21,7 +21,9 @@ class Finder:
     def __call__(self, data: NDArray, threshold: float) -> SourceFinder:
         
         segment_map = self.finder(data, threshold)
-        segment_map.remove_border_labels(border_width=self.border_width, relabel=True)
+        
+        if self.border_width > 0:
+            segment_map.remove_border_labels(border_width=self.border_width, relabel=True)
         
         return segment_map
 

@@ -31,6 +31,11 @@ class Analyser:
         """
         
         self.light_curves = light_curves
+        
+        # drop NaNs to avoid issues with methods
+        for lc in light_curves.values():
+            lc.dropna(inplace=True)
+        
         self.filters = list(light_curves.keys())
         self.out_directory = out_directory
         self.prefix = prefix
