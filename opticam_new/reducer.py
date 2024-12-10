@@ -5,12 +5,11 @@ try:
 except:
     pass
 
-from tqdm.contrib.concurrent import process_map
+from tqdm.contrib.concurrent import process_map  # process_map removes a lot of the boilerplate from multiprocessing
 from tqdm import tqdm
 from astropy.table import QTable
 import json
 import numpy as np
-from astropy.time import Time
 from astropy.io import fits
 from astropy.stats import SigmaClip
 from astropy.visualization.mpl_normalize import simple_norm
@@ -27,16 +26,15 @@ import matplotlib.colors as mcolors
 from multiprocessing import cpu_count, Pool
 from functools import partial
 from PIL import Image
-from typing import List, Dict, Literal, Callable, Tuple, Union
+from typing import Any, List, Dict, Literal, Callable, Tuple, Union
 from numpy.typing import ArrayLike, NDArray
 import pandas as pd
 import csv
-import warnings
 from scipy.spatial.distance import cdist
 from scipy.optimize import linear_sum_assignment
-from ccdproc import cosmicray_lacosmic
+from ccdproc import cosmicray_lacosmic  # replace with astroscrappy to reduce dependencies?
 import logging
-import gc
+from types import FunctionType
 
 from opticam_new.helpers import log_binnings, log_filters, default_aperture_selector, apply_barycentric_correction, clip_extended_sources, rebin_image, get_time
 from opticam_new.background import Background
@@ -246,42 +244,22 @@ class Reducer:
         self.colours.pop(self.colours.index("tab:purple"))
         self.colours.pop(self.colours.index("tab:blue"))
         
-        if aperture_selector is None:
+        if aperture_selector is None:  
             self.aperture_selector = default_aperture_selector
         else:
             self.aperture_selector = aperture_selector
             assert callable(self.aperture_selector), "[OPTICAM] Aperture selector must be callable."
         
-        # get input parameters and write to file
-        param_dict = {
-            "aperture selector": self.aperture_selector.__name__,
-            "aperture scale": scale,
-            "threshold": threshold,
-        }
-        param_dict.update({"number of files": len(self.file_paths)})
-        param_dict.update({f"number of {fltr} files": len(self.camera_files[fltr]) for fltr in list(self.camera_files.keys())})
-        with open(self.out_directory + "misc/reducer_input.json", "w") as file:
-            json.dump(param_dict, file, indent=4)
-        
         # define background calculator and write input parameters to file
         if background is None:
-            self.background_pixel_size = int(128 / (self.binning_scale * self.rebin_factor))
-            self.background = Background(box_size=self.background_pixel_size)
-            self.logger.info(f"[OPTICAM] Using default background estimator with box_size={int(128 / (self.binning_scale * self.rebin_factor))}.")
-
+            background_pixel_size = int(128 / (self.binning_scale * self.rebin_factor))
+            self.background = Background(box_size=background_pixel_size)
+            self.logger.info(f"[OPTICAM] Using default background estimator with box_size={background_pixel_size}.")
         elif callable(background):
-            self.background_pixel_size = int(background.box_size)
             self.background = background
             self.logger.info("[OPTICAM] Using custom background estimator.")
         else:
             raise ValueError("[OPTICAM] Background estimator must be a callable.")
-        
-        # TODO: improve parameter logging to file
-        try:
-            with open(self.out_directory + "misc/background_input.json", "w") as file:
-                json.dump(self.background.get_input_dict(), file, indent=4)
-        except:
-            warnings.warn("[OPTICAM] Could not write background input parameters to file. It's a good idea to add a get_input_dict() method to your background estimator for reproducability (see the background tutorial).")
         
         if local_background is None:
             self.local_background = EllipticalLocalBackground()
@@ -301,11 +279,7 @@ class Reducer:
         else:
             raise ValueError("[OPTICAM] Source finder must be 'default', 'crowded', or a callable.")
         
-        try:
-            with open(self.out_directory + "misc/finder_input.json", "w") as file:
-                json.dump(self.finder.get_input_dict(), file, indent=4)
-        except:
-            warnings.warn("[OPTICAM] Could not write finder input parameters to file. It's a good idea to add a get_input_dict() method to your source finder for reproducability (see the source finder tutorial).")
+        self._log_parameters()  # log input parameters
         
         self.transforms = {}  # define transforms as empty dictionary
         self.unaligned_files = []  # define unaligned files as empty list
@@ -316,7 +290,7 @@ class Reducer:
             with open(self.out_directory + "cat/transforms.json", "r") as file:
                 self.transforms.update(json.load(file))
             if self.verbose:
-                print("[OPTICAM] Read transforms from file.")
+                self.logger.info("[OPTICAM] Read transforms from file.")
         except:
             pass
         
@@ -379,9 +353,6 @@ class Reducer:
         for key in list(self.camera_files.keys()):
             self.reference_indices[key] = int(len(self.camera_files[key]) / 2)
             self.reference_files[key] = self.camera_files[key][self.reference_indices[key]]
-        
-        with open(self.out_directory + "misc/earliest_observation_time.txt", "w") as file:
-            file.write(str(self.t_ref))
         
         if self.verbose:
             print('[OPTICAM] Done.')
@@ -481,10 +452,6 @@ class Reducer:
         if unique_filters.size > 3:
             log_filters(self.file_paths, self.out_directory)
             raise ValueError(f"[OPTICAM] More than three filters found. Image filters have been logged to {self.out_directory}diag/filters.json.")
-        else:
-            with open(self.out_directory + "misc/filters.txt", "w") as file:
-                for fltr in unique_filters:
-                    file.write(f"{fltr}-band\n")
         
         # ensure there is at most one type of binning
         unique_binning = np.unique(list(binnings.values()))
@@ -496,6 +463,83 @@ class Reducer:
             self.binning_scale = int(self.binning[0])
         
         return filters
+
+    def _log_parameters(self):
+        """
+        Log any and all object parameters to a JSON file.
+        """
+        
+        def recursive_log(param: Any, depth: int = 0, max_depth: int = 5) -> Any:
+            """
+            Recursively log parameters.
+            
+            Parameters
+            ----------
+            param : Any
+                The parameter to log.
+            depth : int, optional
+                The parameter depth, by default 0.
+            max_depth : int, optional
+                The maximum parameter depth, by default 5. This prevents infinite recursion.
+            
+            Returns
+            -------
+            Any
+                The logged parameter.
+            """
+            
+            if depth > max_depth:
+                return f"<Max depth ({max_depth}) reached>"
+            
+            if isinstance(param, FunctionType):
+                # return function name
+                return param.__name__
+            if isinstance(param, (int, float, str, bool, type(None))):
+                return param
+            if isinstance(param, (list, tuple, set)):
+                return type(param)(recursive_log(item, depth + 1, max_depth) for item in param)
+            if isinstance(param, dict):
+                return {key: recursive_log(value, depth + 1, max_depth) for key, value in param.items()}
+            if hasattr(param, '__dict__'):
+                return {key: recursive_log(value, depth + 1, max_depth) for key, value in vars(param).items()}
+            return str(param)
+        
+        # get parameters
+        params = dict(recursive_log(self, max_depth=5))
+        
+        params.update({'filters': list(self.camera_files.keys())})
+        
+        # remove some parameters that are either already saved elsewhere or are not needed
+        params.pop('logger')
+        params.pop('mjds')
+        params.pop('bdts')
+        params.pop('gains')
+        params.pop('camera_files')
+        params.pop('colours')
+        params.pop('file_paths')
+        
+        # if resuming from a previous run, remove some additional parameters that are already saved elsewhere
+        try:
+            params.pop('transforms')
+        except KeyError:
+            pass
+        
+        try:
+            params.pop('unaligned_files')
+        except KeyError:
+            pass
+        
+        try:
+            params.pop('catalogs')
+        except KeyError:
+            pass
+        
+        # sort parameters
+        params = dict(sorted(params.items()))
+        
+        # write parameters to file
+        with open(self.out_directory + "misc/input_parameters.json", "w") as file:
+            json.dump(params, file, indent=4)
 
 
 
@@ -582,7 +626,7 @@ class Reducer:
         coords = np.array([tbl["xcentroid"], tbl["ycentroid"]]).T
         
         if away_from_edge:
-            edge = 2 * self.background_pixel_size
+            edge = 2 * self.background.box_size
             for coord in coords:
                 if coord[0] < edge or coord[0] > image.shape[1] - edge or coord[1] < edge or coord[1] > image.shape[0] - edge:
                     coords = np.delete(coords, np.where(np.all(coords == coord, axis=1)), axis=0)
@@ -1369,6 +1413,8 @@ class Reducer:
                 # skip cameras with no sources
                 continue
             
+            self.logger.info(f'[OPTICAM] {fltr} forced photometry aperture radius: {radius} pixels.')
+            
             results = process_map(partial(self._perform_forced_photometry, fltr=fltr, radius=radius,
                                           phot_type=phot_type), self.camera_files[fltr],
                                   max_workers=self.number_of_processors,
@@ -1826,6 +1872,11 @@ class Reducer:
             semimajor_sigma = self.aperture_selector(self.catalogs[fltr]["semimajor_sigma"].value)
             semiminor_sigma = self.aperture_selector(self.catalogs[fltr]["semiminor_sigma"].value)
             
+            self.logger.info(f'[OPTICAM] {fltr} semi-major axis of PSF: {semimajor_sigma} pixels.')
+            self.logger.info(f'[OPTICAM] {fltr} semi-minor axis of PSF: {semiminor_sigma} pixels.')
+            self.logger.info(f'[OPTICAM] {fltr} normal aperture semi-major axis: {self.fwhm_scale * semimajor_sigma} pixels.')
+            self.logger.info(f'[OPTICAM] {fltr} normal aperture semi-minor axis: {self.fwhm_scale * semiminor_sigma} pixels.')
+            
             results = process_map(partial(self._perform_photometry_on_batch, fltr=fltr, semimajor_sigma=semimajor_sigma,
                                           semiminor_sigma=semiminor_sigma, background_method=background_method,
                                           tolerance=tolerance, phot_type=phot_type), self.camera_files[fltr],
@@ -1839,7 +1890,7 @@ class Reducer:
                                     background_method: Literal['global', 'local'], tolerance: float,
                                     phot_type: Literal['normal', 'optimal', 'both']):
         """
-        Perform photometry on a batch of images.
+        Perform photometry on a single of image.
         
         Parameters
         ----------
@@ -2234,7 +2285,7 @@ class Reducer:
         weights = np.exp(-0.5 * ((x_rot / semimajor_sigma)**2 + (y_rot / semiminor_sigma)**2))  # compute pixel weights assuming a 2D Gaussian PSF
         weights /= np.sum(weights)  # normalise weights
         
-        return np.sum(clean_data*weights), np.sqrt(np.sum((error*weights)**2))
+        return np.sum(clean_data * weights), np.sqrt(np.sum((error * weights)**2))
 
     def _get_position_of_nearest_source(self, file_tbl: QTable, source_index: int, fltr: str, file: str,
                                         tolerance: float) -> NDArray:

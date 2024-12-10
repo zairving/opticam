@@ -8,6 +8,7 @@ from astropy.table import QTable
 from scipy.spatial.distance import cdist
 from scipy.optimize import linear_sum_assignment
 from matplotlib import image as mpimage
+import json
 
 from opticam_new.analyser import Analyser
 
@@ -20,14 +21,14 @@ class Photometer:
     def __init__(self, out_directory: str, show_plots: bool = True):
         """
         Helper class for creating light curves from reduced OPTICam data.
-
+        
         Parameters
         ----------
         out_directory : str
             The path to the directory where output will be saved.
         show_plots : bool, optional
             Whether plots should be shown as they're generated, by default True.
-
+        
         Raises
         ------
         FileNotFoundError
@@ -43,11 +44,10 @@ class Photometer:
         
         self.show_plots = show_plots
         
-        # read filters
-        self.filters = []
-        with open(self.out_directory + "misc/filters.txt", "r") as file:
-            for line in file:
-                self.filters.append(line.strip())
+        with open(os.path.join(self.out_directory, 'misc/input_parameters.json'), 'r') as file:
+            input_parameters = json.load(file)
+        self.filters = input_parameters['filters']
+        self.t_ref = input_parameters['t_ref']
         print(self.filters)
         
         # read catalogs
@@ -80,7 +80,7 @@ class Photometer:
         out_directory/relative_light_curves. To automatically match the target and comparison sources across the other two
         filters, set match_other_cameras to True. Note that this can incorrectly match sources, so it is recommended to
         manually check the results.
-
+        
         Parameters
         ----------
         fltr : str
@@ -130,12 +130,10 @@ class Photometer:
             if fltr not in [cat_filter[0] for cat_filter in self.filters]:
                 raise ValueError('[OPTICAM] ' + fltr + ' is not a valid filter.')
         
-        t_ref = np.loadtxt(self.out_directory + "misc/earliest_observation_time.txt")  # load reference time
-        
         if not match_other_cameras:
             # compute and plot relative light curve for single filter
-            relative_light_curve, transformed_mask = self._compute_relative_light_curve(fltr, target, comparisons, phot_type, t_ref, show_diagnostics)
-            self._plot_relative_light_curve(relative_light_curve, t_ref, transformed_mask, target=target, comparisons=comparisons, prefix=prefix, fltr=fltr, save_label=save_label)
+            relative_light_curve, transformed_mask = self._compute_relative_light_curve(fltr, target, comparisons, phot_type, self.t_ref, show_diagnostics)
+            self._plot_relative_light_curve(relative_light_curve, self.t_ref, transformed_mask, target=target, comparisons=comparisons, prefix=prefix, fltr=fltr, save_label=save_label)
             
             # save light curve to CSV
             relative_light_curve.to_csv(self.out_directory + "relative_light_curves/" + f"{prefix}_{fltr}_{save_label}.csv", index=False)
@@ -172,10 +170,10 @@ class Photometer:
                     print(cat_fltr, targets_[cat_fltr], comparisons_[cat_fltr])
                 
                 # compute relative light curve for current filter
-                relative_light_curves[cat_fltr], transformed_masks[cat_fltr] = self._compute_relative_light_curve(cat_fltr, targets_[cat_fltr], comparisons_[cat_fltr], phot_type, t_ref, show_diagnostics)
+                relative_light_curves[cat_fltr], transformed_masks[cat_fltr] = self._compute_relative_light_curve(cat_fltr, targets_[cat_fltr], comparisons_[cat_fltr], phot_type, self.t_ref, show_diagnostics)
             
             # plot the relative light curves for each filter
-            self._plot_relative_light_curves(relative_light_curves, t_ref, transformed_masks, targets_, comparisons_, prefix, save_label)
+            self._plot_relative_light_curves(relative_light_curves, self.t_ref, transformed_masks, targets_, comparisons_, prefix, save_label)
             
             if self.show_plots:
                 plt.show()
@@ -493,7 +491,12 @@ class Photometer:
         relative_flux = comparison1_df["flux"]/comparison2_df["flux"]
         relative_flux_error = relative_flux*np.abs(np.sqrt(np.square(comparison1_df["flux_error"].values/comparison1_df["flux"].values) + np.square(comparison2_df["flux_error"].values/comparison2_df["flux"].values)))
         
-        diag_ax.errorbar(time, relative_flux/relative_flux.median(), relative_flux_error/relative_flux.median(),
+        # save light curve to CSV
+        diag_df = pd.DataFrame({"MJD": comparison1_df["MJD"].values, "BDT":  comparison1_df["BDT"].values,
+                                "relative flux": relative_flux, "relative flux error": relative_flux_error})
+        diag_df.to_csv(self.out_directory + 'relative_light_curves/diag/' + fltr + '_' + str(comparison1) + '_' + str(comparison2) + '_' + save_label + '_diag.csv', index=False)
+        
+        diag_ax.errorbar(time, relative_flux/relative_flux.median(), np.abs(relative_flux_error/relative_flux.median()),
                          fmt="k.", ms=2, ecolor="grey", elinewidth=1)
         
         diag_ax.axhline(1, color="r", ls="-", lw=1, zorder=3)

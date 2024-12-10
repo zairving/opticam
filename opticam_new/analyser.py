@@ -35,6 +35,7 @@ class Analyser:
         # drop NaNs to avoid issues with methods
         for lc in light_curves.values():
             lc.dropna(inplace=True)
+            lc.reset_index(drop=True, inplace=True)  # reset index after dropping NaNs
         
         self.filters = list(light_curves.keys())
         self.out_directory = out_directory
