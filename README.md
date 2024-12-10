@@ -2,6 +2,12 @@
 A Python package for reducing OPTICAM data.
 
 ## Features
-- Scalable. `opticam_new` can leverage modern multi-core CPUs thanks to the `multiprocessing` module. However, the scaling is highly non-linear due to parallelisation being used only in only some parts of the code (in addition to the overhead incurred from spawning and managing multiple processes). `opticam_new` will default to half the number of processors, where the scaling is most favourable. Here's a look at the relative performance scaling when using 1, 4, 8, 16, and 32 processors to reduce some test data on a 32 processor machine:
+- Customisable. Many of `opticam_new`'s reduction methods are fully customisable, allowing for full control over the reduction process.
+- Informative. `opticam_new` includes informative logging, allowing for reproducable reduction and information about any errors or warnings.
+- Robust. `opticam_new` is designed to catch many common errors and inform the user how they can be fixed.
+- Scalable. `opticam_new` can leverage modern multi-core CPUs to drastically speed up reduction.
+- Simple. When using `opticam_new`'s reduction methods, the default values should "just work" most of the time. Faint sources and/or crowded fields may require some tailoring, however.
 
-![multiprocess_scaling](https://github.com/zairving/opticam_new/assets/121759971/8b71e6f5-9bea-4ce6-888e-0c4469fc3fc8)
+## Getting Started
+
+To get started with `opticam_new`, there is a [dedicated script for creating some synthetic observations](Tutorials/create_test_data.py), which are used in most of the [guided tutorials](Tutorials). These synthetic observations can then be reduced by following the [Basic Usage Tutorial](Tutorials/basic_usage.ipynb). 
