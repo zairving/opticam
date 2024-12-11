@@ -1829,8 +1829,6 @@ class Reducer:
             Whether to overwrite existing light curves, by default False.
         """
         
-        print(phot_type)
-        
         assert phot_type in ['normal', 'optimal', 'both'], f"[OPTICAM] Photometry type {phot_type} not recognised."
         
         # create output directories if they do not exist
