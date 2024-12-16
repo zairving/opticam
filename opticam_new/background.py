@@ -46,21 +46,5 @@ class Background(ABC):
             2D image background.
         """
         
-        return Background2D(data, self.box_size, sigma_clip=self.sigma_clip, bkg_estimator=self.bkg_estimator, bkgrms_estimator=self.bkgrms_estimator)
-    
-    def get_input_dict(self) ->  Dict:
-        
-        params_dict = {
-            "box_size": self.box_size,
-        }
-        
-        for key, value in self.sigma_clip.__dict__.items():
-            if not key.startswith("_"):
-                params_dict["SigmaClip " + str(key)] = value
-        
-        params_dict.update({
-            "bkg_estimator": self.bkg_estimator.__class__.__name__,
-            "bkgrms_estimator": self.bkgrms_estimator.__class__.__name__,
-            })
-
-        return params_dict
+        return Background2D(data, self.box_size, sigma_clip=self.sigma_clip, bkg_estimator=self.bkg_estimator,
+                            bkgrms_estimator=self.bkgrms_estimator)
