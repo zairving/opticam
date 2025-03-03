@@ -252,9 +252,8 @@ class Reducer:
         
         # define background calculator and write input parameters to file
         if background is None:
-            background_pixel_size = int(128 / (self.binning_scale * self.rebin_factor))
             self.background = Background(box_size=background_pixel_size)
-            self.logger.info(f"[OPTICAM] Using default background estimator with box_size={background_pixel_size}.")
+            self.logger.info(f"[OPTICAM] Using default background estimator.")
         elif callable(background):
             self.background = background
             self.logger.info("[OPTICAM] Using custom background estimator.")
@@ -268,11 +267,11 @@ class Reducer:
         
         # define source finder and write input parameters to file
         if finder == 'default':
-            self.finder = Finder(npixels=int(128 / (self.binning_scale * self.rebin_factor)**2), border_width=int(64 / (self.binning_scale * self.rebin_factor)))
-            self.logger.info(f"[OPTICAM] Using default source finder with npixels={int(64 / (self.binning_scale * self.rebin_factor)**2)} and border_width={int(64 / (self.binning_scale * self.rebin_factor))}.")
+            self.finder = Finder()
+            self.logger.info(f"[OPTICAM] Using default source finder.")
         elif finder == 'crowded':
-            self.finder = CrowdedFinder(npixels=int(128 / (self.binning_scale * self.rebin_factor)**2), border_width=int(64 / (self.binning_scale * self.rebin_factor)))
-            self.logger.info(f"[OPTICAM] Using crowded source finder with npixels={int(64 / (self.binning_scale * self.rebin_factor)**2)} and border_width={int(64 / (self.binning_scale * self.rebin_factor))}.")
+            self.finder = CrowdedFinder()
+            self.logger.info(f"[OPTICAM] Using crowded source finder.")
         elif callable(finder):
             self.finder = finder
             self.logger.info("[OPTICAM] Using custom source finder.")
