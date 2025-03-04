@@ -252,7 +252,7 @@ class Reducer:
         
         # define background calculator and write input parameters to file
         if background is None:
-            self.background = Background(box_size=background_pixel_size)
+            self.background = Background()
             self.logger.info(f"[OPTICAM] Using default background estimator.")
         elif callable(background):
             self.background = background
@@ -262,8 +262,10 @@ class Reducer:
         
         if local_background is None:
             self.local_background = EllipticalLocalBackground()
-        else:
+        elif callable(local_background):
             self.local_background = local_background
+        else:
+            raise ValueError("[OPTICAM] Local background estimator must be a callable.")
         
         # define source finder and write input parameters to file
         if finder == 'default':
