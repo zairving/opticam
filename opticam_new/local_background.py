@@ -1,8 +1,7 @@
 from photutils.aperture import ApertureStats, CircularAnnulus, EllipticalAnnulus
-import numpy as np
 from abc import ABC, abstractmethod
-from numpy.typing import ArrayLike, NDArray
-from typing import Literal, Tuple
+from numpy.typing import NDArray
+from typing import Tuple
 from astropy.stats import SigmaClip
 
 
