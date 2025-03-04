@@ -8,19 +8,27 @@ A Python package for reducing OPTICAM data.
 - Scalable. `opticam_new` can leverage modern multi-core CPUs to drastically speed up reduction.
 - Simple. When using `opticam_new`'s reduction methods, the default values should "just work" most of the time. Faint sources and/or crowded fields may require some tailoring, however.
 
-## Requirements
+## Installation
 
-All of `opticam_new`'s dependencies are available as Python packages via your preferred package manager. I personally use [miniforge](https://github.com/conda-forge/miniforge), a fast, lightweight [Conda](https://conda.io/) interface that defaults to the [conda-forge](https://conda-forge.org/) channel. A full [dependencies.yml](dependencies.yml) file is available for automatic installation, but the following dependencies should get you up-and-running:
+### From GitHub (recommended)
 
-- `astropy >= 6.0.0`
-- `ccdproc` (tested with version `2.4.2`)
-- `matplotlib` (tested with version `3.9.2`)
-- `numpy >= 2.0.0`
-- `pandas` (tested with version `2.2.3`)
-- `photutils` (tested with version `2.0.2`)
-- `scikit-image` (tested with version `0.24.0`)
-- `scipy` (tested with version `1.14.1`)
-- `tqdm` (tested with version `4.66.6`)
+You can install `opticam_new` directly from GitHub using:
+
+```
+pip install git+https://github.com/zairving/opticam_new.git
+```
+
+### Locally
+
+If you have a local copy of `opticam_new`, it can be `pip` installed by navigating to the local directory and running:
+
+```
+pip install .
+```
+
+### Requirements
+
+All of `opticam_new`'s dependencies are available as Python packages via your preferred package manager, and should be handled automatically via `pip`. However, in the unlikely event that the `pip` installation breaks any dependencies, a full copy of the environment I use for development is available as a [dependencies.yml](dependencies.yml) file.
 
 ## Getting Started
 

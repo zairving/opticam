@@ -40,7 +40,7 @@ from opticam_new.helpers import log_binnings, log_filters, default_aperture_sele
 from opticam_new.background import Background
 from opticam_new.local_background import EllipticalLocalBackground
 from opticam_new.finder import CrowdedFinder, Finder
-from opticam_new.corrector import Corrector
+from opticam_new.corrector import FlatFieldCorrector
 
 
 
@@ -60,7 +60,7 @@ class Reducer:
         c2_directory: str = None,
         c3_directory: str = None,
         rebin_factor: int = 1,
-        corrector: Corrector = None,
+        corrector: FlatFieldCorrector = None,
         threshold: float = 5,
         background: Callable = None,
         local_background: Callable = None,
@@ -96,7 +96,7 @@ class Reducer:
             The rebinning factor, by default 1 (no rebinning). The rebinning factor is the factor by which the image is
             rebinned in both dimensions (i.e., a rebin_factor of 2 will reduce the image size by a factor of 4).
             Rebinning can improve the detectability of faint sources.
-        corrector: Corrector, optional,
+        corrector: FlatFieldCorrector, optional,
             The corrector to use for image correction, by default None. If None, no image correction is applied.
         threshold: float, optional
             The threshold for source finding, by default 5. The threshold is the background RMS factor above which
@@ -252,9 +252,8 @@ class Reducer:
         
         # define background calculator and write input parameters to file
         if background is None:
-            background_pixel_size = int(128 / (self.binning_scale * self.rebin_factor))
-            self.background = Background(box_size=background_pixel_size)
-            self.logger.info(f"[OPTICAM] Using default background estimator with box_size={background_pixel_size}.")
+            self.background = Background()
+            self.logger.info(f"[OPTICAM] Using default background estimator.")
         elif callable(background):
             self.background = background
             self.logger.info("[OPTICAM] Using custom background estimator.")
@@ -263,16 +262,18 @@ class Reducer:
         
         if local_background is None:
             self.local_background = EllipticalLocalBackground()
-        else:
+        elif callable(local_background):
             self.local_background = local_background
+        else:
+            raise ValueError("[OPTICAM] Local background estimator must be a callable.")
         
         # define source finder and write input parameters to file
         if finder == 'default':
-            self.finder = Finder(npixels=int(128 / (self.binning_scale * self.rebin_factor)**2), border_width=int(64 / (self.binning_scale * self.rebin_factor)))
-            self.logger.info(f"[OPTICAM] Using default source finder with npixels={int(64 / (self.binning_scale * self.rebin_factor)**2)} and border_width={int(64 / (self.binning_scale * self.rebin_factor))}.")
+            self.finder = Finder()
+            self.logger.info(f"[OPTICAM] Using default source finder.")
         elif finder == 'crowded':
-            self.finder = CrowdedFinder(npixels=int(128 / (self.binning_scale * self.rebin_factor)**2), border_width=int(64 / (self.binning_scale * self.rebin_factor)))
-            self.logger.info(f"[OPTICAM] Using crowded source finder with npixels={int(64 / (self.binning_scale * self.rebin_factor)**2)} and border_width={int(64 / (self.binning_scale * self.rebin_factor))}.")
+            self.finder = CrowdedFinder()
+            self.logger.info(f"[OPTICAM] Using crowded source finder.")
         elif callable(finder):
             self.finder = finder
             self.logger.info("[OPTICAM] Using custom source finder.")

@@ -1,5 +1,6 @@
-from photutils.background import Background2D
-from typing import Union, Tuple
+from photutils.background import Background2D, SExtractorBackground, StdBackgroundRMS
+from typing import Callable, Union, Tuple
+from astropy.stats import SigmaClip
 from numpy.typing import NDArray
 
 

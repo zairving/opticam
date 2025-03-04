@@ -1,11 +1,10 @@
 from astropy.io import fits
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
-from typing import Literal, List, Tuple
+from typing import List, Tuple
 from astropy.time import Time
 from astropy.coordinates import EarthLocation, SkyCoord
 import astropy.units as u
-import os
 from astropy.io import fits
 import json
 from astropy.table import QTable
