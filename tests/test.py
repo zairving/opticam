@@ -25,16 +25,16 @@ def add_two_dimensional_gaussian_to_image(image: NDArray, x_centroid: float, y_c
 def generate_image():
     rng = np.random.default_rng(0)
     
-    base_image = np.zeros((2048, 2048)) + 100  # create blank image
+    base_image = np.zeros((512, 512)) + 100  # create blank image
     noisy_image = base_image + np.sqrt(base_image) * rng.standard_normal(base_image.shape)  # add Poisson noise
     
     for i in range(3):
         
         # prevent source being positioned near edge of image
-        x = rng.uniform(128, 2048 - 128)
-        y = rng.uniform(128, 2048 - 128)
+        x = rng.uniform(base_image.shape[0] / 16, base_image.shape[0] - base_image.shape[0] / 16)
+        y = rng.uniform(base_image.shape[1] / 16, base_image.shape[1] - base_image.shape[1] / 16)
         
-        noisy_image = add_two_dimensional_gaussian_to_image(noisy_image, x, y, 1000, 10, 10, 0)
+        noisy_image = add_two_dimensional_gaussian_to_image(noisy_image, x, y, 1000, 2, 2, 0)
     
     return noisy_image
 
@@ -111,7 +111,10 @@ class TestCircularLocalBackground(unittest.TestCase):
         local_bkg_estimator = CircularLocalBackground()
         
         for i in range(len(coords)):
-            local_bkg, local_bkg_error = local_bkg_estimator(image, np.sqrt(image), 50, 50, 0, coords[i])
+            local_bkg, local_bkg_error = local_bkg_estimator(image, np.sqrt(image), 5 * tbl['semimajor_sigma'][i].value,
+                                                             5 * tbl['semiminor_sigma'][i].value, tbl['orientation'][i],
+                                                             coords[i])
+            
             self.assertTrue(np.allclose(local_bkg, 100, rtol = 0.01))  # check local background is within 1% of true value
             self.assertTrue(np.allclose(local_bkg_error, 10, rtol = 0.05))  # check local background error is within 5% of true value
 
@@ -137,6 +140,9 @@ class TestEllipticalLocalBackground(unittest.TestCase):
         local_bkg_estimator = EllipticalLocalBackground()
         
         for i in range(len(coords)):
-            local_bkg, local_bkg_error = local_bkg_estimator(image, np.sqrt(image), 50, 50, 0, coords[i])
-            self.assertTrue(np.allclose(local_bkg, 100, rtol = 0.01))
-            self.assertTrue(np.allclose(local_bkg_error, 10, rtol = 0.05))
+            local_bkg, local_bkg_error = local_bkg_estimator(image, np.sqrt(image), 5 * tbl['semimajor_sigma'][i].value,
+                                                             5 * tbl['semiminor_sigma'][i].value, tbl['orientation'][i],
+                                                             coords[i])
+            
+            self.assertTrue(np.allclose(local_bkg, 100, rtol = 0.01))  # check local background is within 1% of true value
+            self.assertTrue(np.allclose(local_bkg_error, 10, rtol = 0.05))  # check local background error is within 5% of true value
