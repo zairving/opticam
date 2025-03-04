@@ -6,16 +6,16 @@ from typing import Dict, List
 
 from opticam_new.helpers import log_binnings, log_filters
 
-class Corrector:
+class FlatFieldCorrector:
     """
-    Helper class for correcting OPTICAM images.
+    Helper class for performing flat-field corrections on OPTICAM images.
     """
     
     def __init__(self, out_dir: str, flats_dir: str = None, c1_flats_dir: str = None, c2_flats_dir: str = None,
                  c3_flats_dir: str = None) -> None:
         """
-        Helper class for correcting OPTICAM images.
-
+        Helper class for performing flat-field corrections on OPTICAM images.
+        
         Parameters
         ----------
         out_dir : str
@@ -27,13 +27,13 @@ class Corrector:
             out_dir/calibration_images. This parameter will override c1_flats_dir, c2_flats_dir, and c3_flats_dir if
             they are also defined. flats_dir is assumed to contain flat-field images for all cameras being used.
         c1_flats_dir : str, optional
-            The directory path to the flat-field images for C1, by default None. If flats_dir is also defined, this
+            The directory path to the flat-field images for C1 only, by default None. If flats_dir is also defined, this
             parameter will be ignored.
         c2_flats_dir : str, optional
-            The directory path to the flat-field images for C2, by default None. If flats_dir is also defined, this
+            The directory path to the flat-field images for C2 only, by default None. If flats_dir is also defined, this
             parameter will be ignored.
         c3_flats_dir : str, optional
-            The directory path to the flat-field images for C3, by default None. If flats_dir is also defined, this
+            The directory path to the flat-field images for C3 only, by default None. If flats_dir is also defined, this
             parameter will be ignored.
         """
         
