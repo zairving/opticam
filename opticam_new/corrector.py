@@ -46,7 +46,7 @@ class FlatFieldCorrector:
             try:
                 os.makedirs(out_dir)
             except:
-                raise Exception(f"Could not create output directory {out_dir}").__annotations__
+                raise Exception(f"Could not create output directory {out_dir}")
         
         flat_paths = []
         
@@ -55,7 +55,7 @@ class FlatFieldCorrector:
                 flats_dir += "/"
             
             if not os.path.exists(flats_dir):
-                raise Exception(f"Flat-field images directory {flats_dir} does not exist").__annotations__
+                raise Exception(f"Flat-field images directory {flats_dir} does not exist")
             
             flat_paths += [flats_dir + flat for flat in sorted(os.listdir(flats_dir))]
         else:
@@ -64,7 +64,7 @@ class FlatFieldCorrector:
                     c1_flats_dir += "/"
                 
                 if not os.path.exists(c1_flats_dir):
-                    raise Exception(f"Flat-field images directory {c1_flats_dir} does not exist").__annotations__
+                    raise Exception(f"Flat-field images directory {c1_flats_dir} does not exist")
                 
                 flat_paths += [c1_flats_dir + flat for flat in sorted(os.listdir(c1_flats_dir))]
             
@@ -73,7 +73,7 @@ class FlatFieldCorrector:
                     c2_flats_dir += "/"
                 
                 if not os.path.exists(c2_flats_dir):
-                    raise Exception(f"Flat-field images directory {c2_flats_dir} does not exist").__annotations__
+                    raise Exception(f"Flat-field images directory {c2_flats_dir} does not exist")
                 
                 flat_paths += [c2_flats_dir + flat for flat in sorted(os.listdir(c2_flats_dir))]
             
@@ -82,7 +82,7 @@ class FlatFieldCorrector:
                     c3_flats_dir += "/"
                 
                 if not os.path.exists(c3_flats_dir):
-                    raise Exception(f"Flat-field images directory {c3_flats_dir} does not exist").__annotations__
+                    raise Exception(f"Flat-field images directory {c3_flats_dir} does not exist")
                 
                 flat_paths += [c3_flats_dir + flat for flat in sorted(os.listdir(c3_flats_dir))]
         
@@ -147,17 +147,17 @@ class FlatFieldCorrector:
         
         for fltr in self.flat_paths.keys():
             # skip if master flat-field image already exists and overwrite is False
-            if os.path.exists(self.out_dir + f"corr/{fltr}_master_flat.fit.gz") and not overwrite:
+            if os.path.exists(self.out_dir + f"master_flats/{fltr}_master_flat.fit.gz") and not overwrite:
                 return
             
-            if not os.path.isdir(self.out_dir + "corr/"):
+            if not os.path.isdir(self.out_dir + "master_flats/"):
                 try:
-                    os.makedirs(self.out_dir + "corr/")
+                    os.makedirs(self.out_dir + "master_flats/", exist_ok=True)
                 except:
-                    raise Exception(f"[OPTICAM] Could not create corr directory in {self.out_dir}").__annotations__
+                    raise Exception(f"[OPTICAM] Could not create master_flats directory in {self.out_dir}")
             
             if len(self.flat_paths[fltr]) == 1:
-                raise Exception(f"[OPTICAM] Only one {fltr} flat found. Master flats cannot be created from a single image.").__annotations__
+                raise Exception(f"[OPTICAM] Only one {fltr} flat found. Master flats cannot be created from a single image.")
             
             # read flats
             flats = []
@@ -171,9 +171,9 @@ class FlatFieldCorrector:
             
             # save master flat to file
             hdu = fits.PrimaryHDU(master_flat)
-            hdu.writeto(self.out_dir + f"corr/{fltr}_master_flat.fit.gz", overwrite=overwrite)
+            hdu.writeto(self.out_dir + f"master_flats/{fltr}_master_flat.fit.gz", overwrite=overwrite)
     
-    def flat_correct(self, image: NDArray, fltr: str) -> NDArray:
+    def correct(self, image: NDArray, fltr: str) -> NDArray:
         """
         Correct an image for flat-fielding.
         
@@ -193,16 +193,16 @@ class FlatFieldCorrector:
         if fltr not in self.flat_paths.keys():
             raise ValueError(f"[OPTICAM] No flat-field images found for {fltr} filter.")
         
-        if not os.path.exists(self.out_dir + f"corr/{fltr}_master_flat.fit.gz") and fltr in self.flat_paths.keys():
+        if not os.path.exists(self.out_dir + f"master_flats/{fltr}_master_flat.fit.gz") and fltr in self.flat_paths.keys():
             print(f"[OPTICAM] {fltr} master flat-field image not found. Attempting to create...")
             try:
-                self.create_master_flat()
+                self.create_master_flats()
                 print("[OPTICAM] Master flat-field image created.")
             except:
-                raise Exception("[OPTICAM] Could not create master flat-field image(s).").__annotations__
+                raise Exception("[OPTICAM] Could not create master flat-field image(s).")
         
         # load master flat
-        with fits.open(self.out_dir + f"corr/{fltr}_master_flat.fit.gz") as hdul:
+        with fits.open(self.out_dir + f"master_flats/{fltr}_master_flat.fit.gz") as hdul:
             master_flat = np.array(hdul[0].data)
         
         # correct image for flat-fielding
