@@ -40,7 +40,7 @@ from opticam_new.helpers import log_binnings, log_filters, default_aperture_sele
 from opticam_new.background import Background
 from opticam_new.local_background import EllipticalLocalBackground
 from opticam_new.finder import CrowdedFinder, Finder
-from opticam_new.corrector import FlatFieldCorrector
+from opticam_new.correctors import FlatFieldCorrector
 
 
 
@@ -60,7 +60,7 @@ class Reducer:
         c2_directory: str = None,
         c3_directory: str = None,
         rebin_factor: int = 1,
-        corrector: FlatFieldCorrector = None,
+        flat_corrector: FlatFieldCorrector = None,
         threshold: float = 5,
         background: Callable = None,
         local_background: Callable = None,
@@ -68,7 +68,7 @@ class Reducer:
         aperture_selector: Callable = None,
         scale: float = 5,
         remove_cosmic_rays: bool = True,
-        number_of_processors: int = int(cpu_count()/2),
+        number_of_processors: int = cpu_count() // 2,
         show_plots: bool = True,
         verbose: bool = True
         ) -> None:
@@ -96,8 +96,8 @@ class Reducer:
             The rebinning factor, by default 1 (no rebinning). The rebinning factor is the factor by which the image is
             rebinned in both dimensions (i.e., a rebin_factor of 2 will reduce the image size by a factor of 4).
             Rebinning can improve the detectability of faint sources.
-        corrector: FlatFieldCorrector, optional,
-            The corrector to use for image correction, by default None. If None, no image correction is applied.
+        flat_corrector: FlatFieldCorrector, optional,
+            The flat-field corrector, by default None. If None, no flat-field corrections are applied.
         threshold: float, optional
             The threshold for source finding, by default 5. The threshold is the background RMS factor above which
             sources are detected. For faint sources, a lower threshold may be required.
@@ -202,7 +202,7 @@ class Reducer:
         
         # set parameters
         self.rebin_factor = rebin_factor
-        self.corrector = corrector
+        self.flat_corrector = flat_corrector
         self.fwhm_scale = 2 * np.sqrt(2 * np.log(2))  # FWHM scale factor
         self.aperture_selector = default_aperture_selector if aperture_selector is None else aperture_selector
         self.scale = scale
@@ -572,11 +572,8 @@ class Reducer:
         if return_error:
             error = np.sqrt(data*self.gains[file])
         
-        # try to apply flat corrections
-        try:
-            data = self.corrector.flat_correct(data, fltr)
-        except:
-            pass
+        if self.flat_corrector is not None:
+            data = self.flat_corrector.correct(data, fltr)
         
         # remove cosmic rays if required
         if self.remove_cosmic_rays:
