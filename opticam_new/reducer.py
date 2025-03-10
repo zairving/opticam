@@ -40,7 +40,7 @@ from opticam_new.helpers import log_binnings, log_filters, default_aperture_sele
 from opticam_new.background import Background
 from opticam_new.local_background import EllipticalLocalBackground
 from opticam_new.finder import CrowdedFinder, Finder
-from opticam_new.corrector import FlatFieldCorrector
+from opticam_new.correctors import FlatFieldCorrector
 
 
 
