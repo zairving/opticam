@@ -12,7 +12,7 @@ A Python package for reducing OPTICAM data.
 
 ### From GitHub (recommended)
 
-You can install `opticam_new` directly from GitHub using:
+You can install the latest stable release of `opticam_new` directly from GitHub using:
 
 ```
 pip install git+https://github.com/zairving/opticam_new.git
@@ -20,7 +20,7 @@ pip install git+https://github.com/zairving/opticam_new.git
 
 ### Locally
 
-If you have a local copy of `opticam_new`, it can be `pip` installed by navigating to the local directory and running:
+If you have a local copy of `opticam_new`, it can be `pip` installed by navigating to the directory and running:
 
 ```
 pip install .
