@@ -1,4 +1,8 @@
 /.env
 **/__pycache__/
-Tutorials/Data/
-Tutorials/Reduced/
+Tutorials/data/
+Tutorials/reduced/
+Tutorials/flats/
+Tutorials/master_flats/
+build/
+opticam_new.egg-info/
