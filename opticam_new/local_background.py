@@ -10,7 +10,8 @@ class LocalBackground(ABC):
     Base class for local background estimators.
     """
     
-    def __init__(self, r_in_scale: float = 1, r_out_scale: float = 2, sigma_clip: SigmaClip = SigmaClip(maxiters=10)):
+    def __init__(self, r_in_scale: float = 1, r_out_scale: float = 2,
+                 sigma_clip: SigmaClip = None):
         """
         Local background estimator using an elliptical annulus.
         
@@ -21,7 +22,7 @@ class LocalBackground(ABC):
         r_out_scale : float, optional
             The outer axes of the annulus (in units of aperture semi-major/semi-minor axes or radius), by default 2.
         sigma_clip : SigmaClip, optional
-            The sigma clipper for removing outlier pixels in the annulus, by default SigmaClip(maxiters=10).
+            The sigma clipper for removing outlier pixels in the annulus, by default None.
         """
         
         self.r_in_scale = r_in_scale
