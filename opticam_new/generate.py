@@ -71,7 +71,7 @@ def __create_base_image(i: int, binning_scale: int) -> NDArray:
     return noisy_image
 
 def __create_images(out_dir: str, filters: List[str], N_sources: int, variable_source: int, source_positions: NDArray,
-                 peak_fluxes: NDArray, i: int, binning_scale: int, overwrite: bool) -> None:
+                 peak_fluxes: NDArray, i: int, binning_scale: int, circular_aperture: bool, overwrite: bool) -> None:
     """
     Create an image for each filter.
     
@@ -91,6 +91,8 @@ def __create_images(out_dir: str, filters: List[str], N_sources: int, variable_s
         The time.
     binning_scale : int
         The binning scale.
+    circular_aperture : bool
+        Whether to apply a circular aperture shadow to the image.
     overwrite : bool
         Whether to overwrite the image if it already exists.
     """
@@ -101,7 +103,8 @@ def __create_images(out_dir: str, filters: List[str], N_sources: int, variable_s
             continue
         
         noisy_image = __create_base_image(i, binning_scale)
-        noisy_image = __apply_flat_field(noisy_image)  # apply circular aperture shadow
+        if circular_aperture:
+            noisy_image = __apply_flat_field(noisy_image)  # apply circular aperture shadow
         
         # put sources in the image
         for j in range(N_sources):
@@ -176,7 +179,19 @@ def __create_flats(out_dir: str, filters: list, i: int, binning_scale: int, over
         except:
             pass
 
-def create_synthetic_flats(out_dir: str, overwrite: bool = False):
+def create_synthetic_flats(out_dir: str, n_flats: int = 5, overwrite: bool = False):
+    """
+    Create synthetic flat-field images for testing and following the tutorials.
+    
+    Parameters
+    ----------
+    out_dir : str
+        The directory to save the data.
+    n_flats : int, optional
+        The number of flats per camera, by default 5.
+    overwrite : bool, optional
+        Whether to overwrite data if they currently exist, by default False.
+    """
     
     # create directory if it does not exist
     if not os.path.isdir(out_dir):
@@ -184,17 +199,23 @@ def create_synthetic_flats(out_dir: str, overwrite: bool = False):
     
     filters = ["g", "r", "i"]
     binning_scale = 8
-    N_images = 5
     
-    for i in range(N_images):
+    for i in range(n_flats):
         __create_flats(out_dir, filters, i, binning_scale, overwrite)
 
-def create_synthetic_observations(out_dir: str, overwrite: bool = False):
+def create_synthetic_observations(out_dir: str, n_images: int = 100, circular_aperture: bool = True,
+                                  overwrite: bool = False):
     """
     Create synthetic observation data for testing and following the tutorials.
     
     Parameters
     ----------
+    out_dir : str
+        The directory to save the data.
+    n_images : int, optional
+        The number of images to create, by default 100.
+    circular_aperture : bool, optional
+        Whether to apply a circular aperture shadow to the images, by default True.
     overwrite : bool, optional
         Whether to overwrite data if they currently exist, by default False.
     """
@@ -213,7 +234,7 @@ def create_synthetic_observations(out_dir: str, overwrite: bool = False):
                                    (N_sources, 2))  # generate random source positions away from the edges
     peak_fluxes = rng.uniform(100, 1000, N_sources)  # generate random peak fluxes
     variable_source = 1
-    N_images = 100
     
-    for i in tqdm(range(N_images), desc="Creating synthetic observations"):
-        __create_images(out_dir, filters, N_sources, variable_source, source_positions, peak_fluxes, i, binning_scale, overwrite)
+    for i in tqdm(range(n_images), desc="Creating synthetic observations"):
+        __create_images(out_dir, filters, N_sources, variable_source, source_positions, peak_fluxes, i, binning_scale,
+                        circular_aperture, overwrite)
