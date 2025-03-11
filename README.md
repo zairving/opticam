@@ -32,4 +32,4 @@ All of `opticam_new`'s dependencies are available as Python packages via your pr
 
 ## Getting Started
 
-To get started with `opticam_new`, there is a [dedicated script for creating some synthetic observations](Tutorials/create_test_data.py), which are used in most of the [guided tutorials](Tutorials). These synthetic observations can be reduced by following the [Basic Usage tutorial](Tutorials/basic_usage.ipynb). 
+To get started with `opticam_new`, there are several [guided tutorials](Tutorials). For a broad overview of `opticam_new`'s features, check out the [basic usage](Tutorials/basic_usage.ipynb) tutorial.
