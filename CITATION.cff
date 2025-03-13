@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+  - family-names: Irving
+    given-names: Zackery
+    orcid: https://orcid.org/0009-0006-0951-3429
+title: "opticam_new"
+version: 0.1.0
+identifiers:
+#  - type: doi
+#    value: 10.5281/zenodo.1234
+date-released: 2025-03-13
