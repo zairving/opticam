@@ -32,4 +32,4 @@ All of `opticam_new`'s dependencies are available as Python packages via your pr
 
 ## Getting Started
 
-To get started with `opticam_new`, there are several [guided tutorials](Tutorials). For a broad overview of `opticam_new`'s features, check out the [basic usage](Tutorials/basic_usage.ipynb) tutorial.
+Documentation for `opticam_new` is available on [Read the Docs](https://opticam-new.readthedocs.io/en/latest/index.html). To get started, I recommend checking out the [basic usage](https://opticam-new.readthedocs.io/en/latest/tutorials/basic_usage.html) tutorial.
