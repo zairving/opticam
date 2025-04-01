@@ -11,7 +11,7 @@ authors = [
     {name = "Zac Irving", email = "zackery.irving@icloud.com"},
 ]
 
-requires-python = "==3.12.7"
+requires-python = ">=3.12.7"
 dependencies = [
     "astropy == 6.1.4",
     "ccdproc == 2.4.2",
