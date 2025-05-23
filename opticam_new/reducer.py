@@ -235,6 +235,8 @@ class Reducer:
                     if file.endswith('.fit') or file.endswith('.fits') or file.endswith('.fit.gz') or file.endswith('.fits.gz'):
                         self.file_paths.append(self.c3_directory + file)
         
+        self.ignored_files = []  # list of files to ignore (e.g., if they are corrupted or do not comply with the FITS standard)
+        
         self._scan_data_directory()  # scan data directory
         
         # define colours for circling sources in catalogs
@@ -334,9 +336,10 @@ class Reducer:
             
             # for each file
             for file in self.file_paths:
-                # if the file filter matches the current filter
-                if filters[file] == fltr:
-                    self.camera_files[fltr + '-band'].append(file)  # add file name to dict list
+                if file not in self.ignored_files:
+                    # if the file filter matches the current filter
+                    if filters[file] == fltr:
+                        self.camera_files[fltr + '-band'].append(file)  # add file name to dict list
         
         # sort camera files so filters match camera order
         key_order = {'g-band': 0, 'u-band': 0, "g'-band": 0, "u'-band": 0, "r-band": 1, "r'-band": 1, 'i-band': 2, 'z-band': 2, "i'-band": 2, "z'-band": 2}
@@ -360,7 +363,7 @@ class Reducer:
             print('[OPTICAM] Binning: ' + self.binning)
             print('[OPTICAM] Filters: ' + ', '.join(list(self.camera_files.keys())))
 
-    def _get_header_info(self, file: str) -> Tuple[float, float, str, str, float]:
+    def _get_header_info(self, file: str) -> Tuple[float | None, ArrayLike | None, str | None, str | None, float | None]:
         """
         Get the MJD, filter, binning, and gain from a file header.
         
@@ -405,7 +408,11 @@ class Reducer:
                 bdt = mjd
                 self.logger.info(f"[OPTICAM] Could not compute BDT for {file}.")
         except:
-            raise ValueError(f'[OPTICAM] Could not parse header information from {file}.')
+            self.logger.info(f'[OPTICAM] Skipping file {file} because it could not be read. This is usually due to the \
+                file not conforming to the FITS standard, or the file being corrupted. Consider removing this file \
+                    from the data directory and re-running.')
+            self.ignored_files.append(file)
+            return None, None, None, None, None
         
         return mjd, bdt, fltr, binning, gain
 
@@ -442,22 +449,25 @@ class Reducer:
         
         # consolidate results
         for i in range(len(raw_mjds)):
-            self.mjds.update({self.file_paths[i]: raw_mjds[i]})
-            self.bdts.update({self.file_paths[i]: raw_bdts[i]})
-            filters.update({self.file_paths[i]: raw_filters[i]})
-            binnings.update({self.file_paths[i]: raw_binnings[i]})
-            self.gains.update({self.file_paths[i]: raw_gains[i]})
+            if self.file_paths[i] not in self.ignored_files:
+                self.mjds.update({self.file_paths[i]: raw_mjds[i]})
+                self.bdts.update({self.file_paths[i]: raw_bdts[i]})
+                filters.update({self.file_paths[i]: raw_filters[i]})
+                binnings.update({self.file_paths[i]: raw_binnings[i]})
+                self.gains.update({self.file_paths[i]: raw_gains[i]})
         
         # ensure there are no more than three filters
         unique_filters = np.unique(list(filters.values()))
         if unique_filters.size > 3:
-            log_filters(self.file_paths, self.out_directory)
+            log_filters([file_path for file_path in self.file_paths if file_path not in self.ignored_files],
+                        self.out_directory)
             raise ValueError(f"[OPTICAM] More than three filters found. Image filters have been logged to {self.out_directory}diag/filters.json.")
         
         # ensure there is at most one type of binning
         unique_binning = np.unique(list(binnings.values()))
         if len(unique_binning) > 1:
-            log_binnings(self.file_paths, self.out_directory)
+            log_binnings([file_path for file_path in self.file_paths if file_path not in self.ignored_files],
+                         self.out_directory)
             raise ValueError(f"[OPTICAM] Inconsistent binning detected. All images must have the same binning. Image binnings have been logged to {self.out_directory}diag/binnings.json.")
         else:
             self.binning = unique_binning[0]
@@ -543,9 +553,7 @@ class Reducer:
             json.dump(params, file, indent=4)
 
 
-
-
-    def get_data(self, file: str, return_error: bool = False) -> Union[NDArray, Tuple[NDArray, NDArray]]:
+    def get_data(self, file: str, return_error: bool = False) -> NDArray | Tuple[NDArray, NDArray]:
         """
         Get data from a file.
         
@@ -558,7 +566,7 @@ class Reducer:
         
         Returns
         -------
-        Union[NDArray, Tuple[NDArray, NDArray]]
+        NDArray | Tuple[NDArray, NDArray]
             The data array or the data and error arrays.
         """
         
@@ -634,15 +642,19 @@ class Reducer:
 
 
 
-    def initialise_catalogs(self, n_alignment_sources: int = 3,
+    def initialise_catalogs(self, max_catalog_sources: int = 15, n_alignment_sources: int = 3,
                             transform_type: Literal['euclidean', 'similarity', 'translation'] = 'translation',
-                            translation_limit: int = None, rotation_limit: int = None, scaling_limit: int = None,
-                            overwrite: bool = False, show_diagnostic_plots: bool = False) -> None:
+                            translation_limit: int | None = None, rotation_limit: int | None = None,
+                            scaling_limit: int | None = None, overwrite: bool = False,
+                            show_diagnostic_plots: bool = False) -> None:
         """
         Initialise the source catalogs for each camera. Some aspects of this method are parallelised for speed.
         
         Parameters
         ----------
+        max_catalog_sources : int, optional
+            The maximum number of sources included in the catalog, by default 15. Only the brightest
+            max_catalog_sources sources are included in the catalog.
         n_alignment_sources : int, optional
             The number of sources to use for image alignment, by default 3. Must be >= 3. The brightest
             n_alignment_sources sources are used for image alignment.
@@ -671,7 +683,7 @@ class Reducer:
             print('[OPTICAM] Initialising catalogs ...')
         
         if translation_limit is None:
-            translation_limit = 128 / (self.binning_scale * self.rebin_factor)
+            translation_limit = 128 // (self.binning_scale * self.rebin_factor)
         if rotation_limit is None:
             rotation_limit = 360
         if scaling_limit is None:
@@ -690,6 +702,7 @@ class Reducer:
                 continue
             
             reference_image = self.get_data(self.camera_files[fltr][self.reference_indices[fltr]])  # get reference image
+            self.stacked_image = reference_image.copy()  # create stacked image
             
             try:
                 reference_coords = self.get_source_coords_from_image(reference_image, away_from_edge=True)  # get source coordinates in descending order of brightness
@@ -713,14 +726,10 @@ class Reducer:
                                   max_workers=self.number_of_processors, disable=not self.verbose,
                                   desc=f'[OPTICAM] Aligning {fltr} images',
                                   chunksize=len(self.camera_files[fltr]) // 100)
-            
-            # parse batch results
-            stacked_image, background_median[fltr], background_rms[fltr] = self._parse_alignment_results(results,
-                                                                                                         reference_image.copy(),
-                                                                                                         fltr)
+            self._parse_alignment_results(results, fltr)
             
             try:
-                threshold = detect_threshold(stacked_image, nsigma=self.threshold,
+                threshold = detect_threshold(self.stacked_image, nsigma=self.threshold,
                                              sigma_clip=SigmaClip(sigma=3, maxiters=10))  # estimate threshold
             except:
                 self.logger.info('[OPTICAM] Unable to estimate source detection threshold for ' + fltr + ' stacked image.')
@@ -728,21 +737,25 @@ class Reducer:
             
             try:
                 # identify sources in stacked image
-                segment_map = self.finder(stacked_image, threshold)
+                segment_map = self.finder(self.stacked_image, threshold)
             except:
                 self.logger.info('[OPTICAM] No sources detected in the stacked ' + fltr + ' stacked image. Reducing threshold may help.')
                 continue
             
             # save stacked image and its background
-            stacked_images[fltr] = stacked_image
+            stacked_images[fltr] = self.stacked_image
             
-            tbl = SourceCatalog(stacked_image, segment_map).to_table()  # create catalog of sources
+            tbl = SourceCatalog(self.stacked_image, segment_map).to_table()  # create catalog of sources
             tbl = clip_extended_sources(tbl)  # clip extended sources
+            tbl.sort('segment_flux', reverse=True)  # sort catalog by flux in descending order
+            tbl = tbl[:max_catalog_sources]  # limit catalog to brightest max_catalog_sources sources
             
             # create catalog of sources in stacked image and write to file
             self.catalogs.update({fltr: tbl})
             self.catalogs[fltr].write(self.out_directory + f"cat/{fltr}_catalog.ecsv", format="ascii.ecsv",
                                             overwrite=True)
+        
+        del self.stacked_image  # stacked image no longer needed
         
         # compile catalog
         self._plot_catalog(stacked_images)
@@ -829,26 +842,27 @@ class Reducer:
         else:
             transform = estimate_transform(transform_type, reference_coords[reference_indices], coords[indices])
         
+        # transform and stack image
+        self.stacked_image += warp(data_clean, transform.inverse, output_shape=self.stacked_image.shape, order=3,
+                                   mode='constant', cval=np.nanmedian(data), clip=True, preserve_range=True)
+        
         return transform.params.tolist(), background_median, background_rms
-
-    def _parse_alignment_results(self, results, reference_image: NDArray,
-                                 fltr: str) -> Tuple[NDArray, Dict[str, float], Dict[str, float]]:
+    
+    def _parse_alignment_results(self, results, fltr: str) -> Tuple[Dict[str, float], Dict[str, float]]:
         """
-        Parse the results of a batch of image alignment and stacking.
+        Parse the results of image alignment.
         
         Parameters
         ----------
         results :
             The results.
-        reference_image : NDArray
-            The stacked image onto which the batch images are stacked.
         fltr : str
             The filter.
         
         Returns
         -------
-        Tuple[NDArray, Dict[str, float], Dict[str, float]]
-            The stacked image, background medians, and background RMSs.
+        Tuple[Dict[str, float], Dict[str, float]]
+            The background medians, and background RMSs.
         """
         
         transforms = {}
@@ -870,36 +884,11 @@ class Reducer:
         self.transforms.update(transforms)  # update transforms
         self.unaligned_files += unaligned_files  # update unaligned files
         
-        # stack images in batches
-        batch_size = round(len(self.camera_files[fltr]) / self.number_of_processors)
-        batches = [self.camera_files[fltr][i:i + batch_size] for i in range(0, len(self.camera_files[fltr]), batch_size)]
-        fn = partial(self._stack_images_in_batches, reference_image)
-        with Pool(self.number_of_processors) as pool:
-            results = pool.map(fn, batches)
-        stacked_image = reference_image + np.sum(results, axis=0)
-        
         if self.verbose:
             print(f"[OPTICAM] Done. {len(unaligned_files)} image(s) could not be aligned.")
         
-        return stacked_image, background_medians, background_rmss
-
-    def _stack_images_in_batches(self, reference_image: NDArray, files: List[str]) -> NDArray:
-        stacked_image = np.zeros_like(reference_image)
-        
-        for file in files:
-            # stack images
-            if file in self.transforms.keys():
-                data = self.get_data(file)
-                bkg = self.background(data)
-                data_clean = data - bkg.background
-                stacked_image += warp(data_clean, SimilarityTransform(self.transforms[file]).inverse,
-                                    output_shape=stacked_image.shape, order=3, mode='constant',
-                                    cval=np.nanmedian(data), clip=True, preserve_range=True)
-            else:
-                continue
-        
-        return stacked_image
-
+        return background_medians, background_rmss
+    
     def _plot_catalog(self, stacked_images: Dict[str, NDArray]) -> None:
         """
         Plot the source catalogs on top of the stacked images
@@ -1205,10 +1194,7 @@ class Reducer:
             else:
                 fig.clear()
                 plt.close(fig)
-
-
-
-
+    
     def create_gifs(self, keep_frames: bool = True, overwrite: bool = False) -> None:
         """
         Create alignment gifs for each camera. Some aspects of this method are parallelised for speed. The frames are 
