@@ -7,17 +7,18 @@ from numpy.typing import ArrayLike, NDArray
 import os
 import astropy.units as u
 from astropy.units.quantity import Quantity
+import json
 
 
 class Analyser:
     """
-    Helper class for analysing OPTICam light curves.
+    Helper class for analysing OPTICAM light curves.
     """
     
     def __init__(self, light_curves: Dict[str, pd.DataFrame], out_directory: str, prefix: str, phot_type: str):
         """
-        Helper class for analysing OPTICam light curves.
-
+        Helper class for analysing OPTICAM light curves.
+        
         Parameters
         ----------
         light_curves : Dict[str, pd.DataFrame]
@@ -42,15 +43,20 @@ class Analyser:
         self.prefix = prefix
         self.phot_type = phot_type
         
+        with open(os.path.join(self.out_directory, 'misc/input_parameters.json'), 'r') as file:
+            input_parameters = json.load(file)
+        self.t_ref_mjd = input_parameters['t_ref_mjd']
+        self.t_ref_bdt = input_parameters['t_ref_bdt']
+        
         self.colours = {
-            'g-band': 'green',  # camera 1
-            'u-band': 'green',  # camera 1
-            'r-band': 'red',  # camera 2
-            'i-band': 'gold',  # camera 3
-            'z-band': 'gold',  # camera 3
+            'g-band': 'tab:green',  # camera 1
+            'u-band': 'tab:green',  # camera 1
+            'r-band': 'tab:orange',  # camera 2
+            'i-band': 'tab:olive',  # camera 3
+            'z-band': 'tab:olive',  # camera 3
         }
     
-    def plot(self, title: str = None, x_col: Literal['MJD', 'BDT'] = 'BDT', ax = None):
+    def plot(self, title: str | None = None, time: Literal['MJD', 'BDT'] = 'MJD', ax = None):
         """
         Plot the light curves.
         
@@ -58,8 +64,8 @@ class Analyser:
         ----------
         title : str, optional
             _description_, by default None
-        x_col : Literal[&#39;MJD&#39;, &#39;BDT&#39;], optional
-            _description_, by default 'BDT'
+        time : Literal['MJD', 'BDT], optional
+            Time axis, by default 'MJD'.
         ax : _type_, optional
             _description_, by default None
         
@@ -70,28 +76,39 @@ class Analyser:
         """
         
         if ax is None:
-            fig, ax = plt.subplots()
+            fig, ax = plt.subplots(figsize=(2 * 6.4, 4.8), tight_layout=True)
+        
+        if time == 'MJD':
+            t_ref = self.t_ref_mjd
+        elif time == 'BDT':
+            t_ref = self.t_ref_bdt
+        else:
+            raise ValueError("[OPTICAM] when calling Analyser.plot(), time must be 'MJD' or 'BDT'")
         
         for fltr, lc in self.light_curves.items():
-            ax.errorbar(lc[x_col], lc['relative flux'], lc['relative flux error'], marker='.', ms=2,
+            
+            t = lc[time]
+            
+            ax.errorbar(t, lc['relative flux'], lc['relative flux error'], marker='.', ms=2,
                         linestyle='none', color=self.colours[fltr], ecolor='grey', elinewidth=1, label=fltr)
         
-        ax.set_xlabel(x_col)
+        ax.set_xlabel(f'Time from {time} {t_ref:.2f} [s]')
         ax.set_ylabel('Relative Flux')
         
         if title is not None:
             ax.set_title(title)
         
+        ax.minorticks_on()
+        ax.tick_params(which='both', direction='in', top=True, right=True)
+        
         ax.legend()
         
-        plt.show()
-        
         return fig
-
+    
     def clip_outliers(self, n_window: int, sigma: float = 5., max_iters: int = 10) -> None:
         """
         Clip outliers using a rolling median filter.
-
+        
         Parameters
         ----------
         n_window : int
@@ -304,7 +321,7 @@ class Analyser:
             }
         
         if plot:
-            fig, axs = fig, axs = plt.subplots(tight_layout=True, nrows=len(self.light_curves), sharex=True,
+            fig, axs = plt.subplots(tight_layout=True, nrows=len(self.light_curves), sharex=True,
                                     figsize=(6.4, (0.5 + 0.5*len(self.light_curves)*4.8)))
             
             for i in range(len(self.light_curves)):
