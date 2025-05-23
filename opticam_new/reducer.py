@@ -45,6 +45,7 @@ from opticam_new.correctors import FlatFieldCorrector
 
 
 # TODO: add FWHM column to catalog tables?
+# TODO: convert PSFs from pixels to arcseconds
 
 
 class Reducer:
@@ -349,7 +350,8 @@ class Reducer:
         for key in list(self.camera_files.keys()):
             self.camera_files[key].sort(key=lambda x: self.mjds[x])
         
-        self.t_ref = min(list(self.mjds.values()))  # get reference time
+        self.t_ref_mjd = min(list(self.mjds.values()))  # get reference MJD
+        self.t_ref_bdt = min(list(self.bdts.values()))  # get reference BDT
         
         # define middle image as reference image for each filter
         self.reference_indices = {}
@@ -359,9 +361,10 @@ class Reducer:
             self.reference_files[key] = self.camera_files[key][self.reference_indices[key]]
         
         if self.verbose:
-            print('[OPTICAM] Done.')
             print('[OPTICAM] Binning: ' + self.binning)
             print('[OPTICAM] Filters: ' + ', '.join(list(self.camera_files.keys())))
+            for fltr in list(self.camera_files.keys()):
+                print(f'[OPTICAM] {len(self.camera_files[fltr])} {fltr} images found.')
 
     def _get_header_info(self, file: str) -> Tuple[float | None, ArrayLike | None, str | None, str | None, float | None]:
         """
@@ -408,9 +411,7 @@ class Reducer:
                 bdt = mjd
                 self.logger.info(f"[OPTICAM] Could not compute BDT for {file}.")
         except:
-            self.logger.info(f'[OPTICAM] Skipping file {file} because it could not be read. This is usually due to the \
-                file not conforming to the FITS standard, or the file being corrupted. Consider removing this file \
-                    from the data directory and re-running.')
+            self.logger.info(f'[OPTICAM] Skipping file {file} because it could not be read. This is usually due to the file not conforming to the FITS standard, or the file being corrupted.')
             self.ignored_files.append(file)
             return None, None, None, None, None
         
@@ -598,8 +599,8 @@ class Reducer:
         
         return data
 
-    def get_source_coords_from_image(self, image: NDArray, bkg: Background2D = None,
-                                     away_from_edge: bool = False) -> NDArray:
+    def get_source_coords_from_image(self, image: NDArray, bkg: Background2D | None = None,
+                                     away_from_edge: bool | None = False, n_sources: int | None = None) -> NDArray:
         """
         Get an array of source coordinates from an image in descending order of source brightness.
         
@@ -626,7 +627,7 @@ class Reducer:
         
         cat = self.finder(image_clean, self.threshold*bkg.background_rms)  # find sources in background-subtracted image
         tbl = SourceCatalog(image_clean, cat, background=bkg.background).to_table()  # create catalog of sources
-        tbl = clip_extended_sources(tbl)
+        # tbl = clip_extended_sources(tbl)
         tbl.sort('segment_flux', reverse=True)  # sort catalog by flux in descending order
         
         coords = np.array([tbl["xcentroid"], tbl["ycentroid"]]).T
@@ -637,12 +638,13 @@ class Reducer:
                 if coord[0] < edge or coord[0] > image.shape[1] - edge or coord[1] < edge or coord[1] > image.shape[0] - edge:
                     coords = np.delete(coords, np.where(np.all(coords == coord, axis=1)), axis=0)
         
-        return np.array(coords)
+        if n_sources is not None:
+            coords = coords[:n_sources]
+        
+        return coords
 
 
-
-
-    def initialise_catalogs(self, max_catalog_sources: int = 15, n_alignment_sources: int = 3,
+    def initialise_catalogs(self, max_catalog_sources: int = 30, n_alignment_sources: int = 3,
                             transform_type: Literal['euclidean', 'similarity', 'translation'] = 'translation',
                             translation_limit: int | None = None, rotation_limit: int | None = None,
                             scaling_limit: int | None = None, overwrite: bool = False,
@@ -689,9 +691,8 @@ class Reducer:
         if scaling_limit is None:
             scaling_limit = 1
         
-        background_median = {}
-        background_rms = {}
-        
+        # background_median = {}
+        # background_rms = {}
         stacked_images = {}
         
         # for each camera
@@ -702,7 +703,6 @@ class Reducer:
                 continue
             
             reference_image = self.get_data(self.camera_files[fltr][self.reference_indices[fltr]])  # get reference image
-            self.stacked_image = reference_image.copy()  # create stacked image
             
             try:
                 reference_coords = self.get_source_coords_from_image(reference_image, away_from_edge=True)  # get source coordinates in descending order of brightness
@@ -718,18 +718,19 @@ class Reducer:
             
             self.logger.info(f'[OPTICAM] {fltr} alignment source coordinates: {reference_coords}')
             
-            # align and stack images
-            results = process_map(partial(self._align_image, reference_coords=reference_coords,
-                                          n_sources=n_alignment_sources, transform_type=transform_type,
-                                          translation_limit=translation_limit, rotation_limit=rotation_limit,
-                                          scaling_limit=scaling_limit), self.camera_files[fltr],
-                                  max_workers=self.number_of_processors, disable=not self.verbose,
-                                  desc=f'[OPTICAM] Aligning {fltr} images',
-                                  chunksize=len(self.camera_files[fltr]) // 100)
-            self._parse_alignment_results(results, fltr)
+            # align and stack images in batches
+            batches = np.array_split(self.camera_files[fltr], 100)  # split files into 1% batches
+            results = process_map(partial(self._align_image, reference_image=reference_image,
+                                          reference_coords=reference_coords, n_sources=n_alignment_sources,
+                                          transform_type=transform_type, translation_limit=translation_limit,
+                                          rotation_limit=rotation_limit, scaling_limit=scaling_limit),
+                                  batches, max_workers=self.number_of_processors, disable=not self.verbose,
+                                  desc=f'[OPTICAM] Aligning {fltr} images')
+            stacked_image, background_medians, background_rmss = self._parse_alignment_results(results, fltr,
+                                                                                               reference_image)
             
             try:
-                threshold = detect_threshold(self.stacked_image, nsigma=self.threshold,
+                threshold = detect_threshold(stacked_image, nsigma=self.threshold,
                                              sigma_clip=SigmaClip(sigma=3, maxiters=10))  # estimate threshold
             except:
                 self.logger.info('[OPTICAM] Unable to estimate source detection threshold for ' + fltr + ' stacked image.')
@@ -737,16 +738,16 @@ class Reducer:
             
             try:
                 # identify sources in stacked image
-                segment_map = self.finder(self.stacked_image, threshold)
+                segment_map = self.finder(stacked_image, threshold)
             except:
                 self.logger.info('[OPTICAM] No sources detected in the stacked ' + fltr + ' stacked image. Reducing threshold may help.')
                 continue
             
             # save stacked image and its background
-            stacked_images[fltr] = self.stacked_image
+            stacked_images[fltr] = stacked_image
             
-            tbl = SourceCatalog(self.stacked_image, segment_map).to_table()  # create catalog of sources
-            tbl = clip_extended_sources(tbl)  # clip extended sources
+            tbl = SourceCatalog(stacked_image, segment_map).to_table()  # create catalog of sources
+            # tbl = clip_extended_sources(tbl)  # clip extended sources
             tbl.sort('segment_flux', reverse=True)  # sort catalog by flux in descending order
             tbl = tbl[:max_catalog_sources]  # limit catalog to brightest max_catalog_sources sources
             
@@ -754,8 +755,6 @@ class Reducer:
             self.catalogs.update({fltr: tbl})
             self.catalogs[fltr].write(self.out_directory + f"cat/{fltr}_catalog.ecsv", format="ascii.ecsv",
                                             overwrite=True)
-        
-        del self.stacked_image  # stacked image no longer needed
         
         # compile catalog
         self._plot_catalog(stacked_images)
@@ -777,10 +776,10 @@ class Reducer:
                 for file in self.unaligned_files:
                     unaligned_file.write(file + "\n")
 
-    def _align_image(self, file: str, reference_coords: NDArray, n_sources: int,
-                                     transform_type: Literal['euclidean', 'similarity', 'translation'],
-                                     translation_limit: int, rotation_limit: int,
-                                     scaling_limit: int) -> Tuple[List[float], float, float]:
+    def _align_image(self, batch: List[str], reference_image: NDArray, reference_coords: NDArray, n_sources: int,
+                     transform_type: Literal['euclidean', 'similarity', 'translation'], translation_limit: int,
+                     rotation_limit: int, scaling_limit: int) -> Tuple[NDArray, Dict[str, float], Dict[str, float],
+                                                                       Dict[str, float]]:
         """
         Align an image based on some reference coordinates.
         
@@ -809,46 +808,59 @@ class Reducer:
             The transform parameters, background median, and background RMS.
         """
         
-        data = self.get_data(file)  # get image data
+        stacked_image = np.zeros_like(reference_image)  # create empty stacked image
+        transforms = {}
+        background_medians = {}
+        background_rmss = {}
         
-        bkg = self.background(data)  # get background
-        background_median = bkg.background_median
-        background_rms = bkg.background_rms_median
-        
-        data_clean = data - bkg.background  # remove background from image
-        
-        try:
-            coords = self.get_source_coords_from_image(data_clean)  # get source coordinates in descending order of brightness
-        except:
-            self.logger.info('[OPTICAM] No sources detected in ' + file + '. Reducing threshold or npixels in the source finder may help.')
-            return None, None, None, file
-        
-        distance_matrix = cdist(reference_coords, coords)  # compute distance matrix
-        try:
-            reference_indices, indices = linear_sum_assignment(distance_matrix)  # solve assignment problem
-        except:
-            self.logger.info('[OPTICAM] Could not align ' + file + '. Reducing threshold and/or n_alignment_sources may help.')
-            return None, None, None, file
-        
-        # compute transform
-        if transform_type == 'translation':
-            dx = np.mean(coords[indices, 0] - reference_coords[reference_indices, 0])
-            dy = np.mean(coords[indices, 1] - reference_coords[reference_indices, 1])
-            if abs(dx) < translation_limit and abs(dy) < translation_limit:
-                transform = SimilarityTransform(translation=[dx, dy])
+        for file in batch:
+            
+            data = self.get_data(file)  # get image data
+            
+            bkg = self.background(data)  # get background
+            background_median = bkg.background_median
+            background_rms = bkg.background_rms_median
+            
+            data_clean = data - bkg.background  # remove background from image
+            
+            try:
+                coords = self.get_source_coords_from_image(data, bkg, away_from_edge=True, n_sources=n_sources)  # get source coordinates in descending order of brightness
+            except:
+                self.logger.info('[OPTICAM] No sources detected in ' + file + '. Reducing threshold or npixels in the source finder may help.')
+                continue
+            
+            distance_matrix = cdist(reference_coords, coords)  # compute distance matrix
+            try:
+                reference_indices, indices = linear_sum_assignment(distance_matrix)  # solve assignment problem
+            except:
+                self.logger.info('[OPTICAM] Could not align ' + file + '. Reducing threshold and/or n_alignment_sources may help.')
+                continue
+            
+            # compute transform
+            if transform_type == 'translation':
+                dx = np.mean(coords[indices, 0] - reference_coords[reference_indices, 0])
+                dy = np.mean(coords[indices, 1] - reference_coords[reference_indices, 1])
+                if abs(dx) < translation_limit and abs(dy) < translation_limit:
+                    transform = SimilarityTransform(translation=[dx, dy])
+                else:
+                    self.logger.info(f'[OPTICAM] File {file} exceeded translation limit. Translation limit is {translation_limit:.1f}, but translation was ({dx:.1f}, {dy:.1f}).')
+                    continue
             else:
-                self.logger.info(f'[OPTICAM] File {file} exceeded translation limit. Translation limit is {translation_limit:.1f}, but translation was ({dx:.1f}, {dy:.1f}).')
-                return None, None, None, file
-        else:
-            transform = estimate_transform(transform_type, reference_coords[reference_indices], coords[indices])
+                transform = estimate_transform(transform_type, reference_coords[reference_indices], coords[indices])
+                # TODO: implement transform constraints
+            
+            transforms[file] = transform.params.tolist()  # save transform parameters
+            background_medians[file] = background_median  # save background median
+            background_rmss[file] = background_rms  # save background RMS
+            
+            # transform and stack image
+            stacked_image += warp(data_clean, transform.inverse, output_shape=reference_image.shape, order=3,
+                                    mode='constant', cval=np.nanmedian(data), clip=True, preserve_range=True)
         
-        # transform and stack image
-        self.stacked_image += warp(data_clean, transform.inverse, output_shape=self.stacked_image.shape, order=3,
-                                   mode='constant', cval=np.nanmedian(data), clip=True, preserve_range=True)
-        
-        return transform.params.tolist(), background_median, background_rms
+        return stacked_image, transforms, background_medians, background_rmss
     
-    def _parse_alignment_results(self, results, fltr: str) -> Tuple[Dict[str, float], Dict[str, float]]:
+    def _parse_alignment_results(self, results, fltr: str, reference_image) -> Tuple[NDArray, Dict[str, float],
+                                                                                     Dict[str, float]]:
         """
         Parse the results of image alignment.
         
@@ -871,23 +883,30 @@ class Reducer:
         background_rmss = {}
         
         # unpack results
-        raw_transforms, raw_background_medians, raw_background_rmss = zip(*results)
+        batch_stacked_images, batch_transforms, batch_background_medians, batch_background_rmss = zip(*results)
         
-        for i in range(len(self.camera_files[fltr])):
-            if raw_transforms[i] is None:
-                unaligned_files.append(self.camera_files[fltr][i])
-            else:
-                transforms.update({self.camera_files[fltr][i]: raw_transforms[i]})
-                background_medians.update({self.camera_files[fltr][i]: raw_background_medians[i]})
-                background_rmss.update({self.camera_files[fltr][i]: raw_background_rmss[i]})
+        # combine results
+        for i in range(len(batch_stacked_images)):
+            transforms.update(batch_transforms[i])
+            background_medians.update(batch_background_medians[i])
+            background_rmss.update(batch_background_rmss[i])
+        
+        aligned_files = list(transforms.keys())
+        for file in self.camera_files[fltr]:
+            if file not in aligned_files:
+                unaligned_files.append(file)
+        
+        stacked_image = np.sum(batch_stacked_images, axis=0)  # stack images
         
         self.transforms.update(transforms)  # update transforms
         self.unaligned_files += unaligned_files  # update unaligned files
         
         if self.verbose:
-            print(f"[OPTICAM] Done. {len(unaligned_files)} image(s) could not be aligned.")
+            print(f"[OPTICAM] Done.")
+            print(f'[OPTICAM] {len(transforms)} image(s) aligned.')
+            print(f'[OPTICAM] {len(unaligned_files)} image(s) could not be aligned.')
         
-        return background_medians, background_rmss
+        return stacked_image, background_medians, background_rmss
     
     def _plot_catalog(self, stacked_images: Dict[str, NDArray]) -> None:
         """
@@ -914,7 +933,7 @@ class Reducer:
             
             # get aperture radius
             radius = self.scale*self.aperture_selector(self.catalogs[fltr]["semimajor_sigma"].value)
-                     
+            
             for j in range(len(self.catalogs[fltr])):
                 # label sources
                 ax[i].add_patch(Circle(xy=(self.catalogs[fltr]["xcentroid"][j],
@@ -1078,7 +1097,7 @@ class Reducer:
             
             mjds = np.array([self.mjds[file] for file in self.camera_files[fltr]])
             bdts = np.array([self.bdts[file] for file in self.camera_files[fltr]])
-            plot_times = (mjds - self.t_ref)*86400  # convert to seconds from first observation
+            plot_times = (mjds - self.t_ref_mjd)*86400  # convert to seconds from first observation
             
             if len(self.catalogs) == 1:
                 axs[0].set_title(fltr)
@@ -1325,8 +1344,6 @@ class Reducer:
             for file in tqdm(os.listdir(self.out_directory + f"diag/{fltr}_gif_frames"), disable=not self.verbose,
                              desc=f"[OPTICAM] Deleting {fltr} GIF frames"):
                 os.remove(self.out_directory + f"diag/{fltr}_gif_frames/{file}")
-
-
 
 
     def forced_photometry(self, phot_type: Literal["aperture", "annulus", "both"] = "both",
@@ -1683,7 +1700,7 @@ class Reducer:
         aligned_mask = df["quality_flag"] == "A"  # mask for aligned observations
         
         # reformat MJD to seconds from first observation
-        df["time"] = df["MJD"] - self.t_ref
+        df["time"] = df["MJD"] - self.t_ref_mjd
         df["time"] *= 86400
         
         fig, ax = plt.subplots(num=1, clear=True, tight_layout=True, figsize=(6.4, 4.8))
@@ -1692,7 +1709,7 @@ class Reducer:
         ax.errorbar(df["time"].values[~aligned_mask], df["flux"].values[~aligned_mask], yerr=df["flux_error"].values[~aligned_mask], fmt="r.", ms=2, elinewidth=1, alpha=.2)
         ax.set_ylabel("Flux [counts]")
         ax.set_title(f"{fltr} Source {source_index + 1}")
-        ax.set_xlabel(f"Time from MJD {self.t_ref:.4f} [s]")
+        ax.set_xlabel(f"Time from MJD {self.t_ref_mjd:.4f} [s]")
         
         ax.minorticks_on()
         ax.tick_params(which="both", direction="in", top=True, right=True)
@@ -1754,7 +1771,7 @@ class Reducer:
         aligned_mask = df["quality_flag"] == "A"  # mask for aligned observations
         
         # reformat MJD to seconds from first observation
-        df["time"] = df["MJD"] - self.t_ref
+        df["time"] = df["MJD"] - self.t_ref_mjd
         df["time"] *= 86400
         
         fig, axs = plt.subplots(num=1, clear=True, nrows=3, tight_layout=True, figsize=(6.4, 2*4.8), sharex=True,
@@ -1772,7 +1789,7 @@ class Reducer:
         axs[2].plot(df["time"].values[aligned_mask], df["flux"].values[aligned_mask]/df["local_background"].values[aligned_mask], "k.", ms=2)
         axs[2].plot(df["time"].values[~aligned_mask], df["flux"].values[~aligned_mask]/df["local_background"].values[~aligned_mask], "r.", ms=2, alpha=.2)
         axs[2].set_ylabel("SNR")
-        axs[2].set_xlabel(f"Time from MJD {self.t_ref:.4f} [s]")
+        axs[2].set_xlabel(f"Time from MJD {self.t_ref_mjd:.4f} [s]")
         
         for ax in axs:
             ax.minorticks_on()
@@ -1781,8 +1798,6 @@ class Reducer:
         fig.savefig(self.out_directory + f"annulus_light_curves/{fltr}_source_{source_index + 1}.png")
         fig.clear()
         plt.close(fig)
-
-
 
 
     def photometry(self, phot_type: Literal['both', 'normal', 'optimal'] = 'both',
@@ -2102,7 +2117,7 @@ class Reducer:
         df = pd.read_csv(self.out_directory + f"normal_light_curves/{fltr}_source_{source_index + 1}.csv")
         
         # reformat MJD to seconds from first observation
-        df["time"] = df["MJD"] - self.t_ref
+        df["time"] = df["MJD"] - self.t_ref_mjd
         df["time"] *= 86400
         
         fig, ax = plt.subplots(num=1, clear=True, tight_layout=True, figsize=(6.4, 4.8))
@@ -2111,7 +2126,7 @@ class Reducer:
                     elinewidth=1)
         ax.set_ylabel("Flux [counts]")
         ax.set_title(f"{fltr} Source {source_index + 1}")
-        ax.set_xlabel(f"Time from MJD {self.t_ref:.4f} [s]")
+        ax.set_xlabel(f"Time from MJD {self.t_ref_mjd:.4f} [s]")
         
         ax.minorticks_on()
         ax.tick_params(which="both", direction="in", top=True, right=True)
@@ -2157,7 +2172,7 @@ class Reducer:
         df = pd.read_csv(self.out_directory + f"optimal_light_curves/{fltr}_source_{source_index + 1}.csv")
         
         # reformat MJD to seconds from first observation
-        df["time"] = df["MJD"] - self.t_ref
+        df["time"] = df["MJD"] - self.t_ref_mjd
         df["time"] *= 86400
         
         # TODO: add local background axis
@@ -2168,7 +2183,7 @@ class Reducer:
                     elinewidth=1)
         ax.set_ylabel("Flux [counts]")
         ax.set_title(f"{fltr} Source {source_index + 1}")
-        ax.set_xlabel(f"Time from MJD {self.t_ref:.4f} [s]")
+        ax.set_xlabel(f"Time from MJD {self.t_ref_mjd:.4f} [s]")
         
         ax.minorticks_on()
         ax.tick_params(which="both", direction="in", top=True, right=True)
