@@ -47,8 +47,10 @@ class Photometer:
         with open(os.path.join(self.out_directory, 'misc/input_parameters.json'), 'r') as file:
             input_parameters = json.load(file)
         self.filters = input_parameters['filters']
-        self.t_ref = input_parameters['t_ref']
-        print(self.filters)
+        self.t_ref_mjd = input_parameters['t_ref_mjd']
+        self.t_ref_bdt = input_parameters['t_ref_bdt']
+        
+        print('[OPTICAM] Filters: ' + ', '.join(list(self.filters)))
         
         # read catalogs
         self.catalogs = {}
@@ -133,7 +135,7 @@ class Photometer:
         if not match_other_cameras:
             # compute and plot relative light curve for single filter
             relative_light_curve, transformed_mask = self._compute_relative_light_curve(fltr, target, comparisons, phot_type, self.t_ref, show_diagnostics)
-            self._plot_relative_light_curve(relative_light_curve, self.t_ref, transformed_mask, target=target, comparisons=comparisons, prefix=prefix, fltr=fltr, save_label=save_label)
+            self._plot_relative_light_curve(relative_light_curve, self.t_ref_mjd, transformed_mask, target=target, comparisons=comparisons, prefix=prefix, fltr=fltr, save_label=save_label)
             
             # save light curve to CSV
             relative_light_curve.to_csv(self.out_directory + "relative_light_curves/" + f"{prefix}_{fltr}_{save_label}.csv", index=False)
@@ -173,7 +175,7 @@ class Photometer:
                 relative_light_curves[cat_fltr], transformed_masks[cat_fltr] = self._compute_relative_light_curve(cat_fltr, targets_[cat_fltr], comparisons_[cat_fltr], phot_type, self.t_ref, show_diagnostics)
             
             # plot the relative light curves for each filter
-            self._plot_relative_light_curves(relative_light_curves, self.t_ref, transformed_masks, targets_, comparisons_, prefix, save_label)
+            self._plot_relative_light_curves(relative_light_curves, self.t_ref_mjd, transformed_masks, targets_, comparisons_, prefix, save_label)
             
             if self.show_plots:
                 plt.show()
