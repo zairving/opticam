@@ -35,6 +35,7 @@ from scipy.optimize import linear_sum_assignment
 from ccdproc import cosmicray_lacosmic  # replace with astroscrappy to reduce dependencies?
 import logging
 from types import FunctionType
+import warnings
 
 from opticam_new.helpers import log_binnings, log_filters, default_aperture_selector, apply_barycentric_correction, clip_extended_sources, rebin_image, get_time
 from opticam_new.background import Background
@@ -322,10 +323,11 @@ class Reducer:
         
         self.camera_files = {}  # filter : [files]
         
-        # scan files in batches
+        # scan files
+        chunksize = max(1, len(self.file_paths) // 100)  # set chunksize to 1% of the number of files
         results = process_map(self._get_header_info, self.file_paths, max_workers=self.number_of_processors,
                               disable=not self.verbose, desc="[OPTICAM] Scanning data directory",
-                              chunksize=len(self.file_paths) // 100)
+                              chunksize=chunksize)
         
         # unpack results
         filters = self._parse_header_results(results)
@@ -360,11 +362,16 @@ class Reducer:
             self.reference_indices[key] = int(len(self.camera_files[key]) / 2)
             self.reference_files[key] = self.camera_files[key][self.reference_indices[key]]
         
+        self.logger.info(f'[OPTICAM] Binning: {self.binning}')
+        self.logger.info(f'[OPTICAM] Filters: {", ".join(list(self.camera_files.keys()))}')
+        for fltr in list(self.camera_files.keys()):
+            self.logger.info(f'[OPTICAM] {len(self.camera_files[fltr])} {fltr} images.')
+        
         if self.verbose:
             print('[OPTICAM] Binning: ' + self.binning)
             print('[OPTICAM] Filters: ' + ', '.join(list(self.camera_files.keys())))
             for fltr in list(self.camera_files.keys()):
-                print(f'[OPTICAM] {len(self.camera_files[fltr])} {fltr} images found.')
+                print(f'[OPTICAM] {len(self.camera_files[fltr])} {fltr} images.')
 
     def _get_header_info(self, file: str) -> Tuple[float | None, ArrayLike | None, str | None, str | None, float | None]:
         """
@@ -412,11 +419,10 @@ class Reducer:
                 self.logger.info(f"[OPTICAM] Could not compute BDT for {file}.")
         except:
             self.logger.info(f'[OPTICAM] Skipping file {file} because it could not be read. This is usually due to the file not conforming to the FITS standard, or the file being corrupted.')
-            self.ignored_files.append(file)
             return None, None, None, None, None
         
         return mjd, bdt, fltr, binning, gain
-
+    
     def _parse_header_results(self, results: Tuple[float, float, str, str, float]) -> Dict[str, str]:
         """
         Parse the results returned by self._get_header_info().
@@ -450,12 +456,14 @@ class Reducer:
         
         # consolidate results
         for i in range(len(raw_mjds)):
-            if self.file_paths[i] not in self.ignored_files:
+            if raw_mjds[i] is not None:
                 self.mjds.update({self.file_paths[i]: raw_mjds[i]})
                 self.bdts.update({self.file_paths[i]: raw_bdts[i]})
                 filters.update({self.file_paths[i]: raw_filters[i]})
                 binnings.update({self.file_paths[i]: raw_binnings[i]})
                 self.gains.update({self.file_paths[i]: raw_gains[i]})
+            else:
+                self.ignored_files.append(self.file_paths[i])
         
         # ensure there are no more than three filters
         unique_filters = np.unique(list(filters.values()))
@@ -473,6 +481,19 @@ class Reducer:
         else:
             self.binning = unique_binning[0]
             self.binning_scale = int(self.binning[0])
+        
+        # check for large differences in mjd
+        for fltr in unique_filters:
+            mjds = np.array([self.mjds[file] for file in self.file_paths if file in filters and filters[file] == fltr])
+            files = [file for file in self.file_paths if file in filters and filters[file] == fltr]
+            t = mjds - np.min(mjds)
+            dt = np.diff(t) * 86400
+            if np.any(dt > 10 * np.median(dt)):
+                indices = np.where(dt > 10 * np.median(dt))[0]
+                for index in indices:
+                    string = f"[OPTICAM] Large time gap detected between {files[index].split('/')[-1]} and {files[index + 1].split('/')[-1]} ({dt[index]:.3f} s compared to the median time difference of {np.median(dt):.3f} s). This may cause alignment issues. If so, consider moving all files after this gap to a separate directory."
+                    self.logger.info(string)
+                    warnings.warn(string)
         
         return filters
 
@@ -705,7 +726,7 @@ class Reducer:
             reference_image = self.get_data(self.camera_files[fltr][self.reference_indices[fltr]])  # get reference image
             
             try:
-                reference_coords = self.get_source_coords_from_image(reference_image, away_from_edge=True)  # get source coordinates in descending order of brightness
+                reference_coords = self.get_source_coords_from_image(reference_image, away_from_edge=True, n_sources=n_alignment_sources)  # get source coordinates in descending order of brightness
             except:
                 self.logger.info(f'[OPTICAM] No sources detected in {fltr} reference image ({self.camera_files[fltr][self.reference_indices[fltr]]}). Reducing threshold or npixels in the source finder may help.')
                 continue
@@ -713,8 +734,6 @@ class Reducer:
             if len(reference_coords) < n_alignment_sources:
                 self.logger.info(f'[OPTICAM] Not enough sources detected in {fltr} reference image ({self.camera_files[fltr][self.reference_indices[fltr]]}) for alignment. Reducing threshold and/or n_alignment_sources may help.')
                 continue
-            elif len(reference_coords) > n_alignment_sources:
-                reference_coords = reference_coords[:n_alignment_sources]
             
             self.logger.info(f'[OPTICAM] {fltr} alignment source coordinates: {reference_coords}')
             
@@ -824,7 +843,7 @@ class Reducer:
             data_clean = data - bkg.background  # remove background from image
             
             try:
-                coords = self.get_source_coords_from_image(data, bkg, away_from_edge=True, n_sources=n_sources)  # get source coordinates in descending order of brightness
+                coords = self.get_source_coords_from_image(data, bkg)  # get source coordinates in descending order of brightness
             except:
                 self.logger.info('[OPTICAM] No sources detected in ' + file + '. Reducing threshold or npixels in the source finder may help.')
                 continue
@@ -1242,9 +1261,10 @@ class Reducer:
             if not os.path.isdir(self.out_directory + f"diag/{fltr}_gif_frames"):
                 os.mkdir(self.out_directory + f"diag/{fltr}_gif_frames")
             
+            chunksize = max(1, len(self.camera_files[fltr]) // 100)  # chunk size for parallel processing (must be >= 1)
             process_map(partial(self._create_gif_frames, fltr=fltr), self.camera_files[fltr],
                         max_workers=self.number_of_processors, disable=not self.verbose,
-                        desc=f"[OPTICAM] Creating {fltr} GIF frames", chunksize=len(self.camera_files[fltr]) // 100)
+                        desc=f"[OPTICAM] Creating {fltr} GIF frames", chunksize=chunksize)
             
             # save GIF
             self._compile_gif(fltr, keep_frames)
@@ -1416,11 +1436,12 @@ class Reducer:
             
             self.logger.info(f'[OPTICAM] {fltr} forced photometry aperture radius: {radius} pixels.')
             
+            chunksize = max(1, len(self.camera_files[fltr]) // 100)  # chunk size for parallel processing (must be >= 1)
             results = process_map(partial(self._perform_forced_photometry, fltr=fltr, radius=radius,
                                           phot_type=phot_type), self.camera_files[fltr],
                                   max_workers=self.number_of_processors,
                                   desc=f"[OPTICAM] Performing forced photometry on {fltr} images",
-                                  disable=not self.verbose, chunksize=len(self.camera_files[fltr]) // 100)
+                                  disable=not self.verbose, chunksize=chunksize)
             
             self._save_forced_photometry_results(results, phot_type, fltr)
 
@@ -1874,12 +1895,13 @@ class Reducer:
             self.logger.info(f'[OPTICAM] {fltr} normal aperture semi-major axis: {self.fwhm_scale * semimajor_sigma} pixels.')
             self.logger.info(f'[OPTICAM] {fltr} normal aperture semi-minor axis: {self.fwhm_scale * semiminor_sigma} pixels.')
             
+            chunksize = max(1, len(self.camera_files[fltr]) // 100)  # chunk size for parallel processing (must be >= 1)
             results = process_map(partial(self._perform_photometry_on_batch, fltr=fltr, semimajor_sigma=semimajor_sigma,
                                           semiminor_sigma=semiminor_sigma, background_method=background_method,
                                           tolerance=tolerance, phot_type=phot_type), self.camera_files[fltr],
                                   max_workers=self.number_of_processors,
                                   desc=f"[OPTICAM] Performing photometry on {fltr} images",
-                                  disable=not self.verbose, chunksize=len(self.camera_files[fltr]) // 100)
+                                  disable=not self.verbose, chunksize=chunksize)
             
             self._save_photometry_results(results, phot_type, fltr)
 
@@ -2132,7 +2154,11 @@ class Reducer:
         ax.tick_params(which="both", direction="in", top=True, right=True)
         
         # save light curve plot to file
-        fig.savefig(self.out_directory + f"normal_light_curves/{fltr}_source_{source_index + 1}.png")
+        try:
+            fig.savefig(self.out_directory + f"normal_light_curves/{fltr}_source_{source_index + 1}.png")
+        except Exception as e:
+            self.logger.error(f"[OPTICAM] Error saving normal light curve plot for {fltr} source {source_index + 1}: {e}")
+        
         fig.clear()
         plt.close(fig)
 
@@ -2189,7 +2215,11 @@ class Reducer:
         ax.tick_params(which="both", direction="in", top=True, right=True)
         
         # save light curve plot to file
-        fig.savefig(self.out_directory + f"optimal_light_curves/{fltr}_source_{source_index + 1}.png")
+        try:
+            fig.savefig(self.out_directory + f"optimal_light_curves/{fltr}_source_{source_index + 1}.png")
+        except Exception as e:
+            self.logger.error(f"[OPTICAM] Error saving optimal light curve plot for {fltr} source {source_index + 1}: {e}")
+        
         fig.clear()
         plt.close(fig)
 
