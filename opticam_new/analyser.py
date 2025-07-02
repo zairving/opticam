@@ -25,9 +25,8 @@ class Analyser:
         light_curves : Dict[str, pd.DataFrame]
             The light curves to analyse, where the keys are the filter names and the values are the light curves.
         out_directory : str
-            The directory to save the output files. This should be the same as the `out_dir` used during data reduction
-            (i.e., opticam_new.Reducer()` since `Analyser` assumes a certain directory structure and requires certain
-            files created by `Reducer()`.
+            The directory to save the output files (i.e., the same directory as `out_directory` used by
+            `opticam_new.Photometer` when creating the light curves).
         prefix : str
             The prefix to use for the output files (e.g., the name of the target).
         phot_type : str
@@ -46,10 +45,14 @@ class Analyser:
         self.prefix = prefix
         self.phot_type = phot_type
         
-        with open(os.path.join(self.out_directory, 'misc/input_parameters.json'), 'r') as file:
-            input_parameters = json.load(file)
-        self.t_ref_mjd = input_parameters['t_ref_mjd']
-        self.t_ref_bdt = input_parameters['t_ref_bdt']
+        try:
+            with open(os.path.join(self.out_directory, 'misc/input_parameters.json'), 'r') as file:
+                input_parameters = json.load(file)
+            self.t_ref = input_parameters['t_ref']
+        except FileNotFoundError:
+            warnings.warn(f"[OPTICAM] input_parameters.json not found in {self.out_directory}/misc/. "
+                          "Reference times will be inferred from light curves.")
+            self.t_ref = min([lc['TDB'].min() for lc in light_curves.values()])
         
         self.colours = {
             'g-band': 'tab:green',  # camera 1
@@ -59,7 +62,7 @@ class Analyser:
             'z-band': 'tab:olive',  # camera 3
         }
     
-    def plot(self, title: str | None = None, time: Literal['MJD', 'BDT'] = 'MJD', ax = None) -> plt.Figure:
+    def plot(self, title: str | None = None, ax = None) -> plt.Figure:
         """
         Plot the light curves.
         
@@ -67,8 +70,6 @@ class Analyser:
         ----------
         title : str, optional
             _description_, by default None
-        time : Literal['MJD', 'BDT'], optional
-            Time axis, by default 'MJD'.
         ax : _type_, optional
             _description_, by default None
         
@@ -80,13 +81,6 @@ class Analyser:
         
         if ax is None:
             fig, ax = plt.subplots(figsize=(2 * 6.4, 4.8), tight_layout=True)
-        
-        if time == 'MJD':
-            t_ref = self.t_ref_mjd
-        elif time == 'BDT':
-            t_ref = self.t_ref_bdt
-        else:
-            raise ValueError("[OPTICAM] when calling Analyser.plot(), time must be 'MJD' or 'BDT'")
         
         for fltr, lc in self.light_curves.items():
             
@@ -189,8 +183,8 @@ class Analyser:
             
             return_frequencies = True
             
-            t_span = np.mean([lc['BDT'].max() - lc['BDT'].min() for lc in self.light_curves.values()]) * 86400
-            dt = np.min([np.min(np.diff(lc['BDT'])) for lc in self.light_curves.values()]) * 86400
+            t_span = np.mean([lc['TDB'].max() - lc['TDB'].min() for lc in self.light_curves.values()]) * 86400
+            dt = np.min([np.min(np.diff(lc['TDB'])) for lc in self.light_curves.values()]) * 86400
             
             lo = 1 / t_span
             hi = 0.5 / dt
@@ -208,7 +202,7 @@ class Analyser:
         for i in range(len(self.light_curves)):
             
             k = list(self.light_curves.keys())[i]
-            power = LombScargle((self.light_curves[k]['BDT'].values - self.light_curves[k]['BDT'].min())*86400,
+            power = LombScargle((self.light_curves[k]['TDB'].values - self.light_curves[k]['TDB'].min())*86400,
                                 self.light_curves[k]['relative flux'],
                                 self.light_curves[k]['relative flux error']).power(frequencies)
             results[k] = power
@@ -280,7 +274,7 @@ class Analyser:
         results = {}
         
         for fltr, lc in self.light_curves.items():
-            phase = (lc['BDT'] % period) / period
+            phase = (lc['TDB'] % period) / period
             results[fltr] = phase
         
         if plot:
@@ -325,7 +319,7 @@ class Analyser:
         results = {}
         
         for fltr, lc in self.light_curves.items():
-            phase = (lc['BDT'] % period) / period
+            phase = (lc['TDB'] % period) / period
             bins = [[] for i in range(n_bins + 1)]
             
             for i in range(len(phase)):
@@ -368,7 +362,7 @@ class Analyser:
         
         return results
     
-    def rebin(self, dt: Quantity, column: Literal['MJD', 'BDT'] = 'BDT') -> 'Analyser':
+    def rebin(self, dt: Quantity) -> 'Analyser':
         """
         Rebin the light curves to a new time resolution. This is useful for smoothing the light curves for presentation
         or for FFT-based analyses.
@@ -378,8 +372,6 @@ class Analyser:
         dt : Quantity
             The desired time resolution. This must be an astropy `Quantity` with units of time (e.g., `astropy.units.s`)
             to ensure correct handling of the time resolution.
-        column : Literal['MJD', 'BDT'], optional
-            The time column to use for rebinned light curves, by default 'MJD'.
         
         Returns
         -------
@@ -387,7 +379,7 @@ class Analyser:
             A new `Analyser` object containing the rebinned light curves.
         """
         
-        def rebin_lc(lc: pd.DataFrame, dt: float, column: Literal['MJD', 'BDT']):
+        def rebin_lc(lc: pd.DataFrame, dt: Quantity):
             """
             Rebin a light curve to a specified time resolution.
             
@@ -405,15 +397,15 @@ class Analyser:
             """
             
             dt = float(dt.to(u.day).value)  # convert from given units to days
-            current_dt = np.min(np.diff(lc[column].values))
+            current_dt = np.min(np.diff(lc['TDB'].values))
             minimum_number_of_points = int(dt // current_dt)
             
-            new_x = np.arange(lc[column].values[0], lc[column].values[-1] + dt / 2, dt) + dt / 2
+            new_x = np.arange(lc['TDB'].values[0], lc['TDB'].values[-1] + dt / 2, dt) + dt / 2
             new_y = np.zeros_like(new_x)
             new_yerr = np.zeros_like(new_x)
             
             for i in range(len(new_x)):
-                mask = (lc[column].values >= new_x[i] - dt / 2) & (lc[column].values < new_x[i] + dt / 2)
+                mask = (lc['TDB'].values >= new_x[i] - dt / 2) & (lc['TDB'].values < new_x[i] + dt / 2)
                 
                 if np.any(mask) and np.sum(mask) >= minimum_number_of_points:
                     new_y[i] = np.mean(lc['relative flux'].values[mask])
@@ -426,8 +418,7 @@ class Analyser:
             valid_mask = ~np.isnan(new_y)
             
             rebinned_lc = pd.DataFrame({
-                'MJD': new_x[valid_mask],
-                'BDT': new_x[valid_mask],
+                'TDB': new_x[valid_mask],
                 'relative flux': new_y[valid_mask],
                 'relative flux error': new_yerr[valid_mask]
             })
@@ -437,7 +428,7 @@ class Analyser:
         rebinned_light_curves = {}
         
         for fltr, lc in self.light_curves.items():
-            rebinned_light_curves[fltr] = rebin_lc(lc.copy(), dt, column)
+            rebinned_light_curves[fltr] = rebin_lc(lc.copy(), dt)
         
         return Analyser(rebinned_light_curves, self.out_directory, self.prefix, self.phot_type)
     
@@ -497,12 +488,14 @@ class Analyser:
             
             return np.array(new_freqs), np.array(new_powers), np.array(new_power_errs)
         
+        segment_length = segment_length.to(u.day).value  # convert from given units to days
+        dt = dt.to(u.day).value  # convert from given units to days
+        
         number_of_points_per_segment = int(segment_length // dt)
         frequencies = np.fft.rfftfreq(number_of_points_per_segment, dt)[1:]  # skip the zero frequency
-        segment_length = segment_length.to(u.day).value  # convert from given units to days
         
-        segment_edges = np.arange(self.light_curves[list(self.light_curves.keys())[0]]['BDT'].min(),
-                                  self.light_curves[list(self.light_curves.keys())[0]]['BDT'].max() + segment_length,
+        segment_edges = np.arange(self.light_curves[list(self.light_curves.keys())[0]]['TDB'].min(),
+                                  self.light_curves[list(self.light_curves.keys())[0]]['TDB'].max() + segment_length,
                                   segment_length)
         results = {}
         
@@ -512,14 +505,15 @@ class Analyser:
             prev = 0.
             
             for edge in segment_edges[1:]:
-                mask = (lc['BDT'].values >= prev) & (lc['BDT'].values < edge)
+                mask = (lc['TDB'].values >= prev) & (lc['TDB'].values < edge)
                 if np.sum(mask) == number_of_points_per_segment:
-                    segment_powers.append(np.abs(np.fft.rfft(lc['relative flux'].values[mask])[1:])**2)
+                    segment_powers.append(2 * dt / number_of_points_per_segment * np.abs(np.fft.rfft(lc['relative flux'].values[mask])[1:])**2)
                 prev = edge
             
             n_segments = len(segment_powers)
             if n_segments < 10:
                 warnings.warn(f'[OPTICAM] Only {n_segments} segments were found for filter {fltr}. Consider reducing segment_length to increase the number of segments.')
+            print(f'[OPTICAM] {n_segments} segments averaaged for filter {fltr}.')
             
             results[fltr]['powers'] = np.mean(segment_powers, axis=0)
             results[fltr]['power_errs'] = np.std(segment_powers, axis=0) / np.sqrt(len(segment_powers))
