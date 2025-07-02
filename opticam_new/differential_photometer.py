@@ -13,7 +13,7 @@ import json
 from opticam_new.analyser import Analyser
 
 
-class Photometer:
+class DifferentialPhotometer:
     """
     Helper class for creating light curves from reduced OPTICam data.
     """
@@ -48,13 +48,15 @@ class Photometer:
             input_parameters = json.load(file)
         self.filters = input_parameters['filters']
         self.t_ref = input_parameters['t_ref']
-        print(self.filters)
+        
+        print('[OPTICAM] Filters: ' + ', '.join(list(self.filters)))
         
         # read catalogs
         self.catalogs = {}
         for fltr in self.filters:
             try:
-                self.catalogs.update({f"{fltr}": QTable.read(self.out_directory + f"cat/{fltr}_catalog.ecsv", format="ascii.ecsv")})
+                self.catalogs.update({f"{fltr}": QTable.read(self.out_directory + f"cat/{fltr}_catalog.ecsv",
+                                                             format="ascii.ecsv")})
             except:
                 print(f"[OPTICAM] Could not load {self.out_directory}cat/{fltr}_catalog.ecsv, skipping ...")
                 self.filters.remove(fltr)
@@ -66,7 +68,8 @@ class Photometer:
         ax.imshow(catalog_image)
         
         # remove ticks and tick labels
-        ax.tick_params(axis="both", which="both", bottom=False, top=False, left=False, right=False, labelbottom=False, labeltop=False, labelleft=False, labelright=False)
+        ax.tick_params(axis="both", which="both", bottom=False, top=False, left=False, right=False, labelbottom=False,
+                       labeltop=False, labelleft=False, labelright=False)
         
         plt.show()
     
@@ -77,9 +80,9 @@ class Photometer:
         """
         Compute the relative light curve for a target source with respect to one or more comparison sources. By default,
         the relative light curve is computed for a single filter. The relative light curve is saved to
-        out_directory/relative_light_curves. To automatically match the target and comparison sources across the other two
-        filters, set match_other_cameras to True. Note that this can incorrectly match sources, so it is recommended to
-        manually check the results.
+        out_directory/relative_light_curves. To automatically match the target and comparison sources across the other
+        two filters, set match_other_cameras to True. Note that this can incorrectly match sources, so it is recommended
+        to manually check the results.
         
         Parameters
         ----------
@@ -108,16 +111,12 @@ class Photometer:
         
         if phot_type == "aperture":
             save_label = "aperture_light_curve"
-            light_curve_dir = "aperture_light_curves"
         elif phot_type == "annulus":
             save_label = "annulus_light_curve"
-            light_curve_dir = "annulus_light_curves"
         elif phot_type == "normal":
             save_label = "normal_light_curve"
-            light_curve_dir = "normal_light_curves"
         elif phot_type == "optimal":
             save_label = "optimal_light_curve"
-            light_curve_dir = "optimal_light_curves"
         else:
             print(f"[OPTICAM] Flux type {phot_type} is not supported.")
             return None
@@ -132,11 +131,16 @@ class Photometer:
         
         if not match_other_cameras:
             # compute and plot relative light curve for single filter
-            relative_light_curve, transformed_mask = self._compute_relative_light_curve(fltr, target, comparisons, phot_type, self.t_ref, show_diagnostics)
-            self._plot_relative_light_curve(relative_light_curve, self.t_ref, transformed_mask, target=target, comparisons=comparisons, prefix=prefix, fltr=fltr, save_label=save_label)
+            relative_light_curve, transformed_mask = self._compute_relative_light_curve(fltr, target, comparisons,
+                                                                                        phot_type, self.t_ref,
+                                                                                        show_diagnostics)
+            self._plot_relative_light_curve(relative_light_curve, self.t_ref, transformed_mask, target=target,
+                                            comparisons=comparisons, prefix=prefix, fltr=fltr, save_label=save_label)
             
             # save light curve to CSV
-            relative_light_curve.to_csv(self.out_directory + "relative_light_curves/" + f"{prefix}_{fltr}_{save_label}.csv", index=False)
+            relative_light_curve.to_csv(
+                self.out_directory + "relative_light_curves/" + f"{prefix}_{fltr}_{save_label}.csv", index=False
+                )
             
             # return Analyser object
             return Analyser({fltr: relative_light_curve}, self.out_directory, prefix, phot_type)
@@ -230,8 +234,7 @@ class Photometer:
         
         # define relative light curve dictionary
         relative_light_curve = {
-            'MJD': [],
-            'BDT': [],
+            'TDB': [],
             'relative flux': [],
             'relative flux error': [],
         }
@@ -256,8 +259,8 @@ class Photometer:
             comp_dfs.append(comparison_df)
         
         # get time columns from all data frames
-        time_columns = [target_df["MJD"].values]
-        time_columns.extend([df["MJD"].values for df in comp_dfs])
+        time_columns = [target_df["TDB"].values]
+        time_columns.extend([df["TDB"].values for df in comp_dfs])
         
         # get matching times between all data frames
         common_times = set(time_columns[0])
@@ -266,11 +269,11 @@ class Photometer:
         common_times = sorted(common_times)
         
         # get matching times for target
-        filtered_target_df = target_df[target_df["MJD"].isin(common_times)]
+        filtered_target_df = target_df[target_df["TDB"].isin(common_times)]
         filtered_target_df.reset_index(drop=True, inplace=True)
         
         # get matching times for comparisons
-        filtered_comp_dfs = [df[df["MJD"].isin(common_times)] for df in comp_dfs]
+        filtered_comp_dfs = [df[df["TDB"].isin(common_times)] for df in comp_dfs]
         filtered_comp_dfs = [df.reset_index(drop=True) for df in filtered_comp_dfs]
         
         # define transform mask
@@ -301,8 +304,7 @@ class Photometer:
         except:
             pass
         
-        relative_light_curve['MJD'] = filtered_target_df["MJD"].values
-        relative_light_curve['BDT'] = filtered_target_df["BDT"].values
+        relative_light_curve['TDB'] = filtered_target_df["TDB"].values
         
         return pd.DataFrame(relative_light_curve), transformed_mask
     
@@ -335,7 +337,7 @@ class Photometer:
             _description_, by default None
         """
         
-        time = relative_light_curve["MJD"].copy()
+        time = relative_light_curve["TDB"].copy()
         time -= t_ref
         time *= 86400
         
@@ -354,7 +356,7 @@ class Photometer:
         ax.set_title(fltr + ' (Source ID: ' + str(target) + ', Comparison ID(s): ' + ', '.join([str(comp) for comp in comparisons]) + ')')
         
         if dedicated_plot:
-            ax.set_xlabel(f"Time from MJD {t_ref:.4f} [s]")
+            ax.set_xlabel(f"Time from TDB {t_ref:.4f} [s]")
             ax.set_ylabel("Relative flux")
         
             fig.savefig(self.out_directory + "relative_light_curves/" + f"{prefix}_{fltr}_{save_label}.png")
@@ -394,7 +396,7 @@ class Photometer:
         for fltr, relative_light_curve in relative_light_curves.items():
             self._plot_relative_light_curve(relative_light_curve, t_ref, transformed_masks[fltr], axs[self.filters.index(fltr)], targets[fltr], comparisons[fltr], prefix, fltr, save_label)
         
-        axs[-1].set_xlabel(f"Time from MJD {t_ref:.4f} [s]")
+        axs[-1].set_xlabel(f"Time from TDB {t_ref:.4f} [s]")
         axs[int(len(relative_light_curves) / 2)].set_ylabel("Relative flux")
         
         fig.savefig(self.out_directory + "relative_light_curves/" + f"{prefix}_{save_label}.png")
@@ -429,7 +431,7 @@ class Photometer:
             Whether to show the diagnostic plot.
         """
         
-        time = (target_df["MJD"].values - t_ref)*86400  # convert to seconds
+        time = (target_df["TDB"].values - t_ref)*86400  # convert to seconds
         
         diag_fig, diag_ax = plt.subplots(nrows=2, tight_layout=True, sharex=True, figsize=(6.4, 1.5*4.8), gridspec_kw={"height_ratios": [2, 1], "hspace": 0})
         
@@ -444,7 +446,7 @@ class Photometer:
         diag_ax[0].xaxis.set_tick_params(labelbottom=False)
         diag_ax[0].legend()
         diag_ax[1].set_ylabel("Residuals")
-        diag_ax[1].set_xlabel(f"Time from MJD {t_ref} [s]")
+        diag_ax[1].set_xlabel(f"Time from TDB {t_ref} [s]")
         
         for diag_ax in diag_ax:
             diag_ax.minorticks_on()
@@ -484,7 +486,7 @@ class Photometer:
             Whether to show the diagnostic plot.
         """
         
-        time = (comparison1_df["MJD"].values - t_ref)*86400  # convert to seconds
+        time = (comparison1_df["TDB"].values - t_ref)*86400  # convert to seconds
         
         diag_fig, diag_ax = plt.subplots(tight_layout=True, figsize=(6.4, 4.8))
         
@@ -492,7 +494,7 @@ class Photometer:
         relative_flux_error = relative_flux*np.abs(np.sqrt(np.square(comparison1_df["flux_error"].values/comparison1_df["flux"].values) + np.square(comparison2_df["flux_error"].values/comparison2_df["flux"].values)))
         
         # save light curve to CSV
-        diag_df = pd.DataFrame({"MJD": comparison1_df["MJD"].values, "BDT":  comparison1_df["BDT"].values,
+        diag_df = pd.DataFrame({"TDB": comparison1_df["TDB"].values, "TDB":  comparison1_df["TDB"].values,
                                 "relative flux": relative_flux, "relative flux error": relative_flux_error})
         diag_df.to_csv(self.out_directory + 'relative_light_curves/diag/' + fltr + '_' + str(comparison1) + '_' + str(comparison2) + '_' + save_label + '_diag.csv', index=False)
         
@@ -502,7 +504,7 @@ class Photometer:
         diag_ax.axhline(1, color="r", ls="-", lw=1, zorder=3)
         
         diag_ax.set_title(fltr + ' Comparison ID: ' + str(comparison1) + ', Comparison ID: ' + str(comparison2))
-        diag_ax.set_xlabel(f"Time from MJD {t_ref} [s]")
+        diag_ax.set_xlabel(f"Time from TDB {t_ref} [s]")
         diag_ax.set_ylabel("Normalised relative flux")
         
         diag_ax.minorticks_on()

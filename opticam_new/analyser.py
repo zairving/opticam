@@ -2,32 +2,35 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from astropy.timeseries import LombScargle
-from typing import Dict, Union, Literal
-from numpy.typing import ArrayLike, NDArray
+from typing import Dict, Literal, Tuple
+from numpy.typing import NDArray
 import os
 import astropy.units as u
 from astropy.units.quantity import Quantity
+import json
+import warnings
 
 
 class Analyser:
     """
-    Helper class for analysing OPTICam light curves.
+    Helper class for analysing OPTICAM light curves.
     """
     
     def __init__(self, light_curves: Dict[str, pd.DataFrame], out_directory: str, prefix: str, phot_type: str):
         """
-        Helper class for analysing OPTICam light curves.
-
+        Helper class for analysing OPTICAM light curves.
+        
         Parameters
         ----------
         light_curves : Dict[str, pd.DataFrame]
             The light curves to analyse, where the keys are the filter names and the values are the light curves.
         out_directory : str
-            The directory to save the output files.
+            The directory to save the output files (i.e., the same directory as `out_directory` used by
+            `opticam_new.Photometer` when creating the light curves).
         prefix : str
-            The prefix to use for the output files.
+            The prefix to use for the output files (e.g., the name of the target).
         phot_type : str
-            The type of photometry used to generate the light curves.
+            The type of photometry used to generate the light curves. This is only used for naming the output files.
         """
         
         self.light_curves = light_curves
@@ -42,15 +45,24 @@ class Analyser:
         self.prefix = prefix
         self.phot_type = phot_type
         
+        try:
+            with open(os.path.join(self.out_directory, 'misc/input_parameters.json'), 'r') as file:
+                input_parameters = json.load(file)
+            self.t_ref = input_parameters['t_ref']
+        except FileNotFoundError:
+            warnings.warn(f"[OPTICAM] input_parameters.json not found in {self.out_directory}/misc/. "
+                          "Reference times will be inferred from light curves.")
+            self.t_ref = min([lc['TDB'].min() for lc in light_curves.values()])
+        
         self.colours = {
-            'g-band': 'green',  # camera 1
-            'u-band': 'green',  # camera 1
-            'r-band': 'red',  # camera 2
-            'i-band': 'gold',  # camera 3
-            'z-band': 'gold',  # camera 3
+            'g-band': 'tab:green',  # camera 1
+            'u-band': 'tab:green',  # camera 1
+            'r-band': 'tab:orange',  # camera 2
+            'i-band': 'tab:olive',  # camera 3
+            'z-band': 'tab:olive',  # camera 3
         }
     
-    def plot(self, title: str = None, x_col: Literal['MJD', 'BDT'] = 'BDT', ax = None):
+    def plot(self, title: str | None = None, ax = None) -> plt.Figure:
         """
         Plot the light curves.
         
@@ -58,40 +70,42 @@ class Analyser:
         ----------
         title : str, optional
             _description_, by default None
-        x_col : Literal[&#39;MJD&#39;, &#39;BDT&#39;], optional
-            _description_, by default 'BDT'
         ax : _type_, optional
             _description_, by default None
         
         Returns
         -------
-        _type_
-            _description_
+        plt.Figure
+            The figure containing the light curves.
         """
         
         if ax is None:
-            fig, ax = plt.subplots()
+            fig, ax = plt.subplots(figsize=(2 * 6.4, 4.8), tight_layout=True)
         
         for fltr, lc in self.light_curves.items():
-            ax.errorbar(lc[x_col], lc['relative flux'], lc['relative flux error'], marker='.', ms=2,
+            
+            t = (lc[time] - t_ref) * 86400
+            
+            ax.errorbar(t, lc['relative flux'], lc['relative flux error'], marker='.', ms=2,
                         linestyle='none', color=self.colours[fltr], ecolor='grey', elinewidth=1, label=fltr)
         
-        ax.set_xlabel(x_col)
+        ax.set_xlabel(f'Time from {time} {t_ref:.4f} [s]')
         ax.set_ylabel('Relative Flux')
         
         if title is not None:
             ax.set_title(title)
         
-        ax.legend()
+        ax.minorticks_on()
+        ax.tick_params(which='both', direction='in', top=True, right=True)
         
-        plt.show()
+        ax.legend(markerscale=5)
         
         return fig
-
+    
     def clip_outliers(self, n_window: int, sigma: float = 5., max_iters: int = 10) -> None:
         """
         Clip outliers using a rolling median filter.
-
+        
         Parameters
         ----------
         n_window : int
@@ -124,12 +138,13 @@ class Analyser:
     
     def update(self, analyser: 'Analyser') -> None:
         """
-        Combine the light curves of another analyser with the current one(s).
+        Combine another `Analyser` object with the current one. Useful when creating relative light curves
+        individually per filter.
         
         Parameters
         ----------
         analyser : Analyser
-            The analyser object whose light curves are to be combined with the current one(s).
+            The analyser object being combined with the current one.
         """
         
         light_curves = analyser.light_curves
@@ -139,7 +154,7 @@ class Analyser:
             self.light_curves[fltr] = light_curves[fltr].copy()
     
     def lomb_scargle(self, frequencies: NDArray = None, scale: Literal['linear', 'log', 'loglog'] = 'linear', 
-                     show_plot=True) -> Union[Dict[str, NDArray], NDArray, Dict[str, NDArray]]:
+                     show_plot=True) -> Tuple[NDArray, Dict[str, NDArray]] | Dict[str, NDArray]:
         """
         Compute the Lomb-Scargle periodogram for each light curve.
         
@@ -149,17 +164,16 @@ class Analyser:
             The periodogram frequencies, by default None. If None, a suitable frequency range will be inferred from the
             data.
         scale : Literal['linear', 'log', 'loglog'], optional
-            The scale to use for the inferred frequencies, by default 'linear'. If 'linear', numpy.linspace will be used
-            to generate the frequencies. If 'log', numpy.logspace will be used, and the frequency axis will be in
-            logarithm. The upper and lower bounds of the frequencies are always the same. If 'loglog', both the
-            frequency and power axes will be in logarithm.
+            The scale to use for the inferred frequencies, by default 'linear'. If 'linear', the frequency grid is
+            linearly spaced. If 'log', the frequency grid is logarithmically spaced. The upper and lower bounds of the
+            frequencies are always the same. If 'loglog', both the frequency and power axes will be in logarithm.
         show_plot : bool, optional
             Whether to show the plot of the periodogram(s), by default True.
         Returns
         -------
-        Union[Dict[str, NDArray], NDArray, Dict[str, NDArray]]
-            The Lomb-Scargle periodogram for each light curve. If the frequencies are not provided, the inferred
-            frequencies are also returned.
+        Tuple[NDArray, Dict[str, NDArray]] | Dict[str, NDArray]
+            If no frequencies are provided, returns a tuple containing the frequencies and a dictionary of periodograms
+            for each light curve. If frequencies are provided, returns a dictionary of periodograms for each light curve.
         """
         
         if not os.path.isdir(f'{self.out_directory}/periodograms'):
@@ -169,8 +183,8 @@ class Analyser:
             
             return_frequencies = True
             
-            t_span = np.mean([lc['BDT'].max() - lc['BDT'].min() for lc in self.light_curves.values()]) * 86400
-            dt = np.min([np.min(np.diff(lc['BDT'])) for lc in self.light_curves.values()]) * 86400
+            t_span = np.mean([lc['TDB'].max() - lc['TDB'].min() for lc in self.light_curves.values()]) * 86400
+            dt = np.min([np.min(np.diff(lc['TDB'])) for lc in self.light_curves.values()]) * 86400
             
             lo = 1 / t_span
             hi = 0.5 / dt
@@ -183,18 +197,19 @@ class Analyser:
         results = {}
         
         fig, axs = plt.subplots(tight_layout=True, nrows=len(self.light_curves), sharex=True,
-                                figsize=(6.4, (0.5 + 0.5*len(self.light_curves)*4.8)))
+                                figsize=(6.4, (0.5 + 0.5*len(self.light_curves)*4.8)), gridspec_kw={'hspace': 0.})
         
         for i in range(len(self.light_curves)):
             
             k = list(self.light_curves.keys())[i]
-            power = LombScargle((self.light_curves[k]['BDT'].values - self.light_curves[k]['BDT'].min())*86400,
+            power = LombScargle((self.light_curves[k]['TDB'].values - self.light_curves[k]['TDB'].min())*86400,
                                 self.light_curves[k]['relative flux'],
                                 self.light_curves[k]['relative flux error']).power(frequencies)
             results[k] = power
             
             axs[i].plot(frequencies, power, color=self.colours[k], lw=1, label=k)
-            axs[i].set_title(k)
+            
+            axs[i].text(.05, .1, k, transform=axs[i].transAxes, fontsize='large', ha='left')
         
         if scale == 'log':
             for ax in axs:
@@ -205,7 +220,25 @@ class Analyser:
                 ax.set_xscale('log')
                 ax.set_yscale('log')
         
-        axs[-1].set_xlabel('Frequency (Hz)')
+        def freq2period(x):
+            return 1 / x
+        
+        def period2freq(x):
+            return 1 / x
+        
+        for i, ax in enumerate(axs.flatten()):
+            
+            # ax.minorticks_on()
+            ax.tick_params(which='both', direction='in', right=True)
+            
+            secax = ax.secondary_xaxis('top', functions=(freq2period, period2freq))
+            # secax.minorticks_on()
+            secax.tick_params(which='both', direction='in', top=True, labeltop=True if i == 0 else False)
+            
+            if i == 0:
+                secax.set_xlabel('Period [s]')
+        
+        axs[-1].set_xlabel('Frequency [Hz]')
         axs[len(self.light_curves)//2].set_ylabel('Power')
         
         fig.savefig(f'{self.out_directory}/periodograms/{self.prefix}_{self.phot_type}_periodogram.png')
@@ -225,7 +258,8 @@ class Analyser:
         Parameters
         ----------
         period : Quantity
-            The period (with units) to use for phase folding.
+            The period to use for phase folding. This must be an astropy `Quantity` with units of time (e.g.,
+            `astropy.units.s`) to ensure correct handling of the period.
         plot : bool, optional
             Whether to plot the phase folded light curves, by default True.
         
@@ -240,7 +274,7 @@ class Analyser:
         results = {}
         
         for fltr, lc in self.light_curves.items():
-            phase = (lc['BDT'] % period) / period
+            phase = (lc['TDB'] % period) / period
             results[fltr] = phase
         
         if plot:
@@ -267,7 +301,8 @@ class Analyser:
         Parameters
         ----------
         period : Quantity
-            The period (with units) to use for phase binning.
+            The period to use for phase binning. This must be an astropy `Quantity` with units of time (e.g.,
+            `astropy.units.s`) to ensure correct handling of the period.
         n_bins : int, optional
             The number of phase bins, by default 10.
         plot : bool, optional
@@ -284,7 +319,7 @@ class Analyser:
         results = {}
         
         for fltr, lc in self.light_curves.items():
-            phase = (lc['BDT'] % period) / period
+            phase = (lc['TDB'] % period) / period
             bins = [[] for i in range(n_bins + 1)]
             
             for i in range(len(phase)):
@@ -304,7 +339,7 @@ class Analyser:
             }
         
         if plot:
-            fig, axs = fig, axs = plt.subplots(tight_layout=True, nrows=len(self.light_curves), sharex=True,
+            fig, axs = plt.subplots(tight_layout=True, nrows=len(self.light_curves), sharex=True,
                                     figsize=(6.4, (0.5 + 0.5*len(self.light_curves)*4.8)))
             
             for i in range(len(self.light_curves)):
@@ -326,3 +361,172 @@ class Analyser:
             plt.show()
         
         return results
+    
+    def rebin(self, dt: Quantity) -> 'Analyser':
+        """
+        Rebin the light curves to a new time resolution. This is useful for smoothing the light curves for presentation
+        or for FFT-based analyses.
+        
+        Parameters
+        ----------
+        dt : Quantity
+            The desired time resolution. This must be an astropy `Quantity` with units of time (e.g., `astropy.units.s`)
+            to ensure correct handling of the time resolution.
+        
+        Returns
+        -------
+        Analyser
+            A new `Analyser` object containing the rebinned light curves.
+        """
+        
+        def rebin_lc(lc: pd.DataFrame, dt: Quantity):
+            """
+            Rebin a light curve to a specified time resolution.
+            
+            Parameters
+            ----------
+            lc : pd.DataFrame
+                The light curve to rebin.
+            dt : float
+                The desired time bin width for rebinned data.
+            
+            Returns
+            -------
+            Tuple[NDArray, NDArray, NDArray]
+                The rebinned time array, the rebinned data values, and the rebinned error values.
+            """
+            
+            dt = float(dt.to(u.day).value)  # convert from given units to days
+            current_dt = np.min(np.diff(lc['TDB'].values))
+            minimum_number_of_points = int(dt // current_dt)
+            
+            new_x = np.arange(lc['TDB'].values[0], lc['TDB'].values[-1] + dt / 2, dt) + dt / 2
+            new_y = np.zeros_like(new_x)
+            new_yerr = np.zeros_like(new_x)
+            
+            for i in range(len(new_x)):
+                mask = (lc['TDB'].values >= new_x[i] - dt / 2) & (lc['TDB'].values < new_x[i] + dt / 2)
+                
+                if np.any(mask) and np.sum(mask) >= minimum_number_of_points:
+                    new_y[i] = np.mean(lc['relative flux'].values[mask])
+                    new_yerr[i] = np.sqrt(np.sum(lc['relative flux error'].values[mask]**2)) / np.sum(mask)
+                else:
+                    new_y[i] = np.nan
+                    new_yerr[i] = np.nan
+            
+            # drop NaNs
+            valid_mask = ~np.isnan(new_y)
+            
+            rebinned_lc = pd.DataFrame({
+                'TDB': new_x[valid_mask],
+                'relative flux': new_y[valid_mask],
+                'relative flux error': new_yerr[valid_mask]
+            })
+            
+            return rebinned_lc
+        
+        rebinned_light_curves = {}
+        
+        for fltr, lc in self.light_curves.items():
+            rebinned_light_curves[fltr] = rebin_lc(lc.copy(), dt)
+        
+        return Analyser(rebinned_light_curves, self.out_directory, self.prefix, self.phot_type)
+    
+    def compute_averaged_periodograms(self, dt: Quantity, segment_length: Quantity,
+                                      scale: Literal['linear', 'loglog'] = 'loglog',
+                                      rebin_frequencies: bool = False, rebin_factor: float = 1.02,
+                                      show_plot=True) -> Dict[str, NDArray]:
+        """
+        Compute the periodogram for each light curve using the FFT. All light curves are assumed to have the same
+        time resolution, so it's a good idea to call `Analyser.rebin()` before calling this method.
+        
+        Parameters
+        ----------
+        dt : Quantity
+            The time resolution of the light curves. This must be an astropy `Quantity` with units of time
+            (e.g., `astropy.units.s`) to ensure correct handling of the time resolution.
+        segment_length : Quantity
+            The length of the segment to use for the periodogram. This must be an astropy `Quantity` with units of time
+            (e.g., `astropy.units.s`) to ensure correct handling of the segment length.
+        scale : Literal['linear', 'loglog'], optional
+            The scale to use for the plot, by default 'loglog'. This does not affect the periodogram frequencies.
+        rebin_frequencies : bool, optional
+            Whether to rebin the frequencies to a logarithmic scale, by default False. If True, the frequencies will be
+            rebinned using `rebin_factor`.
+        rebin_factor : float, optional
+            The factor by which to rebin the frequencies, by default 1.02. This is only used if `rebin_frequencies` is
+            True.
+        show_plot : bool, optional
+            Whether to show the plot of the periodogram(s), by default True.
+        
+        Returns
+        -------
+        Dict[str, NDArray]
+            A dictionary containing the periodograms for each light curve.
+        """
+        
+        def rebin_freqs(freqs: NDArray, powers: NDArray, power_errs: NDArray,
+                              factor: float) -> Tuple[NDArray, NDArray, NDArray]:
+            
+            new_freqs = []
+            new_powers = []
+            new_power_errs = []
+            
+            prev = 0
+            i = 1
+            
+            bin_width = freqs[0]
+            
+            while i < len(freqs):
+                if freqs[i] - freqs[prev] >= bin_width:
+                    new_freqs.append(np.mean(freqs[prev:i]))
+                    new_powers.append(np.mean(powers[prev:i]))
+                    new_power_errs.append(np.sqrt(np.sum(power_errs[prev:i]**2)) / (i - prev))
+                    prev = i
+                    bin_width *= factor
+                i += 1
+            
+            return np.array(new_freqs), np.array(new_powers), np.array(new_power_errs)
+        
+        segment_length = segment_length.to(u.day).value  # convert from given units to days
+        dt = dt.to(u.day).value  # convert from given units to days
+        
+        number_of_points_per_segment = int(segment_length // dt)
+        frequencies = np.fft.rfftfreq(number_of_points_per_segment, dt)[1:]  # skip the zero frequency
+        
+        segment_edges = np.arange(self.light_curves[list(self.light_curves.keys())[0]]['TDB'].min(),
+                                  self.light_curves[list(self.light_curves.keys())[0]]['TDB'].max() + segment_length,
+                                  segment_length)
+        results = {}
+        
+        for fltr, lc in self.light_curves.items():
+            segment_powers = []
+            results[fltr] = {}
+            prev = 0.
+            
+            for edge in segment_edges[1:]:
+                mask = (lc['TDB'].values >= prev) & (lc['TDB'].values < edge)
+                if np.sum(mask) == number_of_points_per_segment:
+                    segment_powers.append(2 * dt / number_of_points_per_segment * np.abs(np.fft.rfft(lc['relative flux'].values[mask])[1:])**2)
+                prev = edge
+            
+            n_segments = len(segment_powers)
+            if n_segments < 10:
+                warnings.warn(f'[OPTICAM] Only {n_segments} segments were found for filter {fltr}. Consider reducing segment_length to increase the number of segments.')
+            print(f'[OPTICAM] {n_segments} segments averaaged for filter {fltr}.')
+            
+            results[fltr]['powers'] = np.mean(segment_powers, axis=0)
+            results[fltr]['power_errs'] = np.std(segment_powers, axis=0) / np.sqrt(len(segment_powers))
+            
+            if rebin_frequencies:
+                rebinned_freqs, rebinned_powers, rebinned_power_errs = rebin_freqs(frequencies,
+                                                                                   results[fltr]['powers'],
+                                                                                   results[fltr]['power_errs'],
+                                                                                   rebin_factor)
+                results[fltr]['powers'] = rebinned_powers
+                results[fltr]['power_errs'] = rebinned_power_errs
+        
+        if rebin_frequencies:
+            return rebinned_freqs, results
+        else:
+            return frequencies, results

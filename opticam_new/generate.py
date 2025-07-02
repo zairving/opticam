@@ -59,7 +59,7 @@ def __variable_function(i: float) -> float:
         The flux.
     """
     
-    return 5 * np.sin(2 * np.pi * i / 5.5)
+    return 50 * np.sin(2 * np.pi * i * 0.2)
 
 def __create_base_image(i: int, binning_scale: int) -> NDArray:
     
@@ -130,7 +130,7 @@ def __create_images(out_dir: str, filters: List[str], N_sources: int, variable_s
         
         # save fits file
         try:
-            hdu.writeto(f"{out_dir}/{fltr}-band_image_{i}.fits.gz", overwrite=overwrite)
+            hdu.writeto(f"{out_dir}/240101{fltr}{200000000 + i}o.fits.gz", overwrite=overwrite)
         except:
             pass
 

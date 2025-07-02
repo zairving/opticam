@@ -156,7 +156,7 @@ def apply_barycentric_correction(original_times: ArrayLike, coords: SkyCoord) ->
         The corrected times.
     """
     
-    # OPTICam location
+    # OPTICAM location
     observer_coords = EarthLocation.from_geodetic(lon=-115.463611*u.deg, lat=31.044167*u.deg, height=2790*u.m)
     
     
@@ -167,7 +167,7 @@ def apply_barycentric_correction(original_times: ArrayLike, coords: SkyCoord) ->
     ltt_bary = times.light_travel_time(coords)
     
     # return the corrected times using TDB timescale
-    return times.tdb + ltt_bary
+    return (times.tdb + ltt_bary).value
 
 
 def euclidean_distance(p1: Tuple[float, float], p2: Tuple[float, float]) -> float:
