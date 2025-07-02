@@ -49,9 +49,9 @@ from opticam_new.correctors import FlatFieldCorrector
 # TODO: convert PSFs from pixels to arcseconds
 
 
-class Reducer:
+class Catalog:
     """
-    Helper class for reducing OPTICAM data.
+    Create a catalog of sources from OPTICAM data.
     """
     
     def __init__(
@@ -203,6 +203,7 @@ class Reducer:
                     self.c3_directory += "/"
         
         # set parameters
+        self.pix_scales = {'u-band': 0.1397, 'g-band': 0.1397, 'r-band': 0.1406, 'i-band': 0.1661, 'z-band': 0.1661}
         self.rebin_factor = rebin_factor
         self.flat_corrector = flat_corrector
         self.fwhm_scale = 2 * np.sqrt(2 * np.log(2))  # FWHM scale factor
@@ -350,10 +351,9 @@ class Reducer:
         
         # sort files by time
         for key in list(self.camera_files.keys()):
-            self.camera_files[key].sort(key=lambda x: self.mjds[x])
+            self.camera_files[key].sort(key=lambda x: self.bdts[x])
         
-        self.t_ref_mjd = min(list(self.mjds.values()))  # get reference MJD
-        self.t_ref_bdt = min(list(self.bdts.values()))  # get reference BDT
+        self.t_ref = min(list(self.bdts.values()))  # get reference BDT
         
         # define middle image as reference image for each filter
         self.reference_indices = {}
@@ -373,7 +373,7 @@ class Reducer:
             for fltr in list(self.camera_files.keys()):
                 print(f'[OPTICAM] {len(self.camera_files[fltr])} {fltr} images.')
 
-    def _get_header_info(self, file: str) -> Tuple[float | None, ArrayLike | None, str | None, str | None, float | None]:
+    def _get_header_info(self, file: str) -> Tuple[ArrayLike | None, str | None, str | None, float | None]:
         """
         Get the MJD, filter, binning, and gain from a file header.
         
@@ -384,8 +384,8 @@ class Reducer:
         
         Returns
         -------
-        Tuple[float, float, str, str, float]
-            The MJD, BDT, filter, binning, and gain dictionaries.
+        Tuple[float, str, str, float]
+            The BDT, filter, binning, and gain dictionaries.
         
         Raises
         ------
@@ -419,10 +419,10 @@ class Reducer:
                 self.logger.info(f"[OPTICAM] Could not compute BDT for {file}.")
         except:
             self.logger.info(f'[OPTICAM] Skipping file {file} because it could not be read. This is usually due to the file not conforming to the FITS standard, or the file being corrupted.')
-            return None, None, None, None, None
+            return None, None, None, None
         
-        return mjd, bdt, fltr, binning, gain
-    
+        return bdt, fltr, binning, gain
+
     def _parse_header_results(self, results: Tuple[float, float, str, str, float]) -> Dict[str, str]:
         """
         Parse the results returned by self._get_header_info().
@@ -445,19 +445,17 @@ class Reducer:
             If the binning is not consistent.
         """
         
-        self.mjds = {}
         self.bdts = {}
         filters = {}
         binnings = {}
         self.gains = {}
         
         # unpack results
-        raw_mjds, raw_bdts, raw_filters, raw_binnings, raw_gains = zip(*results)
+        raw_bdts, raw_filters, raw_binnings, raw_gains = zip(*results)
         
         # consolidate results
-        for i in range(len(raw_mjds)):
-            if raw_mjds[i] is not None:
-                self.mjds.update({self.file_paths[i]: raw_mjds[i]})
+        for i in range(len(raw_bdts)):
+            if raw_bdts[i] is not None:
                 self.bdts.update({self.file_paths[i]: raw_bdts[i]})
                 filters.update({self.file_paths[i]: raw_filters[i]})
                 binnings.update({self.file_paths[i]: raw_binnings[i]})
@@ -482,11 +480,11 @@ class Reducer:
             self.binning = unique_binning[0]
             self.binning_scale = int(self.binning[0])
         
-        # check for large differences in mjd
+        # check for large differences in time
         for fltr in unique_filters:
-            mjds = np.array([self.mjds[file] for file in self.file_paths if file in filters and filters[file] == fltr])
+            bdts = np.array([self.bdts[file] for file in self.file_paths if file in filters and filters[file] == fltr])
             files = [file for file in self.file_paths if file in filters and filters[file] == fltr]
-            t = mjds - np.min(mjds)
+            t = bdts - np.min(bdts)
             dt = np.diff(t) * 86400
             if np.any(dt > 10 * np.median(dt)):
                 indices = np.where(dt > 10 * np.median(dt))[0]
@@ -544,7 +542,6 @@ class Reducer:
         
         # remove some parameters that are either already saved elsewhere or are not needed
         params.pop('logger')
-        params.pop('mjds')
         params.pop('bdts')
         params.pop('gains')
         params.pop('camera_files')
@@ -665,7 +662,7 @@ class Reducer:
         return coords
 
 
-    def initialise_catalogs(self, max_catalog_sources: int = 30, n_alignment_sources: int = 3,
+    def __call__(self, max_catalog_sources: int = 30, n_alignment_sources: int = 3,
                             transform_type: Literal['euclidean', 'similarity', 'translation'] = 'translation',
                             translation_limit: int | None = None, rotation_limit: int | None = None,
                             scaling_limit: int | None = None, overwrite: bool = False,
@@ -877,7 +874,7 @@ class Reducer:
                                     mode='constant', cval=np.nanmedian(data), clip=True, preserve_range=True)
         
         return stacked_image, transforms, background_medians, background_rmss
-    
+
     def _parse_alignment_results(self, results, fltr: str, reference_image) -> Tuple[NDArray, Dict[str, float],
                                                                                      Dict[str, float]]:
         """
@@ -926,7 +923,7 @@ class Reducer:
             print(f'[OPTICAM] {len(unaligned_files)} image(s) could not be aligned.')
         
         return stacked_image, background_medians, background_rmss
-    
+
     def _plot_catalog(self, stacked_images: Dict[str, NDArray]) -> None:
         """
         Plot the source catalogs on top of the stacked images
@@ -1046,7 +1043,7 @@ class Reducer:
         fig, axs = plt.subplots(nrows=2, ncols=len(self.catalogs), tight_layout=True, figsize=((2 * len(self.catalogs) / 3) * 6.4, 2 * 4.8))
         
         for fltr in list(self.catalogs.keys()):
-            times = np.array([self.mjds[file] for file in self.camera_files[fltr]])
+            times = np.array([self.bdts[file] for file in self.camera_files[fltr]])
             times -= times.min()
             times *= 86400  # convert to seconds from first observation
             dt = np.diff(times)  # get time between files
@@ -1114,16 +1111,15 @@ class Reducer:
             if len(self.camera_files[fltr]) == 0:
                 continue
             
-            mjds = np.array([self.mjds[file] for file in self.camera_files[fltr]])
             bdts = np.array([self.bdts[file] for file in self.camera_files[fltr]])
-            plot_times = (mjds - self.t_ref_mjd)*86400  # convert to seconds from first observation
+            plot_times = (bdts - self.t_ref)*86400  # convert to seconds from first observation
             
             if len(self.catalogs) == 1:
                 axs[0].set_title(fltr)
                 axs[0].plot(plot_times, background_rms[fltr], "k.", ms=2)
                 axs[1].plot(plot_times, background_median[fltr], "k.", ms=2)
                 
-                axs[1].set_xlabel(f"Time from MJD {mjds.min():.4f} [s]")
+                axs[1].set_xlabel(f"Time from TDB {bdts.min():.4f} [s]")
                 axs[0].set_ylabel("Median background RMS")
                 axs[1].set_ylabel("Median background")
             else:
@@ -1133,7 +1129,7 @@ class Reducer:
                 axs[1, list(self.catalogs.keys()).index(fltr)].plot(plot_times, background_median[fltr], "k.", ms=2)
                 
                 for col in range(len(self.catalogs)):
-                    axs[1, col].set_xlabel(f"Time from MJD {mjds.min():.4f} [s]")
+                    axs[1, col].set_xlabel(f"Time from TDB {bdts.min():.4f} [s]")
                 
                 axs[0, 0].set_ylabel("Median background RMS")
                 axs[1, 0].set_ylabel("Median background")
@@ -1141,9 +1137,9 @@ class Reducer:
             # write background to file
             with open(self.out_directory + 'diag/' + fltr + '_background.csv', 'w') as file:
                 writer = csv.writer(file)
-                writer.writerow(['MJD', 'BDT', 'RMS', 'median'])
+                writer.writerow(['BDT', 'RMS', 'median'])
                 for i in range(len(self.camera_files[fltr])):
-                    writer.writerow([mjds[i], bdts[i], background_rms[fltr][i], background_median[fltr][i]])
+                    writer.writerow([bdts[i], background_rms[fltr][i], background_median[fltr][i]])
         
         for ax in axs.flatten():
             ax.minorticks_on()
@@ -1232,7 +1228,7 @@ class Reducer:
             else:
                 fig.clear()
                 plt.close(fig)
-    
+
     def create_gifs(self, keep_frames: bool = True, overwrite: bool = False) -> None:
         """
         Create alignment gifs for each camera. Some aspects of this method are parallelised for speed. The frames are 
@@ -1364,1043 +1360,3 @@ class Reducer:
             for file in tqdm(os.listdir(self.out_directory + f"diag/{fltr}_gif_frames"), disable=not self.verbose,
                              desc=f"[OPTICAM] Deleting {fltr} GIF frames"):
                 os.remove(self.out_directory + f"diag/{fltr}_gif_frames/{file}")
-
-
-    def forced_photometry(self, phot_type: Literal["aperture", "annulus", "both"] = "both",
-                          overwrite: bool = False) -> None:
-        """
-        Perform forced photometry on the images in out_directory. The light curves produced by this method are generally
-        going to have lower signal-to-noise ratios than those produced by the photometry() method, but they have the
-        benefit of being able to extract light curves for sources that are not detected in all images.
-        
-        Parameters
-        ----------
-        phot_type : Literal["aperture", "annulus", "both"], optional
-            The type of photometry to perform, by default "both". If "aperture", only aperture photometry is performed.
-            If "annulus", only annulus photometry is performed. If "both", both aperture and annulus photometry are
-            performed simultaneously (this is more efficient that performing both separately since it only opens the
-            file once).
-        overwrite : bool, optional
-            Whether to overwrite existing light curves, by default False.
-        
-        Raises
-        ------
-        ValueError
-            If phot_type is not recognised.
-        """
-        
-        assert phot_type in ['aperture', 'annulus', 'both'], f"[OPTICAM] Photometry type {phot_type} not recognised."
-        
-        # create output directories if they do not exist
-        if phot_type == 'aperture':
-            if not os.path.isdir(self.out_directory + f"aperture_light_curves"):
-                os.mkdir(self.out_directory + f"aperture_light_curves")
-        elif phot_type == 'annulus':
-            if not os.path.isdir(self.out_directory + f"annulus_light_curves"):
-                os.mkdir(self.out_directory + f"annulus_light_curves")
-        else:
-            if not os.path.isdir(self.out_directory + f"aperture_light_curves"):
-                os.mkdir(self.out_directory + f"aperture_light_curves")
-            if not os.path.isdir(self.out_directory + f"annulus_light_curves"):
-                os.mkdir(self.out_directory + f"annulus_light_curves")
-        
-        self.logger.info(f'[OPTICAM] Performing forced photometry with phot_type={phot_type} ...')
-        
-        # for each camera
-        for fltr in list(self.catalogs.keys()):
-            
-            # skip cameras with no images
-            if len(self.camera_files[fltr]) == 0:
-                continue
-            
-            # get list of possible light curve files
-            if phot_type == 'aperture':
-                light_curve_files = [self.out_directory + f"aperture_light_curves/{fltr}_source_{i}.csv" for i in range(len(self.catalogs[fltr]))]
-            elif phot_type == 'annulus':
-                light_curve_files = [self.out_directory + f"annulus_light_curves/{fltr}_source_{i}.csv" for i in range(len(self.catalogs[fltr]))]
-            else:
-                light_curve_files = [self.out_directory + f"aperture_light_curves/{fltr}_source_{i}.csv" for i in range(len(self.catalogs[fltr]))]
-                light_curve_files += [self.out_directory + f"annulus_light_curves/{fltr}_source_{i}.csv" for i in range(len(self.catalogs[fltr]))]
-            
-            # check if light curves already exist
-            if all([os.path.isfile(file) for file in light_curve_files]) and not overwrite:
-                self.logger.info(f'[OPTICAM] {fltr} light curves already exist and overwrite is False. Skipping ...')
-                continue
-            
-            # get aperture radius
-            try:
-                radius = self.scale*self.aperture_selector(self.catalogs[fltr]["semimajor_sigma"].value)
-            except:
-                # skip cameras with no sources
-                continue
-            
-            self.logger.info(f'[OPTICAM] {fltr} forced photometry aperture radius: {radius} pixels.')
-            
-            chunksize = max(1, len(self.camera_files[fltr]) // 100)  # chunk size for parallel processing (must be >= 1)
-            results = process_map(partial(self._perform_forced_photometry, fltr=fltr, radius=radius,
-                                          phot_type=phot_type), self.camera_files[fltr],
-                                  max_workers=self.number_of_processors,
-                                  desc=f"[OPTICAM] Performing forced photometry on {fltr} images",
-                                  disable=not self.verbose, chunksize=chunksize)
-            
-            self._save_forced_photometry_results(results, phot_type, fltr)
-
-    def _perform_forced_photometry(self, file: str, fltr: str, radius: float,
-                                   phot_type: Literal["aperture", "annulus", "both"]):
-        """
-        Perform forced photometry on a batch of images.
-        
-        Parameters
-        ----------
-        batch : List[str]
-            The batch of image names.
-        fltr : str
-            The camera filter.
-        radius : float
-            The aperture radius
-        phot_type : Literal[&quot;aperture&quot;, &quot;annulus&quot;, &quot;both&quot;]
-            The type of photometry to performn.
-        
-        Returns
-        -------
-        Tuple
-            The photometric results.
-        """
-        
-        # define lists to store results for each file
-        aperture_fluxes, aperture_flux_errors = [], []
-        annulus_fluxes, annulus_flux_errors = [], []
-        local_backgrounds, local_background_errors = [], []
-        local_backgrounds_per_pixel, local_background_errors_per_pixel = [], []
-        
-        # get image transform and determine quality flag
-        if file == self.camera_files[fltr][self.reference_indices[fltr]]:
-            flag = 'A'
-        elif file not in self.transforms.keys():
-            flag = 'B'
-        else:
-            flag = 'A'
-            transform = self.transforms[file]
-        
-        # get image data and its error
-        data, error = self.get_data(file, return_error=True)
-        
-        # get background subtracted image and its error if required
-        if phot_type in ['aperture', 'both']:
-            bkg = self.background(data)
-            clean_data = data - bkg.background
-            clean_error = calc_total_error(clean_data, bkg.background_rms, error)
-        
-        # for each source
-        for i in range(len(self.catalogs[fltr])):
-            # load the source's catalog position
-            catalog_position = (self.catalogs[fltr]["xcentroid"][i], self.catalogs[fltr]["ycentroid"][i])
-            
-            # try to transform the catalog position using the image transform, otherwise use the catalog position
-            try:
-                position = matrix_transform(catalog_position, transform)[0]
-            except:
-                position = catalog_position
-            
-            # perform photometry
-            if phot_type == 'aperture':
-                flux, flux_error = self._compute_aperture_flux(clean_data, clean_error, position, radius)
-                aperture_fluxes.append(flux)
-                aperture_flux_errors.append(flux_error)
-            elif phot_type == 'annulus':
-                flux, flux_error, local_background, local_background_error, local_background_per_pixel, local_background_error_per_pixel = self._compute_annulus_flux(data, error, position, radius)
-                annulus_fluxes.append(flux)
-                annulus_flux_errors.append(flux_error)
-                local_backgrounds.append(local_background)
-                local_background_errors.append(local_background_error)
-                local_backgrounds_per_pixel.append(local_background_per_pixel)
-                local_background_errors_per_pixel.append(local_background_error_per_pixel)
-            else:
-                # aperture
-                flux, flux_error = self._compute_aperture_flux(clean_data, clean_error, position, radius)
-                aperture_fluxes.append(flux)
-                aperture_flux_errors.append(flux_error)
-                # annulus
-                flux, flux_error, local_background, local_background_error, local_background_per_pixel, local_background_error_per_pixel = self._compute_annulus_flux(data, error, position, radius)
-                annulus_fluxes.append(flux)
-                annulus_flux_errors.append(flux_error)
-                local_backgrounds.append(local_background)
-                local_background_errors.append(local_background_error)
-                local_backgrounds_per_pixel.append(local_background_per_pixel)
-                local_background_errors_per_pixel.append(local_background_error_per_pixel)
-        
-        # return the results in the correct format for the specified phot_type
-        if phot_type == 'aperture':
-            return aperture_fluxes, aperture_flux_errors, flag
-        elif phot_type == 'annulus':
-            return annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flag
-        else:
-            return aperture_fluxes, aperture_flux_errors, annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flag
-
-    def _parse_forced_photometry_results(self, results, phot_type: Literal["aperture", "annulus", "both"]):
-        """
-        Parse the forced photometry photometric results.
-        
-        Parameters
-        ----------
-        results :
-            The photometric results.
-        phot_type : Literal['aperture', 'annulus', 'both']
-            The type of photometry that has been performed.
-        
-        Returns
-        -------
-        Tuple
-            The parsed photometric results.
-        """
-        
-        if phot_type == 'aperture':
-            aperture_fluxes, aperture_flux_errors, flags = zip(*results)
-            
-            return list(aperture_fluxes), list(aperture_flux_errors), list(flags)
-        
-        elif phot_type == 'annulus':
-            annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags = zip(*results)
-            
-            return list(annulus_fluxes), list(annulus_flux_errors), list(local_backgrounds), list(local_background_errors), list(local_backgrounds_per_pixel), list(local_background_errors_per_pixel), list(flags)
-        
-        else:
-            aperture_fluxes, aperture_flux_errors, annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags = zip(*results)
-            
-            return list(aperture_fluxes), list(aperture_flux_errors), list(annulus_fluxes), list(annulus_flux_errors), list(local_backgrounds), list(local_background_errors), list(local_backgrounds_per_pixel), list(local_background_errors_per_pixel), list(flags)
-
-    @staticmethod
-    def _compute_aperture_flux(clean_data: NDArray, error: NDArray, position: ArrayLike,
-                               radius: float) -> Tuple[float, float]:
-        """
-        Compute the flux and error for a given aperture position and radius.
-        
-        Parameters
-        ----------
-        clean_data : NDArray
-            The background subtracted image.
-        error : NDArray
-            The error in the image.
-        position : ArrayLike
-            The aperture position.
-        radius : float
-            The aperture radius.
-        
-        Returns
-        -------
-        Tuple[float, float]
-            The flux and error.
-        """
-        
-        aperture = CircularAperture(position, r=radius)
-        phot_table = aperture_photometry(clean_data, aperture, error=error)
-        
-        return phot_table["aperture_sum"].value[0], phot_table["aperture_sum_err"].value[0]
-
-    def _compute_annulus_flux(self, data: NDArray, error: NDArray, position: ArrayLike,
-                              radius: float) -> Tuple[float, float, float, float, float, float]:
-        """
-        Compute the local-background-subtracted flux and error for a given aperture position and radius.
-        
-        Parameters
-        ----------
-        data : ArrayLike
-            The image data.
-        error : ArrayLike
-            The error in the image.
-        position : ArrayLike
-            The aperture position.
-        radius : float
-            The aperture radius.
-        
-        Returns
-        -------
-        Tuple[float, float, float, float, float, float]
-            The flux, flux error, local background, local background error, local background per pixel, and local
-            background error per pixel.
-        """
-        
-        # define aperture
-        aperture = CircularAperture(position, r=radius)
-        aperture_area = aperture.area_overlap(data)  # aperture area in pixels
-        phot_table = aperture_photometry(data, aperture, error=error)
-        
-        # estimate local background per pixel using circular annulus
-        local_background_per_pixel, local_background_error_per_pixel = self.local_background(data, error, radius, radius, 0, position)
-        
-        # calculate total background in aperture
-        total_bkg = local_background_per_pixel * aperture_area
-        total_bkg_error = np.sqrt(local_background_error_per_pixel * aperture_area)
-        
-        flux = phot_table["aperture_sum"].value[0] - total_bkg
-        flux_error = np.sqrt(phot_table["aperture_sum_err"].value[0]**2 + total_bkg_error**2)
-        local_background = total_bkg
-        local_background_errors = total_bkg_error
-        local_backgrounds_per_pixel = local_background_per_pixel
-        local_background_errors_per_pixel = local_background_error_per_pixel
-        
-        return flux, flux_error, local_background, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel
-
-    def _save_forced_photometry_results(self, results: Tuple, phot_type: str, fltr: str) -> None:
-        """
-        Unpack and save the forced photometry results.
-        
-        Parameters
-        ----------
-        results : Tuple
-            The photometric results.
-        phot_type : str
-            The type of photometry that has been performed.
-        fltr : str
-            The filter.
-        """
-        
-        # get image time stamps
-        mjds = [self.mjds[file] for file in self.camera_files[fltr]]
-        bdts = [self.bdts[file] for file in self.camera_files[fltr]]
-        
-        # save light curves
-        if phot_type == 'aperture':
-            # parse results
-            aperture_fluxes, aperture_flux_errors, flags = self._parse_forced_photometry_results(results, phot_type)
-            
-            # save light curves
-            for i in tqdm(range(len(self.catalogs[fltr])), disable=not self.verbose, desc=f"[OPTICAM] Saving {fltr} light curves"):
-                self._save_aperture_light_curve(mjds, bdts, aperture_fluxes, aperture_flux_errors, flags, fltr, i)
-        elif phot_type == 'annulus':
-            # parse results
-            annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags = self._parse_forced_photometry_results(results, phot_type)
-            
-            # save light curves
-            for i in tqdm(range(len(self.catalogs[fltr])), disable=not self.verbose, desc=f"[OPTICAM] Saving {fltr} light curves"):
-                self._save_annulus_light_curve(mjds, bdts, annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags, fltr, i)
-        else:
-            # parse results
-            aperture_fluxes, aperture_flux_errors, annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags = self._parse_forced_photometry_results(results, phot_type)
-            
-            # save light curves
-            for i in tqdm(range(len(self.catalogs[fltr])), disable=not self.verbose, desc=f"[OPTICAM] Saving {fltr} light curves"):
-                self._save_aperture_light_curve(mjds, bdts, aperture_fluxes, aperture_flux_errors, flags, fltr, i)
-                self._save_annulus_light_curve(mjds, bdts, annulus_fluxes, annulus_flux_errors, local_backgrounds, local_background_errors, local_backgrounds_per_pixel, local_background_errors_per_pixel, flags, fltr, i)
-
-    def _save_aperture_light_curve(self, mjds: List[float], bdts: List[float], fluxes: List[List[float]],
-                                   flux_errors: List[List[float]], flags: List[str], fltr: str,
-                                   source_index: int) -> None:
-        """
-        Plot and save the light curve.
-        
-        Parameters
-        ----------
-        mjds : List[float]
-            The observation MJDs.
-        bdts : List[float]
-            The observation BDTs.
-        fluxes : List[List[float]]
-            The source fluxes.
-        flux_errors : List[List[float]]
-            The source flux errors.
-        flags : List[str]
-            The quality flags.
-        fltr : str
-            The filter.
-        source_index : int
-            The source index, not to be confused with the source number. The source index is one less than the source
-            number.
-        """
-        
-        with open(self.out_directory + f"aperture_light_curves/{fltr}_source_{source_index + 1}.csv", "w") as file:
-            csvwriter = csv.writer(file)
-            csvwriter.writerow(["MJD", 'BDT', "flux", "flux_error", "quality_flag"])
-            
-            # for each observation
-            for i in range(len(self.camera_files[fltr])):
-                csvwriter.writerow([mjds[i], bdts[i], fluxes[i][source_index], flux_errors[i][source_index], flags[i]])
-        
-        # load light curve from file
-        df = pd.read_csv(self.out_directory + f"aperture_light_curves/{fltr}_source_{source_index + 1}.csv")
-        aligned_mask = df["quality_flag"] == "A"  # mask for aligned observations
-        
-        # reformat MJD to seconds from first observation
-        df["time"] = df["MJD"] - self.t_ref_mjd
-        df["time"] *= 86400
-        
-        fig, ax = plt.subplots(num=1, clear=True, tight_layout=True, figsize=(6.4, 4.8))
-        
-        ax.errorbar(df["time"].values[aligned_mask], df["flux"].values[aligned_mask], yerr=df["flux_error"].values[aligned_mask], fmt="k.", ms=2, ecolor="grey", elinewidth=1)
-        ax.errorbar(df["time"].values[~aligned_mask], df["flux"].values[~aligned_mask], yerr=df["flux_error"].values[~aligned_mask], fmt="r.", ms=2, elinewidth=1, alpha=.2)
-        ax.set_ylabel("Flux [counts]")
-        ax.set_title(f"{fltr} Source {source_index + 1}")
-        ax.set_xlabel(f"Time from MJD {self.t_ref_mjd:.4f} [s]")
-        
-        ax.minorticks_on()
-        ax.tick_params(which="both", direction="in", top=True, right=True)
-        
-        # save light curve plot to file
-        fig.savefig(self.out_directory + f"aperture_light_curves/{fltr}_source_{source_index + 1}.png")
-        fig.clear()
-        plt.close(fig)
-
-    def _save_annulus_light_curve(self, mjds: List[float], bdts: List[float], fluxes: List[List[float]],
-                                  flux_errors: List[List[float]], local_backgrounds: List[List[float]],
-                                  local_background_errors: List[List[float]],
-                                  local_backgrounds_per_pixel: List[List[float]],
-                                  local_background_errors_per_pixel: List[List[float]],
-                                  flags: List[str], fltr: str, source_index: int) -> None:
-        """
-        Plot and save the light curve.
-        
-        Parameters
-        ----------
-        mjds : List[List[float]]
-            The observation MJDs.
-        bdts : List[List[float]]
-            The observation BDTs.
-        fluxes : List[List[float]]
-            The source fluxes.
-        flux_errors : List[List[float]]
-            The source flux errors.
-        local_backgrounds : List[List[float]]
-            The local backgrounds.
-        local_background_errors : List[List[float]]
-            The local background errors.
-        local_backgrounds_per_pixel : List[List[float]]
-            The local backgrounds per pixel.
-        local_background_errors_per_pixel : List[List[float]]
-            The local background errors per pixel.
-        flags : List[str]
-            The quality flags.
-        fltr : str
-            The filter.
-        source_index : int
-            The source index, not to be confused with the source number. The source index is one less than the source
-            number.
-        """
-        
-        # save source light curve to file
-        with open(self.out_directory + f"annulus_light_curves/{fltr}_source_{source_index + 1}.csv", "w") as file:
-            csvwriter = csv.writer(file)
-            csvwriter.writerow(['MJD', 'BDT', "flux", "flux_error", "local_background", "local_background_error",
-                                "local_background_per_pixel", "local_background_error_per_pixel", "quality_flag"])
-            for i in range(len(self.camera_files[fltr])):
-                csvwriter.writerow([mjds[i], bdts[i], fluxes[i][source_index], flux_errors[i][source_index],
-                                    local_backgrounds[i][source_index], local_background_errors[i][source_index],
-                                    local_backgrounds_per_pixel[i][source_index],
-                                    local_background_errors_per_pixel[i][source_index], flags[i]])
-        
-        # load light curve from file
-        df = pd.read_csv(self.out_directory + f"annulus_light_curves/{fltr}_source_{source_index + 1}.csv")
-        aligned_mask = df["quality_flag"] == "A"  # mask for aligned observations
-        
-        # reformat MJD to seconds from first observation
-        df["time"] = df["MJD"] - self.t_ref_mjd
-        df["time"] *= 86400
-        
-        fig, axs = plt.subplots(num=1, clear=True, nrows=3, tight_layout=True, figsize=(6.4, 2*4.8), sharex=True,
-                                gridspec_kw={"hspace": 0})
-        
-        axs[0].errorbar(df["time"].values[aligned_mask], df["flux"].values[aligned_mask], yerr=df["flux_error"].values[aligned_mask], fmt="k.", ms=2, ecolor="grey", elinewidth=1)
-        axs[0].errorbar(df["time"].values[~aligned_mask], df["flux"].values[~aligned_mask], yerr=df["flux_error"].values[~aligned_mask], fmt="r.", ms=2, elinewidth=1, alpha=.2)
-        axs[0].set_ylabel("Flux [counts]")
-        axs[0].set_title(f"{fltr} Source {source_index + 1}")
-        
-        axs[1].errorbar(df["time"].values[aligned_mask], df["local_background_per_pixel"].values[aligned_mask], yerr=df["local_background_error_per_pixel"].values[aligned_mask], fmt="k.", ms=2, ecolor="grey", elinewidth=1)
-        axs[1].errorbar(df["time"].values[~aligned_mask], df["local_background_per_pixel"].values[~aligned_mask], yerr=df["local_background_error_per_pixel"].values[~aligned_mask], fmt="r.", ms=2, elinewidth=1, alpha=.2)
-        axs[1].set_ylabel("Local background [cts/pixel]")
-        
-        axs[2].plot(df["time"].values[aligned_mask], df["flux"].values[aligned_mask]/df["local_background"].values[aligned_mask], "k.", ms=2)
-        axs[2].plot(df["time"].values[~aligned_mask], df["flux"].values[~aligned_mask]/df["local_background"].values[~aligned_mask], "r.", ms=2, alpha=.2)
-        axs[2].set_ylabel("SNR")
-        axs[2].set_xlabel(f"Time from MJD {self.t_ref_mjd:.4f} [s]")
-        
-        for ax in axs:
-            ax.minorticks_on()
-            ax.tick_params(which="both", direction="in", top=True, right=True)
-        
-        fig.savefig(self.out_directory + f"annulus_light_curves/{fltr}_source_{source_index + 1}.png")
-        fig.clear()
-        plt.close(fig)
-
-
-    def photometry(self, phot_type: Literal['both', 'normal', 'optimal'] = 'both',
-                   background_method: Literal['global', 'local'] = 'global', tolerance: float = 5.,
-                   overwrite: bool = False) -> None:
-        """
-        Perform photometry by fitting for the source positions in each image. In general, this method should produce
-        light curves with better signal-to-noise ratios than forced photometry. However, this method can misidentify
-        sources if the field is crowded or the alignments are poor.
-        
-        Parameters
-        ----------
-        phot_type : Literal['both', 'normal', 'optimal']
-            The type of photometry to perform. 'normal' will extract fluxes using simple aperture photometry, while
-            'optimal' will extract fluxes using the optimal photometry method outlined in Naylor 1998, MNRAS, 296, 339.
-            'both' will extract fluxes using both methods (this is more efficient than performing both separately since
-            it only opens the file once).
-        background_method : Literal['global', 'local'], optional
-            The method to use for background subtraction, by default 'global'. 'global' uses the background attribute to
-            compute the 2D background across an entire image, while 'local' uses the local_background attribute to
-            estimate the local background around each source.
-        tolerance : float, optional
-            The tolerance for source position matching in standard deviations (assuming a Gaussian PSF), by default 5.
-            This parameter defines how far from the transformed catalog position a source can be while still being
-            considered the same source. If the alignments are good and/or the field is crowded, consider reducing this
-            value. For poor alignments and/or uncrowded fields, this value can be increased.
-        overwrite : bool, optional
-            Whether to overwrite existing light curves, by default False.
-        """
-        
-        assert phot_type in ['normal', 'optimal', 'both'], f"[OPTICAM] Photometry type {phot_type} not recognised."
-        
-        # create output directories if they do not exist
-        if phot_type == 'normal':
-            if not os.path.isdir(self.out_directory + f"normal_light_curves"):
-                os.mkdir(self.out_directory + f"normal_light_curves")
-        elif phot_type == 'optimal':
-            if not os.path.isdir(self.out_directory + f"optimal_light_curves"):
-                os.mkdir(self.out_directory + f"optimal_light_curves")
-        else:
-            if not os.path.isdir(self.out_directory + f"normal_light_curves"):
-                os.mkdir(self.out_directory + f"normal_light_curves")
-            if not os.path.isdir(self.out_directory + f"optimal_light_curves"):
-                os.mkdir(self.out_directory + f"optimal_light_curves")
-        
-        self.logger.info(f'[OPTICAM] Performing photometry with phot_type={phot_type} ...')
-        
-        for fltr in list(self.catalogs.keys()):
-            
-            # skip cameras with no images
-            if len(self.camera_files[fltr]) == 0:
-                continue
-            
-            # get list of possible light curve files
-            if phot_type == 'normal':
-                light_curve_files = [self.out_directory + f"normal_light_curves/{fltr}_source_{i + 1}.csv" for i in range(len(self.catalogs[fltr]))]
-            elif phot_type == 'optimal':
-                light_curve_files = [self.out_directory + f"optimal_light_curves/{fltr}_source_{i + 1}.csv" for i in range(len(self.catalogs[fltr]))]
-            else:
-                light_curve_files = [self.out_directory + f"normal_light_curves/{fltr}_source_{i + 1}.csv" for i in range(len(self.catalogs[fltr]))]
-                light_curve_files += [self.out_directory + f"optimal_light_curves/{fltr}_source_{i + 1}.csv" for i in range(len(self.catalogs[fltr]))]
-            
-            # check if light curves already exist
-            if all([os.path.isfile(file) for file in light_curve_files]) and not overwrite:
-                self.logger.info(f'[OPTICAM] {fltr} light curves already exist and overwrite is False. Skipping ...')
-                continue
-            
-            # get PSF parameters
-            semimajor_sigma = self.aperture_selector(self.catalogs[fltr]["semimajor_sigma"].value)
-            semiminor_sigma = self.aperture_selector(self.catalogs[fltr]["semiminor_sigma"].value)
-            
-            self.logger.info(f'[OPTICAM] {fltr} semi-major axis of PSF: {semimajor_sigma} pixels.')
-            self.logger.info(f'[OPTICAM] {fltr} semi-minor axis of PSF: {semiminor_sigma} pixels.')
-            self.logger.info(f'[OPTICAM] {fltr} normal aperture semi-major axis: {self.fwhm_scale * semimajor_sigma} pixels.')
-            self.logger.info(f'[OPTICAM] {fltr} normal aperture semi-minor axis: {self.fwhm_scale * semiminor_sigma} pixels.')
-            
-            chunksize = max(1, len(self.camera_files[fltr]) // 100)  # chunk size for parallel processing (must be >= 1)
-            results = process_map(partial(self._perform_photometry_on_batch, fltr=fltr, semimajor_sigma=semimajor_sigma,
-                                          semiminor_sigma=semiminor_sigma, background_method=background_method,
-                                          tolerance=tolerance, phot_type=phot_type), self.camera_files[fltr],
-                                  max_workers=self.number_of_processors,
-                                  desc=f"[OPTICAM] Performing photometry on {fltr} images",
-                                  disable=not self.verbose, chunksize=chunksize)
-            
-            self._save_photometry_results(results, phot_type, fltr)
-
-    def _perform_photometry_on_batch(self, file: str, fltr: str, semimajor_sigma: float, semiminor_sigma: float,
-                                    background_method: Literal['global', 'local'], tolerance: float,
-                                    phot_type: Literal['normal', 'optimal', 'both']):
-        """
-        Perform photometry on a single of image.
-        
-        Parameters
-        ----------
-        batch : List[str]
-            The list of file names in the batch.
-        fltr : str
-            The filter.
-        semimajor_sigma : float
-            The semimajor axis of the PSF.
-        semiminor_sigma : float
-            The semiminor axis of the PSF.
-        background_method : Literal['global', 'local']
-            The method to use for background subtraction.
-        tolerance : float
-            The tolerance for source position matching in standard deviations.
-        phot_type : Literal['normal', 'optimal', 'both']
-            The type of photometry to perform.
-        
-        Returns
-        -------
-        Tuple
-            The photometric results.
-        """
-        
-        # if file does not have a transform, and it's not the reference image, skip it
-        if file not in self.transforms.keys() and file != self.camera_files[fltr][self.reference_indices[fltr]]:
-            if phot_type in ['normal', 'optimal']:
-                return None, None, None, None, None
-            else:
-                return None, None, None, None, None, None, np.zeros(len(self.catalogs[fltr]))
-        
-        # define lists to store results for each file
-        normal_fluxes, normal_flux_errors = [], []
-        optimal_fluxes, optimal_flux_errors = [], []
-        detections = np.zeros(len(self.catalogs[fltr]))
-        
-        # get image data
-        data, error = self.get_data(file, return_error=True)
-        
-        # get background subtracted image for source detection
-        bkg = self.background(data)
-        clean_data = data - bkg.background
-        
-        if background_method == 'global':
-            # combine error in background subtracted image
-            error = np.sqrt(error**2 + bkg.background_rms**2)
-        
-        # find sources in the background subtracted image
-        try:
-            segment_map = self.finder(clean_data, threshold=self.threshold * bkg.background_rms)
-        except:
-            # if no sources are found, return None for all results
-            if phot_type in ['normal', 'optimal']:
-                return None, None, None, None, None
-            else:
-                return None, None, None, None, None, None, np.zeros(len(self.catalogs[fltr]))
-        
-        # create source table
-        file_cat = SourceCatalog(clean_data, segment_map, background=bkg.background)
-        file_tbl = file_cat.to_table()
-        
-        # for each source in the catalog
-        for i in range(len(self.catalogs[fltr])):
-            # locate source in the source table
-            try:
-                position = self._get_position_of_nearest_source(file_tbl, i, fltr, file, tolerance)
-            except:
-                # if source is not found, append None to results
-                normal_fluxes.append(None)
-                normal_flux_errors.append(None)
-                optimal_fluxes.append(None)
-                optimal_flux_errors.append(None)
-                continue
-            
-            # if source is found, increment the detection counter
-            detections[i] += 1
-            
-            # perform photometry
-            if phot_type == 'normal':
-                if background_method == 'global':
-                    # compute normal flux using global background
-                    flux, flux_error = self._compute_normal_flux(clean_data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]['orientation'][i].value)
-                else:
-                    # compute normal flux using local background
-                    flux, flux_error = self._compute_normal_flux(data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]['orientation'][i].value, True)
-                
-                # append results to lists
-                normal_fluxes.append(flux)
-                normal_flux_errors.append(flux_error)
-            
-            elif phot_type == 'optimal':
-                if background_method == 'global':
-                    # compute optimal flux using global background
-                    flux, flux_error = self._compute_optimal_flux(clean_data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]['orientation'][i].value)
-                else:
-                    # compute optimal flux using local background
-                    flux, flux_error = self._compute_optimal_flux(data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]['orientation'][i].value, True)
-                
-                # append results to lists
-                optimal_fluxes.append(flux)
-                optimal_flux_errors.append(flux_error)
-            
-            else:
-                if background_method == 'global':
-                    # compute normal flux using global background
-                    flux, flux_error = self._compute_normal_flux(clean_data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]['orientation'][i].value)
-                else:
-                    # compute normal flux using local background
-                    flux, flux_error = self._compute_normal_flux(data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]['orientation'][i].value, True)
-                
-                # append results to lists
-                normal_fluxes.append(flux)
-                normal_flux_errors.append(flux_error)
-                
-                if background_method == 'global':
-                    # compute optimal flux using global background
-                    flux, flux_error = self._compute_optimal_flux(clean_data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]['orientation'][i].value)
-                else:
-                    # compute optimal flux using local background
-                    flux, flux_error = self._compute_optimal_flux(data, error, position, semimajor_sigma, semiminor_sigma, self.catalogs[fltr]['orientation'][i].value, True)
-                
-                # append results to lists
-                optimal_fluxes.append(flux)
-                optimal_flux_errors.append(flux_error)
-        
-        # return the results in the correct format for the specified phot_type
-        if phot_type == 'normal':
-            return self.mjds[file], self.bdts[file], normal_fluxes, normal_flux_errors, detections
-        elif phot_type == 'optimal':
-            return self.mjds[file], self.bdts[file], optimal_fluxes, optimal_flux_errors, detections
-        else:
-            return self.mjds[file], self.bdts[file], normal_fluxes, normal_flux_errors, optimal_fluxes, optimal_flux_errors, detections
-
-    def _parse_photometry_results(self, results, phot_type: Literal['normal', 'optimal', 'both']):
-        """
-        Parse the photometry results.
-        
-        Parameters
-        ----------
-        results :
-            The photometry results.
-        phot_type : Literal[&#39;normal&#39;, &#39;optimal&#39;, &#39;both&#39;]
-            The type of photometry that has been performed.
-        
-        Returns
-        -------
-        Tuple
-            The parsed photometric results.
-        """
-        
-        if phot_type == 'normal':
-            mjds, bdts, normal_fluxes, normal_flux_errors, detections = zip(*results)
-            return list(mjds), list(bdts), list(normal_fluxes), list(normal_flux_errors), np.sum(detections, axis=0)
-        elif phot_type == 'optimal':
-            mjds, bdts, optimal_fluxes, optimal_flux_errors, detections = zip(*results)
-            return list(mjds), list(bdts), list(optimal_fluxes), list(optimal_flux_errors), np.sum(detections, axis=0)
-        else:
-            mjds, bdts, normal_fluxes, normal_flux_errors, optimal_fluxes, optimal_flux_errors, detections = zip(*results)
-            return list(mjds), list(bdts), list(normal_fluxes), list(normal_flux_errors), list(optimal_fluxes), list(optimal_flux_errors), np.sum(detections, axis=0)
-
-    def _save_photometry_results(self, results: Tuple, phot_type: str, fltr: str) -> None:
-        """
-        Save the photometry results.
-        
-        Parameters
-        ----------
-        results : Tuple
-            The photometry results.
-        phot_type : str
-            The type of photometry that has been performed.
-        fltr : str
-            The filter.
-        """
-        
-        # parse results
-        if phot_type in ['normal', 'optimal']:
-            mjds, bdts, fluxes, flux_errors, detections = self._parse_photometry_results(results, phot_type)
-        else:
-            mjds, bdts, normal_fluxes, normal_flux_errors, optimal_fluxes, optimal_flux_errors, detections = self._parse_photometry_results(results, phot_type)
-        
-        # save light curves
-        for i in tqdm(range(len(self.catalogs[fltr])), disable=not self.verbose, desc=f"[OPTICAM] Saving {fltr} light curves"):
-            if phot_type == 'normal':
-                self._save_normal_light_curve(mjds, bdts, fluxes, flux_errors, fltr, i)
-            elif phot_type == 'optimal':
-                self._save_optimal_light_curve(mjds, bdts, fluxes, flux_errors, fltr, i)
-            else:
-                self._save_normal_light_curve(mjds, bdts, normal_fluxes, normal_flux_errors, fltr, i)
-                self._save_optimal_light_curve(mjds, bdts, optimal_fluxes, optimal_flux_errors, fltr, i)
-        
-        # plot number of detections per source
-        self._plot_number_of_detections_per_source(detections, fltr)
-
-    def _save_normal_light_curve(self, mjds: List[float], bdts: List[float], fluxes: List[List[float]],
-                                 flux_errors: List[List[float]], fltr: str, source_index: int) -> None:
-        """
-        Plot and save the light curve.
-        
-        Parameters
-        ----------
-        mjds : List[float]
-            The observation MJDs.
-        bdts : List[float]
-            The observation BDTs.
-        fluxes : List[List[float]]
-            The source fluxes.
-        flux_errors : List[List[float]]
-            The source flux errors.
-        fltr : str
-            The filter.
-        source_index : int
-            The source index, not to be confused with the source number. The source index is one less than the source
-            number.
-        """
-        
-        with open(self.out_directory + f"normal_light_curves/{fltr}_source_{source_index + 1}.csv", "w") as file:
-            csvwriter = csv.writer(file)
-            csvwriter.writerow(["MJD", 'BDT', "flux", "flux_error"])
-            
-            # for each observation in which a source was detected
-            for i in range(len(mjds)):
-                try:
-                    csvwriter.writerow([mjds[i], bdts[i], fluxes[i][source_index], flux_errors[i][source_index]])
-                except TypeError:
-                    continue
-        
-        df = pd.read_csv(self.out_directory + f"normal_light_curves/{fltr}_source_{source_index + 1}.csv")
-        
-        # reformat MJD to seconds from first observation
-        df["time"] = df["MJD"] - self.t_ref_mjd
-        df["time"] *= 86400
-        
-        fig, ax = plt.subplots(num=1, clear=True, tight_layout=True, figsize=(6.4, 4.8))
-        
-        ax.errorbar(df["time"].values, df["flux"].values, yerr=df["flux_error"].values, fmt="k.", ms=2, ecolor="grey",
-                    elinewidth=1)
-        ax.set_ylabel("Flux [counts]")
-        ax.set_title(f"{fltr} Source {source_index + 1}")
-        ax.set_xlabel(f"Time from MJD {self.t_ref_mjd:.4f} [s]")
-        
-        ax.minorticks_on()
-        ax.tick_params(which="both", direction="in", top=True, right=True)
-        
-        # save light curve plot to file
-        try:
-            fig.savefig(self.out_directory + f"normal_light_curves/{fltr}_source_{source_index + 1}.png")
-        except Exception as e:
-            self.logger.error(f"[OPTICAM] Error saving normal light curve plot for {fltr} source {source_index + 1}: {e}")
-        
-        fig.clear()
-        plt.close(fig)
-
-    def _save_optimal_light_curve(self, mjds: List[float], bdts: List[float], fluxes: List[List[float]],
-                                  flux_errors: List[List[float]], fltr: str, source_index: int) -> None:
-        """
-        Plot and save the light curve.
-        
-        Parameters
-        ----------
-        mjds : List[float]
-            The observation MJDs.
-        bdts : List[float]
-            The observation BDTs.
-        fluxes : List[List[float]]
-            The source fluxes.
-        flux_errors : List[List[float]]
-            The source flux errors.
-        fltr : str
-            The filter.
-        source_index : int
-            The source index, not to be confused with the source number. The source index is one less than the source
-            number.
-        """
-        
-        with open(self.out_directory + f"optimal_light_curves/{fltr}_source_{source_index + 1}.csv", "w") as file:
-            csvwriter = csv.writer(file)
-            csvwriter.writerow(["MJD", 'BDT', "flux", "flux_error"])
-            
-            # for each observation in which a source was detected
-            for i in range(len(mjds)):
-                try:
-                    csvwriter.writerow([mjds[i], bdts[i], fluxes[i][source_index], flux_errors[i][source_index]])
-                except TypeError:
-                    continue
-        
-        df = pd.read_csv(self.out_directory + f"optimal_light_curves/{fltr}_source_{source_index + 1}.csv")
-        
-        # reformat MJD to seconds from first observation
-        df["time"] = df["MJD"] - self.t_ref_mjd
-        df["time"] *= 86400
-        
-        # TODO: add local background axis
-        
-        fig, ax = plt.subplots(num=1, clear=True, tight_layout=True, figsize=(6.4, 4.8))
-        
-        ax.errorbar(df["time"].values, df["flux"].values, yerr=df["flux_error"].values, fmt="k.", ms=2, ecolor="grey",
-                    elinewidth=1)
-        ax.set_ylabel("Flux [counts]")
-        ax.set_title(f"{fltr} Source {source_index + 1}")
-        ax.set_xlabel(f"Time from MJD {self.t_ref_mjd:.4f} [s]")
-        
-        ax.minorticks_on()
-        ax.tick_params(which="both", direction="in", top=True, right=True)
-        
-        # save light curve plot to file
-        try:
-            fig.savefig(self.out_directory + f"optimal_light_curves/{fltr}_source_{source_index + 1}.png")
-        except Exception as e:
-            self.logger.error(f"[OPTICAM] Error saving optimal light curve plot for {fltr} source {source_index + 1}: {e}")
-        
-        fig.clear()
-        plt.close(fig)
-
-    def _compute_normal_flux(self, data: NDArray, error: NDArray, position: NDArray, semimajor_sigma: float,
-                             semiminor_sigma: float, orientation: float,
-                             estimate_local_background: bool = False) -> Tuple[float, float]:
-        """
-        Compute the flux at a given position using simple aperture photometry.
-        
-        Parameters
-        ----------
-        clean_data : NDArray
-            The image.
-        error : NDArray
-            The total error in the image.
-        position : NDArray
-            The aperture position.
-        semimajor_sigma : float
-            The semimajor axis of the (presumed 2D Gaussian) PSF.
-        semiminor_sigma : float
-            The semiminor axis of the (presumed 2D Gaussian) PSF.
-        orientation : float
-            The orientation of the (presumed 2D Gaussian) PSF.
-        estimate_local_background : bool, optional
-            Whether to estimate the local background. If True, the local background will be estimated using the
-            local_background attribute, otherwise the data are assumed to be background subtracted.
-        
-        Returns
-        -------
-        Tuple[float, float]
-            The flux and its error.
-        """
-        
-        aperture = EllipticalAperture(position, self.fwhm_scale * semimajor_sigma, self.fwhm_scale * semiminor_sigma,
-                                      orientation)  # define aperture
-        phot_table = aperture_photometry(data, aperture, error=error)  # perform aperture photometry
-        
-        if estimate_local_background:
-            local_background_per_pixel, local_background_error_per_pixel = self.local_background(data, error, self.scale * semimajor_sigma, self.scale * semiminor_sigma, orientation, position)
-            aperture_area = aperture.area_overlap(data)  # compute aperture area
-            aperture_background, aperture_background_error = aperture_area * local_background_per_pixel, np.sqrt(aperture_area * local_background_error_per_pixel)  # compute aperture background
-            
-            return phot_table['aperture_sum'].value[0] - aperture_background, np.sqrt(phot_table['aperture_sum_err'].value[0]**2 + aperture_background_error**2)
-        else:
-            return phot_table["aperture_sum"].value[0], phot_table["aperture_sum_err"].value[0]
-
-    def _compute_optimal_flux(self, data: NDArray, error: NDArray, position: NDArray, semimajor_sigma: float,
-                                semiminor_sigma: float, orientation: float,
-                                estimate_local_background: bool = False) -> Tuple[float, float]:
-        """
-        Compute the flux at a given position using the optimal photometry method of Naylor 1998, MNRAS, 296, 339.
-        
-        Parameters
-        ----------
-        data : NDArray
-            The image.
-        error : NDArray
-            The total error in the image.
-        position : NDArray
-            The aperture position.
-        semimajor_sigma : float
-            The semimajor axis of the (presumed 2D Gaussian) PSF.
-        semiminor_sigma : float
-            The semiminor axis of the (presumed 2D Gaussian) PSF.
-        orientation : float
-            The orientation of the (presumed 2D Gaussian) PSF.
-        estimate_local_background : bool
-            Whether to estimate the local background. If True, the local background will be estimated using the
-            local_background attribute, otherwise the data are assumed to be background subtracted.
-        Returns
-        -------
-        Tuple[float, float]
-            The flux and its error.
-        """
-        
-        if estimate_local_background:
-            # compute local background
-            local_background_per_pixel, local_background_error_per_pixel = self.local_background(data, error, self.scale * semimajor_sigma, self.scale * semiminor_sigma, orientation, position)
-            clean_data = data - local_background_per_pixel  # subtract local background
-            error = np.sqrt(error**2 + local_background_error_per_pixel**2)  # add local background error in quadrature
-        else:
-            # assume data are background subtracted
-            clean_data = data
-        
-        # optimal photometry
-        y, x = np.ogrid[:clean_data.shape[0], :clean_data.shape[1]]  # define pixel coordinates
-        x0, y0 = position  # define source position
-        x_rot = (x - x0) * np.cos(orientation) + (y - y0) * np.sin(orientation)  # align pixel coordinates with source orientation and shift source to origin
-        y_rot = -(x - x0) * np.sin(orientation) + (y - y0) * np.cos(orientation)  # align pixel coordinates with source orientation and shift source to origin
-        weights = np.exp(-0.5 * ((x_rot / semimajor_sigma)**2 + (y_rot / semiminor_sigma)**2))  # compute pixel weights assuming a 2D Gaussian PSF
-        weights /= np.sum(weights)  # normalise weights
-        
-        return np.sum(clean_data * weights), np.sqrt(np.sum((error * weights)**2))
-
-    def _get_position_of_nearest_source(self, file_tbl: QTable, source_index: int, fltr: str, file: str,
-                                        tolerance: float) -> NDArray:
-        """
-        Get the position of the source nearest an expected source position in an image.
-        
-        Parameters
-        ----------
-        file_tbl : QTable
-            The source catalog of the image.
-        source_index : int
-            The target source index.
-        fltr : str
-            The filter of the image.
-        file : str
-            The name of the image file.
-        tolerance : float
-            The tolerance for source position matching in standard deviations.
-        
-        Returns
-        -------
-        NDArray
-            The position of the nearest source ([x, y]).
-        
-        Raises
-        ------
-        ValueError
-            If no source is found close enough to the expected source position.
-        """
-        
-        # get source position from catalog
-        catalog_position = (self.catalogs[fltr]["xcentroid"][source_index], self.catalogs[fltr]["ycentroid"][source_index])
-        
-        # if file is the reference image
-        if file == self.camera_files[fltr][self.reference_indices[fltr]]:
-            # use the catalog position as the initial position
-            initial_position = catalog_position
-        else:
-            # use the transformed catalog position as the initial position
-            initial_position = matrix_transform(catalog_position, self.transforms[file])[0]
-        
-        # get positions of sources
-        positions = np.array([[file_tbl["xcentroid"][i], file_tbl["ycentroid"][i]] for i in range(len(file_tbl))])
-        
-        # get distances between sources and initial position
-        distances = np.sqrt((positions[:, 0] - initial_position[0])**2 + (positions[:, 1] - initial_position[1])**2)
-        
-        # if the closest source is further than the specified tolerance
-        if np.min(distances) > tolerance*np.sqrt(self.catalogs[fltr]["semimajor_sigma"][source_index].value**2 + self.catalogs[fltr]["semiminor_sigma"][source_index].value**2):
-            raise ValueError(f"[OPTICAM] No source found close enough to source {source_index + 1} in {file}. Consider increasing the tolerance if the field is not too crowded or the alignments are poor.")
-        else:
-            # get the position of the closest source (assumed to be the source of interest)
-            return positions[np.argmin(distances)]
-
-    def _plot_number_of_detections_per_source(self, detections: NDArray, fltr: str) -> None:
-        """
-        Plot the number of detections per source.
-        
-        Parameters
-        ----------
-        detections : NDArray
-            The number of detections per source.
-        fltr : str
-            The filter used to observe the sources.
-        """
-        
-        # save number of observations per source to file
-        with open(self.out_directory + f"diag/{fltr}_observations.csv", "w") as file:
-            csvwriter = csv.writer(file)
-            csvwriter.writerow(["source", "observations"])
-            
-            # for each source
-            for i in range(len(self.catalogs[fltr])):
-                csvwriter.writerow([i + 1, detections[i]])
-        
-        fig, ax = plt.subplots(tight_layout=True)
-        
-        ax.bar(np.arange(len(self.catalogs[fltr])) + 1, detections, color="none", edgecolor="black")
-        ax.axhline(len(self.camera_files[fltr]), color="red", linestyle="--", lw=1)
-        
-        ax.set_xlabel("Source")
-        ax.set_ylabel("Number of detections")
-        ax.minorticks_on()
-        ax.tick_params(which="both", direction="in", top=True, right=True)
-        
-        fig.savefig(self.out_directory + f"diag/{fltr}_observations.png")
-        
-        if self.show_plots:
-            plt.show(fig)
-        else:
-            plt.close(fig)
