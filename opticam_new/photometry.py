@@ -30,7 +30,7 @@ class BasePhotometer(ABC):
 
     def __init__(self, cat: Catalog):
         """
-        Initialise the photometer with a catalog.
+        Initialise a photometer.
         
         Parameters
         ----------
@@ -41,7 +41,7 @@ class BasePhotometer(ABC):
         self.cat = cat
 
     @abstractmethod
-    def __call__(self, overwrite: bool = False, *args, **kwargs) -> None:
+    def compute(self, overwrite: bool = False, *args, **kwargs) -> None:
         """
         Perform photometry on the source catalog. This method should be implemented by subclasses.
         
@@ -61,8 +61,8 @@ class Photometer(BasePhotometer):
     Perform normal and optimal photometry on a source catalog.
     """
     
-    def __call__(self, overwrite: bool = False, background_method: Literal['global', 'local'] = 'global',
-                tolerance: float = 5.) -> None:
+    def compute(self, overwrite: bool = False, background_method: Literal['global', 'local'] = 'global',
+                tolerance: float = 2.) -> None:
         """
         Perform photometry by fitting for the source positions in each image. In general, this method should produce
         light curves with better signal-to-noise ratios than forced photometry. However, this method can misidentify
@@ -77,7 +77,7 @@ class Photometer(BasePhotometer):
             compute the 2D background across an entire image, while 'local' uses the local_background attribute to
             estimate the local background around each source.
         tolerance : float, optional
-            The tolerance for source position matching in standard deviations (assuming a Gaussian PSF), by default 5.
+            The tolerance for source position matching in standard deviations (assuming a Gaussian PSF), by default 2.
             This parameter defines how far from the transformed catalog position a source can be while still being
             considered the same source. If the alignments are good and/or the field is crowded, consider reducing this
             value. For poor alignments and/or uncrowded fields, this value can be increased.
@@ -480,7 +480,7 @@ class ForcedPhotometer(BasePhotometer):
     Perform forced photometry on a source catalog.
     """
 
-    def __call__(self, overwrite: bool = False) -> None:
+    def compute(self, overwrite: bool = False) -> None:
         """
         Perform forced photometry on the source catalog. The light curves produced by this method are generally
         going to have lower signal-to-noise ratios than those produced by the photometry() method, but they have the
