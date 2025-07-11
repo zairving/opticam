@@ -1,11 +1,5 @@
 import os
-
-try:
-    os.environ['OMP_NUM_THREADS'] = '1'  # set number of threads to 1 for better multiprocessing performance
-except:
-    pass
-
-from tqdm.contrib.concurrent import process_map  # process_map removes a lot of the boilerplate from multiprocessing
+from tqdm.contrib.concurrent import process_map
 from tqdm import tqdm
 from astropy.table import QTable
 import json
@@ -13,62 +7,59 @@ import numpy as np
 from astropy.io import fits
 from astropy.stats import SigmaClip
 from astropy.visualization.mpl_normalize import simple_norm
-from astropy.coordinates import SkyCoord
+from astropy.coordinates import EarthLocation, SkyCoord
 import astropy.units as u
+from astropy.time import Time
 from photutils.segmentation import SourceCatalog, detect_threshold
-from photutils.aperture import aperture_photometry, CircularAperture, EllipticalAperture
 from photutils.background import Background2D
-from photutils.utils import calc_total_error
 from skimage.transform import estimate_transform, warp, matrix_transform, SimilarityTransform
 from matplotlib import pyplot as plt
 from matplotlib.patches import Circle
 import matplotlib.colors as mcolors
-from multiprocessing import cpu_count, Pool
+from multiprocessing import cpu_count
 from functools import partial
 from PIL import Image
-from typing import Any, List, Dict, Literal, Callable, Tuple, Union
+from typing import Any, List, Dict, Literal, Callable, Tuple
 from numpy.typing import ArrayLike, NDArray
-import pandas as pd
-import csv
 from scipy.spatial.distance import cdist
 from scipy.optimize import linear_sum_assignment
 from ccdproc import cosmicray_lacosmic  # replace with astroscrappy to reduce dependencies?
 import logging
 from types import FunctionType
 import warnings
+import pandas as pd
 
-from opticam_new.helpers import log_binnings, log_filters, default_aperture_selector, apply_barycentric_correction, clip_extended_sources, rebin_image, get_time
-from opticam_new.background import Background
-from opticam_new.local_background import EllipticalLocalBackground
-from opticam_new.finder import CrowdedFinder, Finder
+from opticam_new.helpers import log_binnings, log_filters
+from opticam_new.helpers import bar_format
+from opticam_new.background import DefaultBackground
+from opticam_new.finder import DefaultFinder
 from opticam_new.correctors import FlatFieldCorrector
+from opticam_new.photometers import BasePhotometer
+from opticam_new.helpers import camel_to_snake, pixel_scales
 
 
 
-# TODO: add FWHM column to catalog tables?
-# TODO: convert PSFs from pixels to arcseconds
+# TODO: add FWHM column to catalogue tables?
 
 
-class Catalog:
+class Catalogue:
     """
-    Create a catalog of sources from OPTICAM data.
+    Create a catalogue of sources from OPTICAM data.
     """
     
     def __init__(
         self,
         out_directory: str,
-        data_directory: str = None,
-        c1_directory: str = None,
-        c2_directory: str = None,
-        c3_directory: str = None,
+        data_directory: None | str = None,
+        c1_directory: None | str = None,
+        c2_directory: None | str = None,
+        c3_directory: None | str = None,
         rebin_factor: int = 1,
-        flat_corrector: FlatFieldCorrector = None,
+        flat_corrector: None | FlatFieldCorrector = None,
+        background: None | Callable = None,
+        finder: None | Callable = None,
         threshold: float = 5,
-        background: Callable = None,
-        local_background: Callable = None,
-        finder: Union[Literal['crowded', 'default'], Callable] = 'default',
-        aperture_selector: Callable = None,
-        scale: float = 5,
+        aperture_selector: Callable = np.median,
         remove_cosmic_rays: bool = True,
         number_of_processors: int = cpu_count() // 2,
         show_plots: bool = True,
@@ -82,62 +73,49 @@ class Catalog:
         out_directory: str
             The path to the directory to save the output files.
         data_directory: str, optional
-            The path to the directory containing the data, by default None. If None, any of c1_directory, c2_directory,
+            The path to the directory containing the data, by default `None`. If `None`, any of c1_directory, c2_directory,
             or c3_directory must be defined. If data_directory is defined, c1_directory, c2_directory, and c3_directory
             are ignored.
         c1_directory: str, optional
-            The path to the directory containing the C1 data, by default None. If None, any of data_directory,
+            The path to the directory containing the C1 data, by default `None`. If `None`, any of data_directory,
             c2_directory, or c3_directory must be defined. This parameter is ignored if data_directory is defined.
         c2_directory: str, optional
-            The path to the directory containing the C2 data, by default None. If None, any of data_directory,
+            The path to the directory containing the C2 data, by default `None`. If `None`, any of data_directory,
             c1_directory, or c3_directory must be defined. This parameter is ignored if data_directory is defined.
         c3_directory: str, optional
-            The path to the directory containing the C3 data, by default None. If None, any of data_directory,
+            The path to the directory containing the C3 data, by default `None`. If `None`, any of data_directory,
             c1_directory, or c2_directory must be defined. This parameter is ignored if data_directory is defined.
         rebin_factor: int, optional
             The rebinning factor, by default 1 (no rebinning). The rebinning factor is the factor by which the image is
-            rebinned in both dimensions (i.e., a rebin_factor of 2 will reduce the image size by a factor of 4).
-            Rebinning can improve the detectability of faint sources.
+            rebinned in both dimensions. Rebinning can improve the detectability of faint sources and speed up
+            some operations (like cosmic ray removal) at the cost of image resolution.
         flat_corrector: FlatFieldCorrector, optional,
-            The flat-field corrector, by default None. If None, no flat-field corrections are applied.
+            The flat-field corrector, by default `None`. If `None`, no flat-field corrections are applied.
         threshold: float, optional
-            The threshold for source finding, by default 5. The threshold is the background RMS factor above which
-            sources are detected. For faint sources, a lower threshold may be required.
+            The signal-to-noise ratio threshold for source finding, by default 5. Reduce this value to identify fainter
+            sources, though this may lead to the identification of spurious sources.
         background: Callable, optional
-            The background calculator, by default None. If None, the default background calculator is used.
-        local_background: Callable, optional
-            The local background estimator, by default None. If None, the default local background estimator is used.
-        finder: Union[Literal['crowded', 'default'], Callable], optional
-            The source finder, by default 'default'. If 'default', the default source finder (no deblending) is used.
-            If 'crowded', the crowded source finder (with deblending) is used. Alternatively, a custom source finder can
-            be provided.
+            The background calculator, by default `None`. If `None`, the default background calculator is used. If a
+            callable is provided, it should take an image (`NDArray`) as input and return a `Background2D` object.
+        finder: Callable, optional
+            The source finder, by default `None`. If `None`, the default source finder is used. If a callable is
+            provided, it should take an image (`NDArray`) and a threshold (`float`) as input and return a
+            `SegmentationImage` object.
         aperture_selector: Callable, optional
-            The aperture selector, by default None. If None, the default aperture selector is used.
-        scale: float, optional
-            The aperture scale factor, by default 5. The aperture scale factor scales the aperture size returned by
-            aperture_selector for forced photometry.
+            The aperture selector, by default `np.median`. This function is used to select the aperture size for
+            photometry. If a callable is provided, it should take a list of source sizes (`List[float]`) as input and
+            return a single value.
         remove_cosmic_rays: bool, optional
             Whether to remove cosmic rays from images, by default True. Cosmic rays are removed using the LACosmic
-            algorithm as implemented in astroscrappy.
+            algorithm as implemented in `astroscrappy`. Note: this can be computationally expensive, particularly for
+            large images (i.e., low binning factors).
         number_of_processors: int, optional
             The number of processors to use for parallel processing, by default half the number of available processors.
-            Note that there is some overhead incurred when using multiple processors, so there can be diminishing
-            returns when using more processors.
         show_plots: bool, optional
-            Whether to show plots as they're created, by default True. Whether True or False, plots are always saved
-            to out_directory.
+            Whether to show plots as they're created, by default `True`. Whether `True` or `False`, plots are always
+            saved to `out_directory`.
         verbose: bool, optional
-            Whether to print verbose output, by default True.
-        
-        Raises
-        ------
-        FileNotFoundError
-            If the data directory does not exist.
-        ValueError
-            If the image binning is not "8x8", "4x4", "3x3", "2x2", or "1x1" and a background estimator is not
-            provided.
-        ValueError
-            If the image binning is not "8x8", "4x4", "3x3", "2x2", or "1x1" and a source finder is not provided.
+            Whether to print verbose output, by default `True`.
         """
         
         self.verbose = verbose
@@ -202,13 +180,10 @@ class Catalog:
                 if not self.c3_directory[-1].endswith("/"):
                     self.c3_directory += "/"
         
-        # set parameters
-        self.pix_scales = {'u-band': 0.1397, 'g-band': 0.1397, 'r-band': 0.1406, 'i-band': 0.1661, 'z-band': 0.1661}
+        # set some useful parameters
         self.rebin_factor = rebin_factor
         self.flat_corrector = flat_corrector
-        self.fwhm_scale = 2 * np.sqrt(2 * np.log(2))  # FWHM scale factor
-        self.aperture_selector = default_aperture_selector if aperture_selector is None else aperture_selector
-        self.scale = scale
+        self.aperture_selector = aperture_selector
         self.threshold = threshold
         self.remove_cosmic_rays = remove_cosmic_rays
         self.number_of_processors = number_of_processors
@@ -242,73 +217,65 @@ class Catalog:
         
         self._scan_data_directory()  # scan data directory
         
-        # define colours for circling sources in catalogs
+        # define colours for circling sources in catalogues
         self.colours = list(mcolors.TABLEAU_COLORS.keys())
         self.colours.pop(self.colours.index("tab:brown"))
         self.colours.pop(self.colours.index("tab:gray"))
         self.colours.pop(self.colours.index("tab:purple"))
         self.colours.pop(self.colours.index("tab:blue"))
         
-        if aperture_selector is None:  
-            self.aperture_selector = default_aperture_selector
-        else:
-            self.aperture_selector = aperture_selector
-            assert callable(self.aperture_selector), "[OPTICAM] Aperture selector must be callable."
+        assert callable(aperture_selector), "[OPTICAM] aperture_selector must be callable."
+        self.aperture_selector = aperture_selector
         
-        # define background calculator and write input parameters to file
         if background is None:
-            self.background = Background()
-            self.logger.info(f"[OPTICAM] Using default background estimator.")
+            box_size = 2048 // self.binning_scale // self.rebin_factor // 16
+            self.background = DefaultBackground(box_size)
+            self.logger.info(f'[OPTICAM] Using default background estimator with box_size={box_size}.')
         elif callable(background):
+            # use custom background estimator
             self.background = background
-            self.logger.info("[OPTICAM] Using custom background estimator.")
+            self.logger.info(f'[OPTICAM] Using custom background estimator {background.__name__} with parameters {background.__dict__}.')
         else:
-            raise ValueError("[OPTICAM] Background estimator must be a callable.")
+            raise ValueError('[OPTICAM] background must be a callable or None. If None, the default background estimator is used.')
         
-        if local_background is None:
-            self.local_background = EllipticalLocalBackground()
-        elif callable(local_background):
-            self.local_background = local_background
-        else:
-            raise ValueError("[OPTICAM] Local background estimator must be a callable.")
-        
-        # define source finder and write input parameters to file
-        if finder == 'default':
-            self.finder = Finder()
-            self.logger.info(f"[OPTICAM] Using default source finder.")
-        elif finder == 'crowded':
-            self.finder = CrowdedFinder()
-            self.logger.info(f"[OPTICAM] Using crowded source finder.")
+        if finder is None:
+            effective_image_size = 2048 // self.binning_scale // self.rebin_factor
+            npixels = 128 // (2048 // effective_image_size)**2
+            border_width = 2048 // self.binning_scale // self.rebin_factor // 16
+            self.finder = DefaultFinder(npixels, border_width)
+            self.logger.info(f'[OPTICAM] Using default source finder with npixels={npixels} and border_width={border_width}.')
         elif callable(finder):
             self.finder = finder
-            self.logger.info("[OPTICAM] Using custom source finder.")
+            self.logger.info(f'[OPTICAM] Using custom source finder {finder.__name__} with parameters {finder.__dict__}.')
         else:
-            raise ValueError("[OPTICAM] Source finder must be 'default', 'crowded', or a callable.")
+            raise ValueError('[OPTICAM] finder must be a callable or None. If None, the default source finder is used.')
         
-        self._log_parameters()  # log input parameters
+        # log input parameters
+        self._log_parameters()
         
         self.transforms = {}  # define transforms as empty dictionary
         self.unaligned_files = []  # define unaligned files as empty list
-        self.catalogs = {}  # define catalogs as empty dictionary
+        self.catalogues = {}  # define catalogues as empty dictionary
+        self.psf_params = {}  # define PSF parameters as empty dictionary
         
         # try to load transforms from file
-        try:
+        if os.path.isfile(self.out_directory + "cat/transforms.json"):
             with open(self.out_directory + "cat/transforms.json", "r") as file:
                 self.transforms.update(json.load(file))
             if self.verbose:
                 self.logger.info("[OPTICAM] Read transforms from file.")
-        except:
-            pass
         
-        # try to load catalogs from file
+        # try to load catalogues from file
         for fltr in list(self.camera_files.keys()):
-            try:
-                self.catalogs.update({fltr: QTable.read(self.out_directory + f"cat/{fltr}_catalog.ecsv", format="ascii.ecsv")})
+            if os.path.isfile(self.out_directory + f"cat/{fltr}_catalog.ecsv"):
+                self.catalogues.update(
+                    {
+                        fltr: QTable.read(self.out_directory + f"cat/{fltr}_catalog.ecsv", format="ascii.ecsv")
+                        }
+                    )
+                self._set_psf_params(fltr)
                 if self.verbose:
-                    print(f"[OPTICAM] Read {fltr} catalog from file.")
-                continue
-            except:
-                pass
+                    print(f"[OPTICAM] Read {fltr} catalogue from file.")
 
     def _scan_data_directory(self) -> None:
         """
@@ -326,9 +293,15 @@ class Catalog:
         
         # scan files
         chunksize = max(1, len(self.file_paths) // 100)  # set chunksize to 1% of the number of files
-        results = process_map(self._get_header_info, self.file_paths, max_workers=self.number_of_processors,
-                              disable=not self.verbose, desc="[OPTICAM] Scanning data directory",
-                              chunksize=chunksize)
+        results = process_map(
+            self._get_header_info,
+            self.file_paths,
+            max_workers=self.number_of_processors,
+            disable=not self.verbose,
+            desc="[OPTICAM] Scanning data directory",
+            chunksize=chunksize,
+            bar_format=bar_format,
+            tqdm_class=tqdm)
         
         # unpack results
         filters = self._parse_header_results(results)
@@ -372,6 +345,8 @@ class Catalog:
             print('[OPTICAM] Filters: ' + ', '.join(list(self.camera_files.keys())))
             for fltr in list(self.camera_files.keys()):
                 print(f'[OPTICAM] {len(self.camera_files[fltr])} {fltr} images.')
+        
+        self._plot_time_between_files()
 
     def _get_header_info(self, file: str) -> Tuple[ArrayLike | None, str | None, str | None, float | None]:
         """
@@ -560,7 +535,7 @@ class Catalog:
             pass
         
         try:
-            params.pop('catalogs')
+            params.pop('catalogues')
         except KeyError:
             pass
         
@@ -571,6 +546,100 @@ class Catalog:
         with open(self.out_directory + "misc/input_parameters.json", "w") as file:
             json.dump(params, file, indent=4)
 
+    def _plot_time_between_files(self) -> None:
+        """
+        Plot the times between each file for each camera.
+        
+        Parameters
+        ----------
+        show : bool
+            Whether to display the plot.
+        """
+        
+        fig, axes = plt.subplots(nrows=3, ncols=len(self.camera_files), tight_layout=True,
+                                 figsize=((2 * len(self.camera_files) / 3) * 6.4, 2 * 4.8), sharey='row')
+        
+        for fltr in list(self.camera_files.keys()):
+            times = np.array([self.bdts[file] for file in self.camera_files[fltr]])
+            times -= times.min()
+            times *= 86400  # convert to seconds from first observation
+            dt = np.diff(times)  # get time between files
+            file_numbers = np.arange(2, len(times) + 1, 1)  # start from 2 because we are plotting the time between files
+            
+            bin_edges = np.arange(int(dt.min()), np.ceil(dt.max() + .2), .1)  # define bins with width 0.1 s
+            
+            if len(self.camera_files) == 1:
+                axes[0].set_title(fltr)
+                
+                # cumulative plot of time between files
+                axes[0].plot(file_numbers, np.cumsum(dt), "k-", lw=1)
+                
+                # time between each file
+                axes[1].plot(file_numbers, dt, "k-", lw=1)
+                
+                axes[2].hist(dt, bins=bin_edges, histtype="step", color="black", lw=1)
+                axes[2].set_yscale("log")
+                
+                axes[0].set_ylabel("Cumulative time between files [s]")
+                axes[0].set_xlabel("File number")
+                
+                axes[1].set_ylabel("Time between files [s]")
+                axes[1].set_xlabel("File number")
+                
+                axes[2].set_xlabel("Time between files [s]")
+            else:
+                axes[0, list(self.camera_files.keys()).index(fltr)].set_title(fltr)
+                
+                # cumulative plot of time between files
+                axes[0, list(self.camera_files.keys()).index(fltr)].plot(file_numbers, np.cumsum(dt), "k-", lw=1)
+                
+                # time between each file
+                axes[1, list(self.camera_files.keys()).index(fltr)].plot(file_numbers, dt, "k-", lw=1)
+                
+                # histogram of time between files
+                axes[2, list(self.camera_files.keys()).index(fltr)].hist(dt, bins=bin_edges, histtype="step", color="black", lw=1)
+                axes[2, list(self.camera_files.keys()).index(fltr)].set_yscale("log")
+                
+                axes[0, 0].set_ylabel("Cumulative time between files [s]")
+                axes[1, 0].set_ylabel("Time between files [s]")
+                
+                for col in range(len(self.camera_files)):
+                    axes[0, col].set_xlabel("File number")
+                    axes[1, col].set_xlabel("File number")
+                    axes[2, col].set_xlabel("Time between files [s]")
+        
+        for ax in axes.flatten():
+            ax.minorticks_on()
+            ax.tick_params(which="both", direction="in", top=True, right=True)
+        
+        fig.savefig(self.out_directory + "diag/header_times.png")
+        
+        if self.show_plots:
+            plt.show(fig)
+        else:
+            fig.clear()
+            plt.close(fig)
+
+    def _set_psf_params(self, fltr: str) -> None:
+        """
+        Set the PSF parameters for a given filter based on the catalogue data.
+        
+        Parameters
+        ----------
+        fltr : str
+            The filter for which to set the PSF parameters.
+        """
+        
+        self.psf_params[fltr] = {
+            'semimajor_sigma': self.aperture_selector(self.catalogues[fltr]['semimajor_sigma'].value),
+            'semiminor_sigma': self.aperture_selector(self.catalogues[fltr]['semiminor_sigma'].value),
+            'orientation': self.aperture_selector(self.catalogues[fltr]['orientation'].value)
+        }
+        
+        self.logger.info(f'[OPTICAM] {fltr} PSF parameters:')
+        self.logger.info(f'[OPTICAM]    semimajor_sigma: {self.psf_params[fltr]["semimajor_sigma"]} binned pixels ({self.psf_params[fltr]["semimajor_sigma"] * self.binning_scale * self.rebin_factor * pixel_scales[fltr]} arcsec)')
+        self.logger.info(f'[OPTICAM]    semiminor_sigma: {self.psf_params[fltr]["semiminor_sigma"]} binned pixels ({self.psf_params[fltr]["semiminor_sigma"] * self.binning_scale * self.rebin_factor * pixel_scales[fltr]} arcsec)')
+        self.logger.info(f'[OPTICAM]    orientation: {self.psf_params[fltr]["orientation"]} degrees')
 
     def get_data(self, file: str, return_error: bool = False) -> NDArray | Tuple[NDArray, NDArray]:
         """
@@ -607,10 +676,10 @@ class Catalog:
             data = cosmicray_lacosmic(data, gain_apply=False)[0]
         
         if self.rebin_factor > 1:
-            data = rebin_image(data, self.rebin_factor)
+            data = _rebin_image(data, self.rebin_factor)
             
             if return_error:
-                error = rebin_image(error, self.rebin_factor)
+                error = _rebin_image(error, self.rebin_factor)
         
         if return_error:
             return data, error
@@ -644,9 +713,9 @@ class Catalog:
         image_clean = image - bkg.background  # remove background from image
         
         cat = self.finder(image_clean, self.threshold*bkg.background_rms)  # find sources in background-subtracted image
-        tbl = SourceCatalog(image_clean, cat, background=bkg.background).to_table()  # create catalog of sources
+        tbl = SourceCatalog(image_clean, cat, background=bkg.background).to_table()  # create catalogue of sources
         # tbl = clip_extended_sources(tbl)
-        tbl.sort('segment_flux', reverse=True)  # sort catalog by flux in descending order
+        tbl.sort('segment_flux', reverse=True)  # sort catalogue by flux in descending order
         
         coords = np.array([tbl["xcentroid"], tbl["ycentroid"]]).T
         
@@ -662,13 +731,19 @@ class Catalog:
         return coords
 
 
-    def __call__(self, max_catalog_sources: int = 30, n_alignment_sources: int = 3,
-                            transform_type: Literal['euclidean', 'similarity', 'translation'] = 'translation',
-                            translation_limit: int | None = None, rotation_limit: int | None = None,
-                            scaling_limit: int | None = None, overwrite: bool = False,
-                            show_diagnostic_plots: bool = False) -> None:
+    def initialise(
+        self,
+        max_catalog_sources: int = 30,
+        n_alignment_sources: int = 3,
+        transform_type: Literal['euclidean', 'similarity', 'translation'] = 'translation',
+        translation_limit: int | None = None,
+        rotation_limit: int | None = None,
+        scaling_limit: int | None = None,
+        overwrite: bool = False,
+        show_diagnostic_plots: bool = False,
+        ) -> None:
         """
-        Initialise the source catalogs for each camera. Some aspects of this method are parallelised for speed.
+        Initialise the source catalogues for each camera. Some aspects of this method are parallelised for speed.
         
         Parameters
         ----------
@@ -688,20 +763,21 @@ class Catalog:
         scaling_limit : int, optional
             The maximum scaling limit for image alignment, by default infinity.
         overwrite : bool, optional
-            Whether to overwrite existing catalogs, by default False.
+            Whether to overwrite existing catalogues, by default False.
         show_diagnostic_plots : bool, optional
             Whether to show diagnostic plots, by default False. Diagnostic plots are saved to out_directory, so this
             parameter only affects whether the plots are displayed in the console.
         """
         
-        # if catalogs already exist, skip
-        if os.path.isfile(self.out_directory + 'cat/catalogs.png') and not overwrite:
+        # if catalogues already exist, skip
+        if os.path.isfile(self.out_directory + 'cat/catalogues.png') and not overwrite:
             print('[OPTICAM] Catalogs already exist. To overwrite, set overwrite to True.')
             return
         
         if self.verbose:
-            print('[OPTICAM] Initialising catalogs ...')
+            print('[OPTICAM] Initialising catalogues ...')
         
+        # set some default transform limits if not provided
         if translation_limit is None:
             translation_limit = 128 // (self.binning_scale * self.rebin_factor)
         if rotation_limit is None:
@@ -709,8 +785,8 @@ class Catalog:
         if scaling_limit is None:
             scaling_limit = 1
         
-        # background_median = {}
-        # background_rms = {}
+        background_median = {}
+        background_rms = {}
         stacked_images = {}
         
         # for each camera
@@ -736,25 +812,48 @@ class Catalog:
             
             # align and stack images in batches
             batches = np.array_split(self.camera_files[fltr], 100)  # split files into 1% batches
-            results = process_map(partial(self._align_image, reference_image=reference_image,
-                                          reference_coords=reference_coords, n_sources=n_alignment_sources,
-                                          transform_type=transform_type, translation_limit=translation_limit,
-                                          rotation_limit=rotation_limit, scaling_limit=scaling_limit),
-                                  batches, max_workers=self.number_of_processors, disable=not self.verbose,
-                                  desc=f'[OPTICAM] Aligning {fltr} images')
-            stacked_image, background_medians, background_rmss = self._parse_alignment_results(results, fltr,
-                                                                                               reference_image)
+            results = process_map(
+                partial(self._align_image,
+                        reference_image=reference_image,
+                        reference_coords=reference_coords,
+                        n_sources=n_alignment_sources,
+                        transform_type=transform_type,
+                        translation_limit=translation_limit,
+                        rotation_limit=rotation_limit,
+                        scaling_limit=scaling_limit),
+                batches,
+                max_workers=self.number_of_processors,
+                disable=not self.verbose,
+                desc=f'[OPTICAM] Aligning {fltr} images',
+                bar_format=bar_format,
+                tqdm_class=tqdm,
+                )
+            stacked_image, background_medians, background_rmss = self._parse_alignment_results(
+                results,
+                fltr,
+                reference_image,
+                )
+            
+            background_median[fltr] = background_medians
+            background_rms[fltr] = background_rmss
             
             try:
-                threshold = detect_threshold(stacked_image, nsigma=self.threshold,
-                                             sigma_clip=SigmaClip(sigma=3, maxiters=10))  # estimate threshold
+                # estimate threshold for source detection
+                threshold = detect_threshold(
+                    stacked_image,
+                    nsigma=self.threshold,
+                    sigma_clip=SigmaClip(sigma=3, maxiters=10),
+                    )
             except:
                 self.logger.info('[OPTICAM] Unable to estimate source detection threshold for ' + fltr + ' stacked image.')
                 continue
             
             try:
                 # identify sources in stacked image
-                segment_map = self.finder(stacked_image, threshold)
+                segment_map = self.finder(
+                    stacked_image,
+                    threshold,
+                    )
             except:
                 self.logger.info('[OPTICAM] No sources detected in the stacked ' + fltr + ' stacked image. Reducing threshold may help.')
                 continue
@@ -762,22 +861,23 @@ class Catalog:
             # save stacked image and its background
             stacked_images[fltr] = stacked_image
             
-            tbl = SourceCatalog(stacked_image, segment_map).to_table()  # create catalog of sources
-            # tbl = clip_extended_sources(tbl)  # clip extended sources
-            tbl.sort('segment_flux', reverse=True)  # sort catalog by flux in descending order
-            tbl = tbl[:max_catalog_sources]  # limit catalog to brightest max_catalog_sources sources
+            tbl = SourceCatalog(stacked_image, segment_map).to_table()  # create catalogue of sources
+            tbl.sort('segment_flux', reverse=True)
+            tbl = tbl[:max_catalog_sources]  # limit catalogue to brightest max_catalog_sources sources
             
-            # create catalog of sources in stacked image and write to file
-            self.catalogs.update({fltr: tbl})
-            self.catalogs[fltr].write(self.out_directory + f"cat/{fltr}_catalog.ecsv", format="ascii.ecsv",
-                                            overwrite=True)
+            # create catalogue of sources in stacked image and write to file
+            self.catalogues.update({fltr: tbl})
+            self.catalogues[fltr].write(
+                self.out_directory + f"cat/{fltr}_catalog.ecsv",
+                format="ascii.ecsv",
+                overwrite=True,
+                )
+            self._set_psf_params(fltr)  # set PSF parameters for the filter
         
-        # compile catalog
         self._plot_catalog(stacked_images)
         
-        # # diagnostic plots
-        self._plot_time_between_files(show_diagnostic_plots)  # plot time between observations
-        # self._plot_backgrounds(background_median, background_rms, show_diagnostic_plots)  # plot background medians and RMSs
+        # diagnostic plots
+        self._plot_backgrounds(background_median, background_rms, show_diagnostic_plots)  # plot background medians and RMSs
         self._plot_background_meshes(stacked_images, show_diagnostic_plots)  # plot background meshes
         # for (fltr, stacked_image) in stacked_images.items():
         #     self._visualise_psfs(stacked_image, fltr, show_diagnostic_plots)
@@ -926,7 +1026,7 @@ class Catalog:
 
     def _plot_catalog(self, stacked_images: Dict[str, NDArray]) -> None:
         """
-        Plot the source catalogs on top of the stacked images
+        Plot the source catalogues on top of the stacked images
         
         Parameters
         ----------
@@ -934,12 +1034,12 @@ class Catalog:
             The stacked images for each camera.
         """
         
-        fig, ax = plt.subplots(ncols=len(self.catalogs), tight_layout=True, figsize=(len(stacked_images) * 5, 5))
+        fig, ax = plt.subplots(ncols=len(self.catalogues), tight_layout=True, figsize=(len(stacked_images) * 5, 5))
         
-        if len(self.catalogs) == 1:
+        if len(self.catalogues) == 1:
             ax = [ax]
         
-        for i, fltr in enumerate(list(self.catalogs.keys())):
+        for i, fltr in enumerate(list(self.catalogues.keys())):
             
             plot_image = np.clip(stacked_images[fltr], 0, None)  # clip negative values to zero for better visualisation
             
@@ -948,25 +1048,25 @@ class Catalog:
                             norm=simple_norm(plot_image, stretch="log"))
             
             # get aperture radius
-            radius = self.scale*self.aperture_selector(self.catalogs[fltr]["semimajor_sigma"].value)
+            radius = 5 * self.aperture_selector(self.catalogues[fltr]["semimajor_sigma"].value)
             
-            for j in range(len(self.catalogs[fltr])):
+            for j in range(len(self.catalogues[fltr])):
                 # label sources
-                ax[i].add_patch(Circle(xy=(self.catalogs[fltr]["xcentroid"][j],
-                                            self.catalogs[fltr]["ycentroid"][j]),
+                ax[i].add_patch(Circle(xy=(self.catalogues[fltr]["xcentroid"][j],
+                                            self.catalogues[fltr]["ycentroid"][j]),
                                         radius=radius, edgecolor=self.colours[j % len(self.colours)], 
                                         facecolor="none", lw=1))
-                ax[i].add_patch(Circle(xy=(self.catalogs[fltr]["xcentroid"][j],
-                                            self.catalogs[fltr]["ycentroid"][j]),
-                                       radius=self.local_background.r_in_scale*radius,
-                                       edgecolor=self.colours[j % len(self.colours)], facecolor="none", lw=1, ls=":"))
-                ax[i].add_patch(Circle(xy=(self.catalogs[fltr]["xcentroid"][j], 
-                                            self.catalogs[fltr]["ycentroid"][j]),
-                                        radius=self.local_background.r_out_scale*radius,
-                                        edgecolor=self.colours[j % len(self.colours)], facecolor="none", lw=1,
-                                        ls=":"))
-                ax[i].text(self.catalogs[fltr]["xcentroid"][j] + 1.05*radius,
-                            self.catalogs[fltr]["ycentroid"][j] + 1.05*radius, j + 1, 
+                # ax[i].add_patch(Circle(xy=(self.catalogues[fltr]["xcentroid"][j],
+                #                             self.catalogues[fltr]["ycentroid"][j]),
+                #                        radius=self.local_background.r_in_scale*radius,
+                #                        edgecolor=self.colours[j % len(self.colours)], facecolor="none", lw=1, ls=":"))
+                # ax[i].add_patch(Circle(xy=(self.catalogues[fltr]["xcentroid"][j], 
+                #                             self.catalogues[fltr]["ycentroid"][j]),
+                #                         radius=self.local_background.r_out_scale*radius,
+                #                         edgecolor=self.colours[j % len(self.colours)], facecolor="none", lw=1,
+                #                         ls=":"))
+                ax[i].text(self.catalogues[fltr]["xcentroid"][j] + 1.05*radius,
+                            self.catalogues[fltr]["ycentroid"][j] + 1.05*radius, j + 1, 
                             color=self.colours[j % len(self.colours)])
                 
                 # label plot
@@ -974,7 +1074,7 @@ class Catalog:
                 ax[i].set_xlabel("X")
                 ax[i].set_ylabel("Y")
         
-        fig.savefig(self.out_directory + "cat/catalogs.png")
+        fig.savefig(self.out_directory + "cat/catalogues.png")
         
         if self.show_plots:
             plt.show(fig)
@@ -984,7 +1084,7 @@ class Catalog:
 
     def _plot_background_meshes(self, stacked_images: Dict[str, NDArray], show: bool) -> None:
         """
-        Plot the background meshes on top of the catalog images.
+        Plot the background meshes on top of the catalogue images.
         
         Parameters
         ----------
@@ -994,9 +1094,9 @@ class Catalog:
             Whether to display the plot.
         """
         
-        fig, ax = plt.subplots(ncols=len(self.catalogs), tight_layout=True, figsize=(len(self.catalogs) * 5, 5))
+        fig, ax = plt.subplots(ncols=len(self.catalogues), tight_layout=True, figsize=(len(self.catalogues) * 5, 5))
         
-        for i, fltr in enumerate(list(self.catalogs.keys())):
+        for i, fltr in enumerate(list(self.catalogues.keys())):
             
             plot_image = np.clip(stacked_images[fltr], 0, None)
             bkg = self.background(stacked_images[fltr])
@@ -1030,65 +1130,9 @@ class Catalog:
             fig.clear()
             plt.close(fig)
 
-    def _plot_time_between_files(self, show: bool) -> None:
-        """
-        Plot the times between each file for each camera.
-        
-        Parameters
-        ----------
-        show : bool
-            Whether to display the plot.
-        """
-        
-        fig, axs = plt.subplots(nrows=2, ncols=len(self.catalogs), tight_layout=True, figsize=((2 * len(self.catalogs) / 3) * 6.4, 2 * 4.8))
-        
-        for fltr in list(self.catalogs.keys()):
-            times = np.array([self.bdts[file] for file in self.camera_files[fltr]])
-            times -= times.min()
-            times *= 86400  # convert to seconds from first observation
-            dt = np.diff(times)  # get time between files
-            file_numbers = np.arange(2, len(times) + 1, 1)  # start from 2 because we are plotting the time between files
-            
-            bin_edges = np.arange(0, int(dt.max()) + 2, 1)  # define bins with width 1 s
-            
-            if len(self.catalogs) == 1:
-                axs[0].set_title(fltr)
-                axs[0].plot(file_numbers, dt, "k-", lw=1)
-                
-                axs[1].hist(dt, bins=bin_edges, histtype="step", color="black", lw=1)
-                axs[1].set_yscale("log")
-                
-                axs[0].set_ylabel("Time between files [s]")
-                axs[0].set_xlabel("File number")
-                axs[1].set_ylabel("N")
-                axs[1].set_xlabel("Time between files [s]")
-            else:
-                axs[0, list(self.catalogs.keys()).index(fltr)].set_title(fltr)
-                axs[0, list(self.catalogs.keys()).index(fltr)].plot(file_numbers, dt, "k-", lw=1)
-                
-                axs[1, list(self.catalogs.keys()).index(fltr)].hist(dt, bins=bin_edges, histtype="step", color="black", lw=1)
-                axs[1, list(self.catalogs.keys()).index(fltr)].set_yscale("log")
-                
-                axs[0, 0].set_ylabel("Time between files [s]")
-                
-                for col in range(len(self.catalogs)):
-                    axs[0, col].set_xlabel("File number")
-                    
-                    axs[1, col].set_xlabel("Time between files [s]")
-        
-        for ax in axs.flatten():
-            ax.minorticks_on()
-            ax.tick_params(which="both", direction="in", top=True, right=True)
-        
-        fig.savefig(self.out_directory + "diag/header_times.png")
-        
-        if show and self.show_plots:
-            plt.show(fig)
-        else:
-            fig.clear()
-            plt.close(fig)
-
-    def _plot_backgrounds(self, background_median: Dict[str, List], background_rms: Dict[str, List], show: bool) -> None:
+    def _plot_backgrounds(self, background_median: Dict[str, Dict[str, NDArray]],
+                          background_rms: Dict[str, Dict[str, NDArray]],
+                          show: bool) -> None:
         """
         Plot the time-varying background for each camera.
         
@@ -1102,44 +1146,49 @@ class Catalog:
             Whether to display the plot.
         """
         
-        fig, axs = plt.subplots(nrows=2, ncols=len(self.catalogs), tight_layout=True, figsize=((2 * len(self.catalogs) / 3) * 6.4, 2 * 4.8), sharex='col')
+        fig, axs = plt.subplots(nrows=2, ncols=len(self.catalogues), tight_layout=True, figsize=((2 * len(self.catalogues) / 3) * 6.4, 2 * 4.8), sharex='col')
         
         # for each camera
-        for fltr in list(self.catalogs.keys()):
+        for fltr in list(self.catalogues.keys()):
+            
+            files = self.camera_files[fltr]  # get files for camera
             
             # skip cameras with no images
-            if len(self.camera_files[fltr]) == 0:
+            if len(files) == 0:
                 continue
             
-            bdts = np.array([self.bdts[file] for file in self.camera_files[fltr]])
+            bdts = np.array([self.bdts[file] for file in files])
             plot_times = (bdts - self.t_ref)*86400  # convert to seconds from first observation
             
-            if len(self.catalogs) == 1:
+            backgrounds = list(background_median[fltr].values())  # get background median for camera
+            rmss = list(background_rms[fltr].values())  # get background RMS for camera
+            
+            if len(self.catalogues) == 1:
                 axs[0].set_title(fltr)
-                axs[0].plot(plot_times, background_rms[fltr], "k.", ms=2)
-                axs[1].plot(plot_times, background_median[fltr], "k.", ms=2)
+                axs[0].plot(plot_times, backgrounds, "k.", ms=2)
+                axs[1].plot(plot_times, rmss, "k.", ms=2)
                 
                 axs[1].set_xlabel(f"Time from TDB {bdts.min():.4f} [s]")
                 axs[0].set_ylabel("Median background RMS")
                 axs[1].set_ylabel("Median background")
             else:
                 # plot background
-                axs[0, list(self.catalogs.keys()).index(fltr)].set_title(fltr)
-                axs[0, list(self.catalogs.keys()).index(fltr)].plot(plot_times, background_rms[fltr], "k.", ms=2)
-                axs[1, list(self.catalogs.keys()).index(fltr)].plot(plot_times, background_median[fltr], "k.", ms=2)
+                axs[0, list(self.catalogues.keys()).index(fltr)].set_title(fltr)
+                axs[0, list(self.catalogues.keys()).index(fltr)].plot(plot_times, backgrounds, "k.", ms=2)
+                axs[1, list(self.catalogues.keys()).index(fltr)].plot(plot_times, rmss, "k.", ms=2)
                 
-                for col in range(len(self.catalogs)):
+                for col in range(len(self.catalogues)):
                     axs[1, col].set_xlabel(f"Time from TDB {bdts.min():.4f} [s]")
                 
-                axs[0, 0].set_ylabel("Median background RMS")
-                axs[1, 0].set_ylabel("Median background")
+                axs[0, 0].set_ylabel("Median background")
+                axs[1, 0].set_ylabel("Median background RMS")
             
             # write background to file
-            with open(self.out_directory + 'diag/' + fltr + '_background.csv', 'w') as file:
-                writer = csv.writer(file)
-                writer.writerow(['BDT', 'RMS', 'median'])
-                for i in range(len(self.camera_files[fltr])):
-                    writer.writerow([bdts[i], background_rms[fltr][i], background_median[fltr][i]])
+            pd.DataFrame({
+                'TDB': bdts,
+                'RMS': backgrounds,
+                'median': rmss
+            }).to_csv(self.out_directory + 'diag/' + fltr + '_background.csv', index=False)
         
         for ax in axs.flatten():
             ax.minorticks_on()
@@ -1229,6 +1278,7 @@ class Catalog:
                 fig.clear()
                 plt.close(fig)
 
+
     def create_gifs(self, keep_frames: bool = True, overwrite: bool = False) -> None:
         """
         Create alignment gifs for each camera. Some aspects of this method are parallelised for speed. The frames are 
@@ -1244,7 +1294,7 @@ class Catalog:
         """
         
         # for each camera
-        for fltr in list(self.catalogs.keys()):
+        for fltr in list(self.catalogues.keys()):
             
             # skip cameras with no images
             if len(self.camera_files[fltr]) == 0:
@@ -1293,9 +1343,9 @@ class Catalog:
                 norm=simple_norm(plot_image, stretch="log"))
         
         # for each source
-        for i in range(len(self.catalogs[fltr])):
+        for i in range(len(self.catalogues[fltr])):
             
-            source_position = (self.catalogs[fltr]["xcentroid"][i], self.catalogs[fltr]["ycentroid"][i])
+            source_position = (self.catalogues[fltr]["xcentroid"][i], self.catalogues[fltr]["ycentroid"][i])
             
             if file == self.reference_files[fltr]:
                 aperture_position = source_position
@@ -1311,14 +1361,14 @@ class Catalog:
                     title = f"{file_name} (unaligned)"
                     colour = "red"
             
-            radius = self.scale*self.aperture_selector(self.catalogs[fltr]["semimajor_sigma"].value)
+            radius = 5 * self.aperture_selector(self.catalogues[fltr]["semimajor_sigma"].value)
             
             ax.add_patch(Circle(xy=(aperture_position), radius=radius,
                                     edgecolor=self.colours[i % len(self.colours)], facecolor="none", lw=1))
-            ax.add_patch(Circle(xy=(aperture_position), radius=self.local_background.r_in_scale*radius,
-                                edgecolor=self.colours[i % len(self.colours)], facecolor="none", lw=1, ls=":"))
-            ax.add_patch(Circle(xy=(aperture_position), radius=self.local_background.r_out_scale*radius,
-                                edgecolor=self.colours[i % len(self.colours)], facecolor="none", lw=1, ls=":"))
+            # ax.add_patch(Circle(xy=(aperture_position), radius=self.local_background.r_in_scale*radius,
+            #                     edgecolor=self.colours[i % len(self.colours)], facecolor="none", lw=1, ls=":"))
+            # ax.add_patch(Circle(xy=(aperture_position), radius=self.local_background.r_out_scale*radius,
+            #                     edgecolor=self.colours[i % len(self.colours)], facecolor="none", lw=1, ls=":"))
             ax.text(aperture_position[0] + 1.05*radius, aperture_position[1] + 1.05*radius, i + 1,
                         color=self.colours[i % len(self.colours)])
         
@@ -1360,3 +1410,275 @@ class Catalog:
             for file in tqdm(os.listdir(self.out_directory + f"diag/{fltr}_gif_frames"), disable=not self.verbose,
                              desc=f"[OPTICAM] Deleting {fltr} GIF frames"):
                 os.remove(self.out_directory + f"diag/{fltr}_gif_frames/{file}")
+
+
+    def photometry(self, photometer: BasePhotometer) -> None:
+        """
+        Perform photometry on the catalogues using the provided photometer.
+        
+        Parameters
+        ----------
+        photometer : BasePhotometer
+            The photometer. Should be a subclass of `BasePhotometer`, or implement a `compute` method that follows the
+            `BasePhotometer` interface.
+        """
+        
+        # define save directory using the photometer name
+        save_name = camel_to_snake(photometer.__class__.__name__).replace('_photometer', '')
+        
+        # change save directory based on photometer settings
+        if photometer.background_method == 'local':
+            save_name += '_annulus'
+        if not photometer.match_sources:
+            save_name = 'forced_' + save_name
+        
+        save_dir = os.path.join(self.out_directory, f"{save_name}_light_curves")
+        if not os.path.isdir(save_dir):
+            os.makedirs(save_dir)
+        
+        # for each filter
+        for fltr in self.catalogues.keys():
+            
+            source_coords = np.array([self.catalogues[fltr]["xcentroid"].value,
+                                      self.catalogues[fltr]["ycentroid"].value]).T
+            
+            chunk_size = max(1, len(self.camera_files[fltr]) // 100)
+            results = process_map(
+                partial(
+                    self._photometry,
+                    photometer,
+                    source_coords,
+                    fltr,
+                ),
+                self.camera_files[fltr],
+                max_workers=self.number_of_processors,
+                disable=not self.verbose,
+                desc=f"[OPTICAM] Performing photometry for {fltr}",
+                chunksize=chunk_size,
+                bar_format=bar_format,
+                tqdm_class=tqdm,
+            )
+            
+            # merge multiprocessing results
+            photometry_results = {}
+            for result in results:
+                for key, value in result.items():
+                    if key not in photometry_results:
+                        photometry_results[key] = []
+                    photometry_results[key].append(value)
+            
+            # for each source in the catalogue
+            for i in tqdm(
+                range(len(self.catalogues[fltr])),
+                disable=not self.verbose,
+                desc=f"[OPTICAM] Saving {save_name} photometry results for {fltr} sources",
+                ):
+                
+                # unpack results for ith source
+                source_results = {}
+                for key, values in photometry_results.items():
+                    
+                    # time is a special case since it is already a single column
+                    if key == 'TDB':
+                        source_results[key] = np.asarray(values)
+                    # for other keys, the ith column needs to be extracted
+                    else:
+                        col = [value[i] for value in values]
+                        source_results[key] = np.asarray(col)
+                
+                # define light curve as a DataFrame
+                df = pd.DataFrame(source_results)
+                
+                # drop NaNs
+                df.dropna(inplace=True, ignore_index=True)
+                df.reset_index(drop=True, inplace=True)
+                
+                # save to file
+                df.to_csv(
+                    os.path.join(
+                        save_dir,
+                        f'{fltr}_source_{i + 1}.csv',
+                        ),
+                    index=False,
+                    )
+
+    def _photometry(
+        self,
+        photometer: BasePhotometer,
+        source_coords: NDArray,
+        fltr: str,
+        file: str,
+        ) -> Dict[str, List]:
+        
+        image, error = self.get_data(file, return_error=True)  # get image data and error
+        
+        if photometer.background_method == 'global':
+            bkg = self.background(image)  # get 2D background
+            image = image - bkg.background  # remove background from image
+            error = np.sqrt(error**2 + bkg.background_rms**2)  # propagate error
+            threshold = self.threshold * bkg.background_rms  # define source detection threshold
+        else:
+            # estimate source detection threshold from noisy image
+            threshold = detect_threshold(image, self.threshold, error=error)
+        
+        if photometer.match_sources:
+            segm = self.finder(image, threshold)
+            tbl = SourceCatalog(image, segm).to_table()
+            image_coords = np.array([tbl["xcentroid"].value,
+                                     tbl["ycentroid"].value]).T
+        else:
+            image_coords = None
+        
+        results = photometer.compute(image, error, source_coords, image_coords, self.psf_params[fltr])
+        
+        assert 'flux' in results, f"[OPTICAM] Photometer {photometer.__class__.__name__}'s compute method must return a 'flux' key."
+        assert 'flux_error' in results, f"[OPTICAM] Photometer {photometer.__class__.__name__}'s compute method must return a 'flux_error' key."
+        
+        # results check
+        for key, values in results.items():
+            for i, value in enumerate(values):
+                if value is None:
+                    self.logger.warning(f"[OPTICAM] {key} could not be determined for source {i + 1} in {fltr} (got value {value}).")
+        
+        # add time stamp
+        results['TDB'] = self.bdts[file]  # add time of observation
+        
+        return results
+
+
+def get_time(hdul, file: str) -> float:
+    """
+    Parse the time from the header of a FITS file.
+
+    Parameters
+    ----------
+    hdul
+        The FITS file.
+    file : str
+        The path to the file.
+    
+    Returns
+    -------
+    float
+        The time of the observation in MJD.
+
+    Raises
+    ------
+    KeyError
+        _description_
+    KeyError
+        _description_
+    ValueError
+        _description_
+    """
+    
+    # parse file time
+    if "GPSTIME" in hdul[0].header.keys():
+        gpstime = hdul[0].header["GPSTIME"]
+        split_gpstime = gpstime.split(" ")
+        date = split_gpstime[0]  # get date
+        time = split_gpstime[1].split(".")[0]  # get time (ignoring decimal seconds)
+        mjd = Time(date + "T" + time, format="fits").mjd
+    elif "UT" in hdul[0].header.keys():
+        try:
+            mjd = Time(hdul[0].header["UT"].replace(" ", "T"), format="fits").mjd
+        except:
+            try:
+                date = hdul[0].header['DATE-OBS']
+                time = hdul[0].header['UT'].split('.')[0]
+                mjd = Time(date + 'T' + time, format='fits').mjd
+            except:
+                raise ValueError('Could not parse time from ' + file + ' header.')
+    else:
+        raise KeyError(f"[OPTICAM] Could not find GPSTIME or UT key in {file} header.")
+    
+    return mjd
+
+def identify_gaps(files: List[str], log_dir: str):
+    """
+    Identify gaps in the observation sequence and logs them to log_dir/diag/gaps.txt.
+    
+    Parameters
+    ----------
+    files : List[str]
+        The list of files for a single filter.
+    """
+    
+    file_times = {}
+    
+    for file in tqdm(files, desc='[OPTICAM] Identifying gaps'):
+        with fits.open(file) as hdul:
+            file_times[file] = get_time(hdul, file)
+    
+    sorted_files = dict(sorted(file_times.items(), key=lambda x: x[1]))
+    times = np.array(sorted_files.values()).flatten()
+    diffs = np.diff(times)
+    median_exposure_time = np.median(diffs)
+    
+    gaps = np.where(diffs > 2*median_exposure_time)[0]
+    
+    if len(gaps) > 0:
+        print(f"[OPTICAM] Found {len(gaps)} gaps in the observation sequence.")
+        with open(log_dir + "diag/gaps.txt", "w") as file:
+            file.write(f"Median exposure time: {median_exposure_time} d\n")
+            for gap in gaps:
+                file.write(f"Gap between {list(sorted_files.keys())[gap]} and {list(sorted_files.keys())[gap + 1]}: {diffs[gap]} d\n")
+    else:
+        print("[OPTICAM] No gaps found in the observation sequence.")
+
+def apply_barycentric_correction(original_times: ArrayLike, coords: SkyCoord) -> ArrayLike:
+    """
+    Apply barycentric corrections to a time vector, using an optional reference time.
+    
+    Parameters
+    ----------
+    times : ArrayLike
+        The times to correct.
+    coords : SkyCoord
+        The coordinates of the source.
+    
+    Returns
+    -------
+    ArrayLike
+        The corrected times.
+    """
+    
+    # OPTICAM location
+    observer_coords = EarthLocation.from_geodetic(lon=-115.463611*u.deg, lat=31.044167*u.deg, height=2790*u.m)
+    
+    
+    # format the times
+    times = Time(original_times, format='mjd', scale='utc', location=observer_coords)
+    
+    # compute light travel time to barycentre
+    ltt_bary = times.light_travel_time(coords)
+    
+    # return the corrected times using TDB timescale
+    return (times.tdb + ltt_bary).value
+
+def _rebin_image(image: NDArray, factor: int) -> NDArray:
+    """
+    Rebin an image by a given factor.
+    
+    Parameters
+    ----------
+    image : NDArray
+        The image to rebin.
+    factor : int
+        The factor to rebin by.
+    
+    Returns
+    -------
+    NDArray
+        The rebinned image.
+    """
+    
+    if image.shape[0] % factor != 0 or image.shape[1] % factor != 0:
+        raise ValueError("[OPTICAM] The dimensions of the input data must be divisible by the rebinning factor.")
+    
+    # reshape the array to make it ready for block summation
+    shape = (image.shape[0] // factor, factor, image.shape[1] // factor, factor)
+    reshaped_data = image.reshape(shape)
+    
+    # return rebinned image
+    return reshaped_data.sum(axis=(1, 3))
