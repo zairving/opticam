@@ -3,19 +3,21 @@ from typing import Union, Tuple
 from numpy.typing import NDArray
 
 
-class Background:
+class DefaultBackground:
     """
     Default background estimator.
     """
     
-    def __init__(self, box_size: Union[int, Tuple[int, int]] = None):
+    def __init__(self, box_size: int | Tuple[int, int]):
         """
         Default background estimator.
         
         Parameters
         ----------
-        box_size : Union[int, Tuple[int, int]], optional
-            Size of the background mesh. If None, the box size is set to 1/16th of the image width.
+        box_size : int | Tuple[int, int]
+            Size of the background mesh "pixels". If an integer is provided, the mesh pixels are squares of size
+            `box_size` x `box_size`. If a tuple is provided, the mesh pixels are rectangles of size
+            `box_size[0]` x `box_size[1]`.
         """
         
         self.box_size = box_size
@@ -34,9 +36,5 @@ class Background:
         Background2D
             2D background.
         """
-        
-        # set box_size to 1/16th of the image size if not specified
-        if self.box_size is None:
-            self.box_size = data.shape[0] // 16
         
         return Background2D(data, self.box_size)
