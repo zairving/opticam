@@ -9,8 +9,12 @@ from scipy.spatial.distance import cdist
 from scipy.optimize import linear_sum_assignment
 from matplotlib import image as mpimage
 import json
+from stingray import Lightcurve
 
 from opticam_new.analyser import Analyser
+
+
+# TODO: clean up this spaghetti code
 
 
 class DifferentialPhotometer:
@@ -63,7 +67,7 @@ class DifferentialPhotometer:
                 continue
         
         # plot catalogs
-        catalog_image = mpimage.imread(self.out_directory + "cat/catalogs.png")
+        catalog_image = mpimage.imread(self.out_directory + "cat/catalogues.png")
         fig, ax = plt.subplots(figsize=(len(self.catalogs)*5, 5))
         ax.imshow(catalog_image)
         
@@ -73,10 +77,16 @@ class DifferentialPhotometer:
         
         plt.show()
     
-    def get_relative_light_curve(self, fltr: str, target: int, comparisons: List[int],
-                                 phot_type: Literal["aperture", "annulus", "normal", "optimal"],
-                                 prefix: str = None, match_other_cameras = False,
-                                 show_diagnostics: bool = True) -> Analyser:
+    def get_relative_light_curve(
+        self,
+        fltr: str,
+        target: int,
+        comparisons: List[int],
+        phot_label: str,
+        prefix: str | None = None,
+        match_other_cameras = False,
+        show_diagnostics: bool = True,
+        ) -> Analyser:
         """
         Compute the relative light curve for a target source with respect to one or more comparison sources. By default,
         the relative light curve is computed for a single filter. The relative light curve is saved to
@@ -109,17 +119,7 @@ class DifferentialPhotometer:
             An Analyser object containing the relative light curve(s).
         """
         
-        if phot_type == "aperture":
-            save_label = "aperture_light_curve"
-        elif phot_type == "annulus":
-            save_label = "annulus_light_curve"
-        elif phot_type == "normal":
-            save_label = "normal_light_curve"
-        elif phot_type == "optimal":
-            save_label = "optimal_light_curve"
-        else:
-            print(f"[OPTICAM] Flux type {phot_type} is not supported.")
-            return None
+        save_label = f'{phot_label}_light_curve'
         
         if not os.path.isdir(self.out_directory + "relative_light_curves"):
             os.mkdir(self.out_directory + "relative_light_curves")
@@ -130,24 +130,24 @@ class DifferentialPhotometer:
                 raise ValueError('[OPTICAM] ' + fltr + ' is not a valid filter.')
         
         if not match_other_cameras:
-            # compute and plot relative light curve for single filter
-            relative_light_curve, transformed_mask = self._compute_relative_light_curve(fltr, target, comparisons,
-                                                                                        phot_type, self.t_ref,
-                                                                                        show_diagnostics)
-            self._plot_relative_light_curve(relative_light_curve, self.t_ref, transformed_mask, target=target,
-                                            comparisons=comparisons, prefix=prefix, fltr=fltr, save_label=save_label)
+            raise NotImplementedError('[OPTICAM] Currently match_other_cameras must be True.')
+            # # compute and plot relative light curve for single filter
+            # relative_light_curve, transformed_mask = self._compute_relative_light_curve(fltr, target, comparisons,
+            #                                                                             phot_label, self.t_ref,
+            #                                                                             show_diagnostics)
+            # self._plot_relative_light_curve(relative_light_curve, self.t_ref, transformed_mask, target=target,
+            #                                 comparisons=comparisons, prefix=prefix, fltr=fltr, save_label=save_label)
             
-            # save light curve to CSV
-            relative_light_curve.to_csv(
-                self.out_directory + "relative_light_curves/" + f"{prefix}_{fltr}_{save_label}.csv", index=False
-                )
+            # # save light curve to CSV
+            # relative_light_curve.to_csv(
+            #     self.out_directory + "relative_light_curves/" + f"{prefix}_{fltr}_{save_label}.csv", index=False
+            #     )
             
-            # return Analyser object
-            return Analyser({fltr: relative_light_curve}, self.out_directory, prefix, phot_type)
+            # # return Analyser object
+            # return Analyser({fltr: relative_light_curve}, self.out_directory, prefix, phot_label)
         else:
             # define dictionaries to store relative light curves and transformed masks for each camera
             relative_light_curves = {}
-            transformed_masks = {}
             targets_ = {}
             comparisons_ = {}
             
@@ -174,23 +174,48 @@ class DifferentialPhotometer:
                     print(cat_fltr, targets_[cat_fltr], comparisons_[cat_fltr])
                 
                 # compute relative light curve for current filter
-                relative_light_curves[cat_fltr], transformed_masks[cat_fltr] = self._compute_relative_light_curve(cat_fltr, targets_[cat_fltr], comparisons_[cat_fltr], phot_type, self.t_ref, show_diagnostics)
+                relative_light_curves[cat_fltr] = self._compute_relative_light_curve(
+                    cat_fltr,
+                    targets_[cat_fltr],
+                    comparisons_[cat_fltr],
+                    phot_label,
+                    self.t_ref, 
+                    show_diagnostics,
+                    )
             
             # plot the relative light curves for each filter
-            self._plot_relative_light_curves(relative_light_curves, self.t_ref, transformed_masks, targets_, comparisons_, prefix, save_label)
+            self._plot_relative_light_curves(
+                relative_light_curves,
+                self.t_ref,
+                targets_,
+                comparisons_,
+                prefix,
+                save_label,
+                )
             
             if self.show_plots:
                 plt.show()
             
             # save relative light curves
             for (k, v) in relative_light_curves.items():
-                v.to_csv(self.out_directory + "relative_light_curves/" + f"{prefix}_{k}_{save_label}.csv", index=False)
+                df = pd.DataFrame({
+                    "TDB": v.time,
+                    "relative flux": v.counts,
+                    "relative flux error": v.counts_err
+                })
+                df.to_csv(self.out_directory + "relative_light_curves/" + f"{prefix}_{k}_{save_label}.csv", index=False)
             
-            return Analyser(relative_light_curves, self.out_directory, prefix, phot_type)
+            return Analyser(relative_light_curves, self.out_directory, prefix, phot_label)
     
-    def _compute_relative_light_curve(self, fltr: str, target: int, comparisons: List[int],
-                                      phot_type: Literal["aperture", "annulus", "normal", "optimal"],
-                                      t_ref: float, show_diagnostics: bool) -> Tuple[Dict[str, ArrayLike], ArrayLike]:
+    def _compute_relative_light_curve(
+        self,
+        fltr: str,
+        target: int,
+        comparisons: List[int],
+        phot_label: str,
+        t_ref: float,
+        show_diagnostics: bool,
+        ) -> Lightcurve:
         """
         Compute the relative light curve for a target source with respect to one or more comparison sources for a given
         filter.
@@ -212,25 +237,12 @@ class DifferentialPhotometer:
 
         Returns
         -------
-        Tuple[Dict[str, ArrayLike], ArrayLike]
-            The relative light curve and the transformation mask.
+        Lightcurve
+            The relative light curve (as a Stingray Lightcurve object).
         """
         
-        if phot_type == "aperture":
-            save_label = "aperture_light_curve"
-            light_curve_dir = "aperture_light_curves"
-        elif phot_type == "annulus":
-            save_label = "annulus_light_curve"
-            light_curve_dir = "annulus_light_curves"
-        elif phot_type == "normal":
-            save_label = "normal_light_curve"
-            light_curve_dir = "normal_light_curves"
-        elif phot_type == "optimal":
-            save_label = "optimal_light_curve"
-            light_curve_dir = "optimal_light_curves"
-        else:
-            print(f"[OPTICAM] Flux type {phot_type} is not supported.")
-            return None
+        save_label = f'{phot_label}_light_curve'
+        light_curve_dir = f'{phot_label}_light_curves'
         
         # define relative light curve dictionary
         relative_light_curve = {
@@ -238,15 +250,13 @@ class DifferentialPhotometer:
             'relative flux': [],
             'relative flux error': [],
         }
-        if phot_type == 'aperture' or phot_type == 'annulus':
-            relative_light_curve.update({'quality_flag': []})
         
         # get target data frame
         try:
             target_df = pd.read_csv(self.out_directory + light_curve_dir + '/' + fltr + '_source_' + str(target) + '.csv')
         except:
             print('[OPTICAM] Could not load ' + light_curve_dir + '/' + fltr + '_source_' + str(target) + '.csv, skipping ...')
-            return None
+            return None, None
         
         # get comparison data frames
         comp_dfs = []
@@ -276,13 +286,6 @@ class DifferentialPhotometer:
         filtered_comp_dfs = [df[df["TDB"].isin(common_times)] for df in comp_dfs]
         filtered_comp_dfs = [df.reset_index(drop=True) for df in filtered_comp_dfs]
         
-        # define transform mask
-        if "quality_flag" in filtered_target_df.columns:
-            transformed_mask = filtered_target_df["quality_flag"] == "A"
-        else:
-            # if no quality flag column is present flux are from normal or optimal photometry, which are all aligned
-            transformed_mask = np.ones_like(filtered_target_df["flux"].values, dtype=bool)
-        
         # plot diagnostic light curves
         for i, df in enumerate(filtered_comp_dfs):
             self._plot_raw_diag(fltr, target, comparisons[i], filtered_target_df, df, t_ref, save_label, show_diagnostics)
@@ -295,34 +298,33 @@ class DifferentialPhotometer:
         comp_fluxes = np.sum([df["flux"].values for df in filtered_comp_dfs], axis=0)
         comp_flux_errors = np.sqrt(np.sum([np.square(df["flux_error"].values) for df in filtered_comp_dfs], axis=0))
         
-        relative_light_curve['relative flux'] = filtered_target_df["flux"].values/comp_fluxes
-        relative_light_curve['relative flux error'] = relative_light_curve['relative flux']*np.abs(np.sqrt(np.square(filtered_target_df["flux_error"].values/filtered_target_df["flux"].values) + np.square(comp_flux_errors/comp_fluxes)))
+        time = filtered_target_df["TDB"].values
+        relative_flux = filtered_target_df["flux"].values / comp_fluxes
+        relative_flux_error = relative_flux * np.abs(np.sqrt(np.square(filtered_target_df["flux_error"].values / filtered_target_df["flux"].values) + np.square(comp_flux_errors / comp_fluxes)))
         
-        # add quality flag column if it exists
-        try:
-            relative_light_curve['quality_flag'] = filtered_target_df["quality_flag"].values
-        except:
-            pass
-        
-        relative_light_curve['TDB'] = filtered_target_df["TDB"].values
-        
-        return pd.DataFrame(relative_light_curve), transformed_mask
+        valid_mask = np.isfinite(relative_flux) & np.isfinite(relative_flux_error)
+        return Lightcurve(time[valid_mask], relative_flux[valid_mask], err=relative_flux_error[valid_mask])
     
-    def _plot_relative_light_curve(self, relative_light_curve: Dict[str, ArrayLike], t_ref: float,
-                                   transformed_mask: ArrayLike, ax = None, target: int = None,
-                                   comparisons: List[int] = None, prefix: str = None, fltr: str = None,
-                                   save_label: str = None) -> None:
+    def _plot_relative_light_curve(
+        self,
+        relative_light_curve: Lightcurve,
+        t_ref: float,
+        ax = None,
+        target: int | None = None,
+        comparisons: List[int] | None = None,
+        prefix: str | None = None,
+        fltr: str | None = None,
+        save_label: str | None = None,
+        ) -> None:
         """
         Plot the relative light curve for a target source with respect to one or more comparison sources for a given filter.
 
         Parameters
         ----------
-        relative_light_curve : Dict[str, ArrayLike]
+        relative_light_curve : Dict[str, Lightcurve]
             The relative light curve.
         t_ref : float
             The time of the earliest observation (used for plotting the relative light curve in seconds from t_ref).
-        transformed_mask : ArrayLike
-            The transformation mask. Unaligned data points are plotted in red.
         ax : _type_, optional
             The axis onto which the relative light curve is plotted, by default None (a new figure is created).
         target : int, optional
@@ -337,21 +339,17 @@ class DifferentialPhotometer:
             _description_, by default None
         """
         
-        time = relative_light_curve["TDB"].copy()
+        time = np.asarray(relative_light_curve.time).copy()
         time -= t_ref
         time *= 86400
         
-        # if an axis is not provided, create a new figure
-        # an axis will be provided if light curves for multiple filters are being plotted
-        # if only plotting a single filter, a dedicated figure is created
         if ax is None:
             fig, ax = plt.subplots(tight_layout=True, figsize=(1.5*6.4, 4.8))
             dedicated_plot = True
         else:
             dedicated_plot = False
         
-        ax.errorbar(time[transformed_mask], relative_light_curve['relative flux'][transformed_mask], np.abs(relative_light_curve['relative flux error'][transformed_mask]), fmt="k.", ms=2, ecolor="grey", elinewidth=1)
-        ax.errorbar(time[~transformed_mask], relative_light_curve['relative flux'][~transformed_mask], np.abs(relative_light_curve['relative flux error'][~transformed_mask]), fmt="r.", ms=2, elinewidth=1, alpha=.2)
+        ax.errorbar(time, relative_light_curve.counts, np.abs(relative_light_curve.counts_err), fmt="k.", ms=2, ecolor="grey", elinewidth=1)
         
         ax.set_title(fltr + ' (Source ID: ' + str(target) + ', Comparison ID(s): ' + ', '.join([str(comp) for comp in comparisons]) + ')')
         
@@ -366,9 +364,15 @@ class DifferentialPhotometer:
             else:
                 plt.close(fig)
     
-    def _plot_relative_light_curves(self, relative_light_curves: Dict[str, Dict[str, ArrayLike]], t_ref: float,
-                                    transformed_masks: Dict[str, ArrayLike], targets: Dict[str, int],
-                                    comparisons: Dict[str, List[int]], prefix: str, save_label: str) -> None:
+    def _plot_relative_light_curves(
+        self,
+        relative_light_curves: Dict[str, Lightcurve],
+        t_ref: float,
+        targets: Dict[str, int],
+        comparisons: Dict[str, List[int]],
+        prefix: str,
+        save_label: str,
+        ) -> None:
         """
         Plot the relative light curves for a target source with respect to one or more comparison sources for multiple filters.
 
@@ -378,8 +382,6 @@ class DifferentialPhotometer:
             The relative light curves for each filter.
         t_ref : float
             The time of the earliest observation (used for plotting the relative light curve in seconds from t_ref).
-        transformed_masks : Dict[str, ArrayLike]
-            The transformation masks for each filter.
         targets : Dict[str, int]
             The catalog ID of the target source for each filter.
         comparisons : Dict[str, List[int]]
@@ -394,7 +396,7 @@ class DifferentialPhotometer:
                                 figsize=(1.5 * 6.4, 2 * len(relative_light_curves) / 3 * 4.8))
         
         for fltr, relative_light_curve in relative_light_curves.items():
-            self._plot_relative_light_curve(relative_light_curve, t_ref, transformed_masks[fltr], axs[self.filters.index(fltr)], targets[fltr], comparisons[fltr], prefix, fltr, save_label)
+            self._plot_relative_light_curve(relative_light_curve, t_ref, axs[self.filters.index(fltr)], targets[fltr], comparisons[fltr], prefix, fltr, save_label)
         
         axs[-1].set_xlabel(f"Time from TDB {t_ref:.4f} [s]")
         axs[int(len(relative_light_curves) / 2)].set_ylabel("Relative flux")
@@ -406,8 +408,17 @@ class DifferentialPhotometer:
         else:
             plt.close(fig)
     
-    def _plot_raw_diag(self, fltr: str, target: int, comparison: int, target_df: pd.DataFrame, comparison_df: pd.DataFrame,
-                   t_ref: float, save_label: str, show: bool) -> None:
+    def _plot_raw_diag(
+        self,
+        fltr: str,
+        target: int,
+        comparison: int,
+        target_df: pd.DataFrame,
+        comparison_df: pd.DataFrame,
+        t_ref: float,
+        save_label: str,
+        show: bool,
+        ) -> None:
         """
         Plot the raw light curves for a target and comparison source for a given filter.
         
