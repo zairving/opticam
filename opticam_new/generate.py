@@ -5,6 +5,8 @@ import numpy as np
 from numpy.typing import NDArray
 from typing import List
 
+from opticam_new.helpers import bar_format
+
 
 def __add_two_dimensional_gaussian_to_image(image: NDArray, x_centroid: float, y_centroid: float, peak_flux: float,
                                             sigma_x: float, sigma_y: float, theta: float) -> NDArray:
@@ -59,7 +61,7 @@ def __variable_function(i: float) -> float:
         The flux.
     """
     
-    return 50 * np.sin(2 * np.pi * i * 0.2)
+    return 20 * np.sin(2 * np.pi * i * 0.2)
 
 def __create_base_image(i: int, binning_scale: int) -> NDArray:
     
@@ -99,7 +101,7 @@ def __create_images(out_dir: str, filters: List[str], N_sources: int, variable_s
     
     for fltr in filters:
         
-        if os.path.isfile(f"{out_dir}/{fltr}-band_image_{i}.fits") and not overwrite:
+        if os.path.isfile(f"{out_dir}/240101{fltr}{200000000 + i}o.fits.gz") and not overwrite:
             continue
         
         noisy_image = __create_base_image(i, binning_scale)
@@ -155,7 +157,7 @@ def __create_flats(out_dir: str, filters: list, i: int, binning_scale: int, over
     
     for fltr in filters:
         
-        if os.path.isfile(f"{out_dir}/{fltr}-band_image_{i}.fits") and not overwrite:
+        if os.path.isfile(f"{out_dir}/{fltr}-band_image_{i}.fits.gz") and not overwrite:
             continue
         
         noisy_image = __create_base_image(i, binning_scale)
@@ -200,7 +202,7 @@ def create_synthetic_flats(out_dir: str, n_flats: int = 5, overwrite: bool = Fal
     filters = ["g", "r", "i"]
     binning_scale = 8
     
-    for i in range(n_flats):
+    for i in tqdm(range(n_flats), desc="Creating synthetic flats", bar_format=bar_format):
         __create_flats(out_dir, filters, i, binning_scale, overwrite)
 
 def create_synthetic_observations(out_dir: str, n_images: int = 100, circular_aperture: bool = True,
@@ -235,6 +237,16 @@ def create_synthetic_observations(out_dir: str, n_images: int = 100, circular_ap
     peak_fluxes = rng.uniform(100, 1000, N_sources)  # generate random peak fluxes
     variable_source = 1
     
-    for i in tqdm(range(n_images), desc="Creating synthetic observations"):
-        __create_images(out_dir, filters, N_sources, variable_source, source_positions, peak_fluxes, i, binning_scale,
-                        circular_aperture, overwrite)
+    for i in tqdm(range(n_images), desc="Creating synthetic observations", bar_format=bar_format):
+        __create_images(
+            out_dir,
+            filters,
+            N_sources,
+            variable_source,
+            source_positions,
+            peak_fluxes,
+            i,
+            binning_scale,
+            circular_aperture,
+            overwrite
+            )
