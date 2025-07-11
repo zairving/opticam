@@ -2,13 +2,14 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from astropy.timeseries import LombScargle
-from typing import Dict, Literal, Tuple
+from typing import Dict, List, Literal, Tuple
 from numpy.typing import NDArray
 import os
 import astropy.units as u
 from astropy.units.quantity import Quantity
 import json
 import warnings
+from stingray import AveragedCrossspectrum, AveragedPowerspectrum, Lightcurve
 
 
 class Analyser:
@@ -16,13 +17,13 @@ class Analyser:
     Helper class for analysing OPTICAM light curves.
     """
     
-    def __init__(self, light_curves: Dict[str, pd.DataFrame], out_directory: str, prefix: str, phot_type: str):
+    def __init__(self, light_curves: Dict[str, Lightcurve], out_directory: str, prefix: str, phot_type: str):
         """
         Helper class for analysing OPTICAM light curves.
         
         Parameters
         ----------
-        light_curves : Dict[str, pd.DataFrame]
+        light_curves : Dict[str, Lightcurve]
             The light curves to analyse, where the keys are the filter names and the values are the light curves.
         out_directory : str
             The directory to save the output files (i.e., the same directory as `out_directory` used by
@@ -34,12 +35,6 @@ class Analyser:
         """
         
         self.light_curves = light_curves
-        
-        # drop NaNs to avoid issues with methods
-        for lc in light_curves.values():
-            lc.dropna(inplace=True)
-            lc.reset_index(drop=True, inplace=True)  # reset index after dropping NaNs
-        
         self.filters = list(light_curves.keys())
         self.out_directory = out_directory
         self.prefix = prefix
@@ -84,12 +79,12 @@ class Analyser:
         
         for fltr, lc in self.light_curves.items():
             
-            t = (lc[time] - t_ref) * 86400
+            t = (lc.time - self.t_ref) * 86400
             
             ax.errorbar(t, lc['relative flux'], lc['relative flux error'], marker='.', ms=2,
                         linestyle='none', color=self.colours[fltr], ecolor='grey', elinewidth=1, label=fltr)
         
-        ax.set_xlabel(f'Time from {time} {t_ref:.4f} [s]')
+        ax.set_xlabel(f'Time from TDB {self.t_ref:.4f} [s]')
         ax.set_ylabel('Relative Flux')
         
         if title is not None:
@@ -101,41 +96,7 @@ class Analyser:
         ax.legend(markerscale=5)
         
         return fig
-    
-    def clip_outliers(self, n_window: int, sigma: float = 5., max_iters: int = 10) -> None:
-        """
-        Clip outliers using a rolling median filter.
-        
-        Parameters
-        ----------
-        n_window : int
-            The size of the window (number of data points) to use for the rolling median filter.
-        sigma : float, optional
-            The clipping threshold in standard deviations, by default 5.
-        max_iters : int, optional
-            The maximum number of clipping iterations, by default 10. Fewer iterations may be performed if the clipping
-            converges before reaching the maximum number of iterations.
-        """
-        
-        for fltr, lc in self.light_curves.items():
-            clipped_lc = lc.copy()
-            
-            for _ in range(max_iters):
-                clipped_lc['median'] = clipped_lc['relative flux'].rolling(window=n_window, min_periods=1).median()
-                clipped_lc['std_dev'] = clipped_lc['relative flux'].rolling(window=n_window, min_periods=1).std()
-                
-                clipped_lc['lower_bound'] = clipped_lc['median'] - sigma * clipped_lc['std_dev']
-                clipped_lc['upper_bound'] = clipped_lc['median'] + sigma * clipped_lc['std_dev']
-                
-                clipped_lc = clipped_lc[(clipped_lc['relative flux'] >= clipped_lc['lower_bound']) & 
-                                        (clipped_lc['relative flux'] <= clipped_lc['upper_bound'])]
-                
-                if len(clipped_lc) == len(lc):
-                    break
-            
-            clipped_lc.reset_index(drop=True, inplace=True)
-            self.light_curves[fltr] = clipped_lc.copy()
-    
+
     def update(self, analyser: 'Analyser') -> None:
         """
         Combine another `Analyser` object with the current one. Useful when creating relative light curves
@@ -152,7 +113,7 @@ class Analyser:
         
         for fltr in filters:
             self.light_curves[fltr] = light_curves[fltr].copy()
-    
+
     def lomb_scargle(self, frequencies: NDArray = None, scale: Literal['linear', 'log', 'loglog'] = 'linear', 
                      show_plot=True) -> Tuple[NDArray, Dict[str, NDArray]] | Dict[str, NDArray]:
         """
@@ -183,8 +144,8 @@ class Analyser:
             
             return_frequencies = True
             
-            t_span = np.mean([lc['TDB'].max() - lc['TDB'].min() for lc in self.light_curves.values()]) * 86400
-            dt = np.min([np.min(np.diff(lc['TDB'])) for lc in self.light_curves.values()]) * 86400
+            t_span = np.mean([lc.time.max() - lc.time.min() for lc in self.light_curves.values()]) * 86400
+            dt = np.min([np.min(np.diff(lc.time)) for lc in self.light_curves.values()]) * 86400
             
             lo = 1 / t_span
             hi = 0.5 / dt
@@ -202,9 +163,9 @@ class Analyser:
         for i in range(len(self.light_curves)):
             
             k = list(self.light_curves.keys())[i]
-            power = LombScargle((self.light_curves[k]['TDB'].values - self.light_curves[k]['TDB'].min())*86400,
-                                self.light_curves[k]['relative flux'],
-                                self.light_curves[k]['relative flux error']).power(frequencies)
+            power = LombScargle((self.light_curves[k].time - self.light_curves[k].time.min())*86400,
+                                self.light_curves[k].counts,
+                                self.light_curves[k].counts_err).power(frequencies)
             results[k] = power
             
             axs[i].plot(frequencies, power, color=self.colours[k], lw=1, label=k)
@@ -250,7 +211,7 @@ class Analyser:
             return frequencies, results
         
         return results
-    
+
     def phase_fold(self, period: Quantity, plot=True) -> Dict[str, NDArray]:
         """
         Phase fold each light curve using the given period.
@@ -274,7 +235,7 @@ class Analyser:
         results = {}
         
         for fltr, lc in self.light_curves.items():
-            phase = (lc['TDB'] % period) / period
+            phase = (lc.time % period) / period
             results[fltr] = phase
         
         if plot:
@@ -284,8 +245,8 @@ class Analyser:
             for i in range(len(self.light_curves)):
                 k = list(self.light_curves.keys())[i]
                 axs[i].errorbar(np.append(results[k], results[k] + 1),
-                                np.append(self.light_curves[k]['relative flux'], self.light_curves[k]['relative flux']),
-                                np.append(self.light_curves[k]['relative flux error'], self.light_curves[k]['relative flux error']),
+                                np.append(self.light_curves[k].counts, self.light_curves[k].counts),
+                                np.append(self.light_curves[k].counts_err, self.light_curves[k].counts_err),
                                 marker='.', ms=2, linestyle='none', color=self.colours[k], ecolor='grey', elinewidth=1)
                 axs[i].set_title(k)
             
@@ -293,7 +254,7 @@ class Analyser:
             axs[len(self.light_curves)//2].set_ylabel('Relative Flux')
         
         return results
-    
+
     def phase_bin(self, period: Quantity, n_bins: int = 10, plot=True) -> Dict[str, Dict[str, NDArray]]:
         """
         Phase bin each light curve using the given period.
@@ -319,12 +280,12 @@ class Analyser:
         results = {}
         
         for fltr, lc in self.light_curves.items():
-            phase = (lc['TDB'] % period) / period
+            phase = (lc.time % period) / period
             bins = [[] for i in range(n_bins + 1)]
             
             for i in range(len(phase)):
                 bin_num = int(phase[i] * (n_bins + 1))
-                bins[bin_num].append(lc['relative flux'][i])
+                bins[bin_num].append(lc.counts[i])
             
             # remove final bin (it will be the same as the first)
             bins.pop()
@@ -361,11 +322,10 @@ class Analyser:
             plt.show()
         
         return results
-    
+
     def rebin(self, dt: Quantity) -> 'Analyser':
         """
-        Rebin the light curves to a new time resolution. This is useful for smoothing the light curves for presentation
-        or for FFT-based analyses.
+        Rebin the light curves to a new time resolution.
         
         Parameters
         ----------
@@ -379,13 +339,13 @@ class Analyser:
             A new `Analyser` object containing the rebinned light curves.
         """
         
-        def rebin_lc(lc: pd.DataFrame, dt: Quantity):
+        def rebin_lc(lc: Lightcurve, dt: Quantity):
             """
             Rebin a light curve to a specified time resolution.
             
             Parameters
             ----------
-            lc : pd.DataFrame
+            lc : Lightcurve
                 The light curve to rebin.
             dt : float
                 The desired time bin width for rebinned data.
@@ -397,48 +357,42 @@ class Analyser:
             """
             
             dt = float(dt.to(u.day).value)  # convert from given units to days
-            current_dt = np.min(np.diff(lc['TDB'].values))
+            current_dt = np.min(np.diff(lc.time))
             minimum_number_of_points = int(dt // current_dt)
             
-            new_x = np.arange(lc['TDB'].values[0], lc['TDB'].values[-1] + dt / 2, dt) + dt / 2
+            new_x = np.arange(lc.time[0], lc.time[-1] + dt / 2, dt) + dt / 2
             new_y = np.zeros_like(new_x)
             new_yerr = np.zeros_like(new_x)
             
             for i in range(len(new_x)):
-                mask = (lc['TDB'].values >= new_x[i] - dt / 2) & (lc['TDB'].values < new_x[i] + dt / 2)
+                mask = (lc.time >= new_x[i] - dt / 2) & (lc.time < new_x[i] + dt / 2)
                 
                 if np.any(mask) and np.sum(mask) >= minimum_number_of_points:
-                    new_y[i] = np.mean(lc['relative flux'].values[mask])
-                    new_yerr[i] = np.sqrt(np.sum(lc['relative flux error'].values[mask]**2)) / np.sum(mask)
+                    new_y[i] = np.mean(lc.counts[mask])
+                    new_yerr[i] = np.sqrt(np.sum(lc.counts_err[mask]**2)) / np.sum(mask)
                 else:
                     new_y[i] = np.nan
                     new_yerr[i] = np.nan
             
             # drop NaNs
             valid_mask = ~np.isnan(new_y)
-            
-            rebinned_lc = pd.DataFrame({
-                'TDB': new_x[valid_mask],
-                'relative flux': new_y[valid_mask],
-                'relative flux error': new_yerr[valid_mask]
-            })
+            rebinned_lc = Lightcurve(new_x[valid_mask], new_y[valid_mask],
+                                     err=new_yerr[valid_mask])
             
             return rebinned_lc
         
         rebinned_light_curves = {}
         
         for fltr, lc in self.light_curves.items():
-            rebinned_light_curves[fltr] = rebin_lc(lc.copy(), dt)
+            rebinned_light_curves[fltr] = rebin_lc(lc, dt)
         
         return Analyser(rebinned_light_curves, self.out_directory, self.prefix, self.phot_type)
-    
+
     def compute_averaged_periodograms(self, dt: Quantity, segment_length: Quantity,
-                                      scale: Literal['linear', 'loglog'] = 'loglog',
-                                      rebin_frequencies: bool = False, rebin_factor: float = 1.02,
-                                      show_plot=True) -> Dict[str, NDArray]:
+                                      rebin_frequencies: bool = False,
+                                      rebin_factor: float = 0.02) -> Dict[str, AveragedPowerspectrum]:
         """
-        Compute the periodogram for each light curve using the FFT. All light curves are assumed to have the same
-        time resolution, so it's a good idea to call `Analyser.rebin()` before calling this method.
+        Compute the averaged periodogram for each light curve using Stingray.
         
         Parameters
         ----------
@@ -448,85 +402,177 @@ class Analyser:
         segment_length : Quantity
             The length of the segment to use for the periodogram. This must be an astropy `Quantity` with units of time
             (e.g., `astropy.units.s`) to ensure correct handling of the segment length.
-        scale : Literal['linear', 'loglog'], optional
-            The scale to use for the plot, by default 'loglog'. This does not affect the periodogram frequencies.
         rebin_frequencies : bool, optional
             Whether to rebin the frequencies to a logarithmic scale, by default False. If True, the frequencies will be
             rebinned using `rebin_factor`.
         rebin_factor : float, optional
-            The factor by which to rebin the frequencies, by default 1.02. This is only used if `rebin_frequencies` is
-            True.
-        show_plot : bool, optional
-            Whether to show the plot of the periodogram(s), by default True.
+            The factor by which to rebin the frequencies, by default 0.02. This is only used if
+            `rebin_frequencies` is True.
         
         Returns
         -------
-        Dict[str, NDArray]
-            A dictionary containing the periodograms for each light curve.
+        Dict[str, AveragedPowerspectrum]
+            A dictionary containing the averaged periodograms for each light curve.
         """
-        
-        def rebin_freqs(freqs: NDArray, powers: NDArray, power_errs: NDArray,
-                              factor: float) -> Tuple[NDArray, NDArray, NDArray]:
-            
-            new_freqs = []
-            new_powers = []
-            new_power_errs = []
-            
-            prev = 0
-            i = 1
-            
-            bin_width = freqs[0]
-            
-            while i < len(freqs):
-                if freqs[i] - freqs[prev] >= bin_width:
-                    new_freqs.append(np.mean(freqs[prev:i]))
-                    new_powers.append(np.mean(powers[prev:i]))
-                    new_power_errs.append(np.sqrt(np.sum(power_errs[prev:i]**2)) / (i - prev))
-                    prev = i
-                    bin_width *= factor
-                i += 1
-            
-            return np.array(new_freqs), np.array(new_powers), np.array(new_power_errs)
         
         segment_length = segment_length.to(u.day).value  # convert from given units to days
         dt = dt.to(u.day).value  # convert from given units to days
         
-        number_of_points_per_segment = int(segment_length // dt)
-        frequencies = np.fft.rfftfreq(number_of_points_per_segment, dt)[1:]  # skip the zero frequency
+        # define normalised light curves if they do not already exist
+        if not hasattr(self, 'normalised_light_curves'):
+            self.normalised_light_curves = {}
+            for fltr, lc in self.light_curves.items():
+                mean_flux = np.mean(lc.counts)
+                self.normalised_light_curves[fltr] = Lightcurve(lc.time, lc.counts / mean_flux, err=lc.counts_err / mean_flux)
         
-        segment_edges = np.arange(self.light_curves[list(self.light_curves.keys())[0]]['TDB'].min(),
-                                  self.light_curves[list(self.light_curves.keys())[0]]['TDB'].max() + segment_length,
-                                  segment_length)
         results = {}
         
-        for fltr, lc in self.light_curves.items():
-            segment_powers = []
-            results[fltr] = {}
-            prev = 0.
+        for fltr, lc in self.normalised_light_curves.items():
+            lc_segments = segment_lc(lc, dt, segment_length)
             
-            for edge in segment_edges[1:]:
-                mask = (lc['TDB'].values >= prev) & (lc['TDB'].values < edge)
-                if np.sum(mask) == number_of_points_per_segment:
-                    segment_powers.append(2 * dt / number_of_points_per_segment * np.abs(np.fft.rfft(lc['relative flux'].values[mask])[1:])**2)
-                prev = edge
+            print(f'[OPTICAM] Computing averaged periodogram for {fltr} with {len(lc_segments)} segments.')
             
-            n_segments = len(segment_powers)
-            if n_segments < 10:
-                warnings.warn(f'[OPTICAM] Only {n_segments} segments were found for filter {fltr}. Consider reducing segment_length to increase the number of segments.')
-            print(f'[OPTICAM] {n_segments} segments averaaged for filter {fltr}.')
-            
-            results[fltr]['powers'] = np.mean(segment_powers, axis=0)
-            results[fltr]['power_errs'] = np.std(segment_powers, axis=0) / np.sqrt(len(segment_powers))
+            periodogram = AveragedPowerspectrum.from_lc_iterable(lc_segments, dt, norm='frac')
             
             if rebin_frequencies:
-                rebinned_freqs, rebinned_powers, rebinned_power_errs = rebin_freqs(frequencies,
-                                                                                   results[fltr]['powers'],
-                                                                                   results[fltr]['power_errs'],
-                                                                                   rebin_factor)
-                results[fltr]['powers'] = rebinned_powers
-                results[fltr]['power_errs'] = rebinned_power_errs
+                periodogram = periodogram.rebin_log(rebin_factor)
+            
+            results[fltr] = periodogram
         
-        if rebin_frequencies:
-            return rebinned_freqs, results
-        else:
-            return frequencies, results
+        return results
+
+    def compute_cross_spectra(self, dt: Quantity | float, segment_length: Quantity | float,
+                              rebin_frequencies: bool = False, 
+                              rebin_factor: float = 0.02) -> Dict[str, AveragedCrossspectrum]:
+        """
+        Compute the cross spectrum for each pair of light curves using Stingray.
+        
+        Parameters
+        ----------
+        dt : Quantity | float
+            The time resolution of the light curves. Can either be a float (where the units are assumed to be the same
+            as the light curve time units) or an astropy `Quantity` with units of time (e.g., `astropy.units.s`) to
+            ensure correct handling of the time resolution.
+        segment_length : Quantity | float
+            The length of the segment to use for the periodogram. Can either be a float (where the units are assumed
+            to be the same as the light curve time units) or an astropy `Quantity` with units of time (e.g.,
+            `astropy.units.s`) to ensure correct handling of the segment length.
+        rebin_frequencies : bool, optional
+            Whether to rebin the frequencies to a logarithmic scale, by default False. If True, the frequencies will be
+            rebinned using `rebin_factor`.
+        rebin_factor : float, optional
+            The factor by which to rebin the frequencies, by default 0.02. This is only used if
+            `rebin_frequencies` is True.
+        
+        Returns
+        -------
+        Dict[str, Dict[str, NDArray]]
+            A dictionary containing the cross spectra for each pair of light curves.
+        """
+        
+        # ensure dt and segment_length are in units of days
+        if isinstance(dt, u.Quantity):
+            dt = dt.to(u.day).value
+        if isinstance(segment_length, u.Quantity):
+            segment_length = segment_length.to(u.day).value
+        
+        # define normalised light curves if they do not already exist
+        if not hasattr(self, 'normalised_light_curves'):
+            self.normalised_light_curves = {}
+            for fltr, lc in self.light_curves.items():
+                mean_flux = np.mean(lc.counts)
+                self.normalised_light_curves[fltr] = Lightcurve(lc.time, lc.counts / mean_flux, err=lc.counts_err / mean_flux)
+        
+        results = {}
+        fltrs = list(self.normalised_light_curves.keys())
+        
+        for fltr1, lc1 in self.normalised_light_curves.items():
+            i = fltrs.index(fltr1)
+            for fltr2, lc2 in self.normalised_light_curves.items():
+                j = fltrs.index(fltr2)
+                if i >= j:
+                    continue
+                
+                lc_segments_1 = segment_lc(lc1, float(dt), float(segment_length))
+                lc_segments_2 = segment_lc(lc2, float(dt), float(segment_length))
+                
+                lc_segments_1, lc_segments_2 = get_matching_segments(lc_segments_1, lc_segments_2)
+                
+                print(f'[OPTICAM] Computing cross spectrum for {fltr1} and {fltr2} with {len(lc_segments_1)} segments.')
+                
+                # use second light curve as reference
+                cross_spectrum = AveragedCrossspectrum.from_lc_iterable(lc_segments_2, lc_segments_1, dt,
+                                                                        segment_length)
+                
+                if rebin_frequencies:
+                    cross_spectrum = cross_spectrum.rebin_log(rebin_factor)
+                
+                results[f'{fltr1}_{fltr2}'] = cross_spectrum
+        
+        return results
+
+
+def segment_lc(lc: Lightcurve, dt: float, segment_length: float) -> List[Lightcurve]:
+    """
+    Segment a light curve into smaller segments of a given length.
+    
+    Parameters
+    ----------
+    lc : Lightcurve
+        The light curve to segment.
+    dt : float
+        The time resolution of the light curve.
+    segment_length : float
+        The length of each segment.
+    
+    Returns
+    -------
+    List[Lightcurve]
+        A list of segmented light curves.
+    """
+    
+    n_decimal_places = max(len(str(segment_length).split('.')[1]), len(str(dt).split('.')[1]))
+    
+    N = round(segment_length / dt)  # number of points in each segment
+    
+    segments = []
+    
+    i = 0
+    while i + N < len(lc.time):
+        if round(lc.time[i + N] - lc.time[i], n_decimal_places) == segment_length:
+            segments.append(Lightcurve(lc.time[i:i + N], lc.counts[i:i + N], err=lc.counts_err[i:i + N]))
+        i += N
+    # check the last segment
+    if round(lc.time[-1] - lc.time[i], n_decimal_places) == segment_length:
+        segments.append(Lightcurve(lc.time[i:], lc.counts[i:], err=lc.counts_err[i:]))
+    
+    return segments
+
+def get_matching_segments(segments1: List[Lightcurve], segments2: List[Lightcurve]) -> Tuple[List[Lightcurve], List[Lightcurve]]:
+    """
+    Get matching segments from two lists of light curves.
+    
+    Parameters
+    ----------
+    segments1 : List[Lightcurve]
+        The first list of light curves.
+    segments2 : List[Lightcurve]
+        The second list of light curves.
+    
+    Returns
+    -------
+    Tuple[List[Lightcurve], List[Lightcurve]]
+        A tuple containing the matching segments from both lists.
+    """
+    
+    matching_segments1 = []
+    matching_segments2 = []
+    
+    for seg1 in segments1:
+        for seg2 in segments2:
+            if np.isclose(seg1.time[0], seg2.time[0]) and np.isclose(seg1.time[-1], seg2.time[-1]):
+                matching_segments1.append(seg1)
+                matching_segments2.append(seg2)
+                break
+    
+    return matching_segments1, matching_segments2
