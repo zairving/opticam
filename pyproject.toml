@@ -22,6 +22,7 @@ dependencies = [
     "photutils == 2.0.2",
     "scikit-image == 0.24.0",
     "scipy == 1.14.1",
+    "stingray == 2.2.6",
     "tqdm == 4.66.6",
 ]
 
