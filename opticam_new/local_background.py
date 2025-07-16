@@ -1,4 +1,4 @@
-from photutils.aperture import ApertureStats, CircularAnnulus, EllipticalAnnulus
+from photutils.aperture import ApertureStats, EllipticalAnnulus
 from abc import ABC, abstractmethod
 from numpy.typing import NDArray
 from typing import Tuple
@@ -113,8 +113,20 @@ class DefaultLocalBackground(BaseLocalBackground):
         if semiminor_axis is None:
             semiminor_axis = semimajor_axis
         
-        annulus = EllipticalAnnulus(position, self.r_in_scale * semimajor_axis, self.r_out_scale * semimajor_axis,
-                                    self.r_out_scale * semiminor_axis, self.r_in_scale * semiminor_axis, theta)
-        stats = ApertureStats(data, annulus, error=error, sigma_clip=self.sigma_clip)
+        annulus = EllipticalAnnulus(
+            position,
+            self.r_in_scale * semimajor_axis,
+            self.r_out_scale * semimajor_axis,
+            self.r_out_scale * semiminor_axis,
+            self.r_in_scale * semiminor_axis,
+            theta,
+            )
+        
+        stats = ApertureStats(
+            data,
+            annulus,
+            error=error,
+            sigma_clip=self.sigma_clip,
+            )
         
         return float(stats.mean), float(stats.std)
