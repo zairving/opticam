@@ -61,7 +61,7 @@ def __variable_function(i: float) -> float:
         The flux.
     """
     
-    return 20 * np.sin(2 * np.pi * i * 0.2)
+    return 20 * np.sin(2 * np.pi * i * 0.135)
 
 def __create_base_image(i: int, binning_scale: int) -> NDArray:
     
