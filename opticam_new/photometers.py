@@ -17,7 +17,6 @@ class BasePhotometer(ABC):
         self,
         match_sources: bool = True,
         source_matching_tolerance: float = 2.,
-        background_method: Literal['global', 'local'] = 'global',
         local_background_estimator: None | BaseLocalBackground = None,
         ):
         """
@@ -34,25 +33,18 @@ class BasePhotometer(ABC):
             The tolerance for source position matching in standard deviations (assuming a Gaussian PSF), by default 2.
             This parameter defines how far from the transformed catalogue position a source can be while still being
             considered the same source.
-        background_method : Literal['global', 'local'], optional
-            The background estimation method, by default 'global'. 'global' uses the catalogue's 2D background
-            estimator, while `local` uses the `local_background_estimator` to estimate the local background around each
-            source.
         local_background_estimator : None | BaseLocalBackground, optional
-            The local background estimator to use if `background_method` is 'local'. If None, a default local background
-            estimator will be used, which estimates the local background in an elliptical annulus around each source.
+            The local background estimator to use, by default `None`. If `None`, the catalogue's 2D background estimator
+            is used. If not `None`, this will be used instead of the catalogue's 2D background estimator.
         """
         
         self.match_sources = match_sources
         self.source_matching_tolerance = source_matching_tolerance
         
-        self.background_method = background_method
+        if local_background_estimator is not None:
+            assert callable(local_background_estimator), "[OPTICAM] local_background_estimator must be either None or a callable object."
         
-        if local_background_estimator is None:
-            self.local_background_estimator = DefaultLocalBackground(r_in_scale=5, r_out_scale=6)
-        else:
-            assert callable(local_background_estimator), "[OPTICAM] local_background_estimator must be a callable object."
-            self.local_background_estimator = local_background_estimator
+        self.local_background_estimator = local_background_estimator
 
     @abstractmethod
     def compute(
@@ -72,7 +64,7 @@ class BasePhotometer(ABC):
         Parameters
         ----------
         image : NDArray
-            The image. If `background_method` is 'global', this image will be background subtracted.
+            The image. If `local_background_estimator` is undefined, this image will be background subtracted.
         image_err : NDArray
             The error in the image.
         source_coords : NDArray
@@ -116,7 +108,7 @@ class SimplePhotometer(BasePhotometer):
         Parameters
         ----------
         image : NDArray
-            The image. If `background_method` is 'global', this image will be background subtracted.
+            The image. If `local_background_estimator` is undefined, this image will be background subtracted.
         image_err : NDArray
             The error in the image.
         source_coords : NDArray
@@ -190,7 +182,8 @@ class SimplePhotometer(BasePhotometer):
         Returns
         -------
         Tuple[float, float] | Tuple[float, float, float, float]
-            The flux and flux error. If `background_method='local'`, the background and its error are also returned.
+            The flux and flux error. If `local_background_estimator` is defined, the background and its error are also
+            returned.
         """
         
         aperture = EllipticalAperture(
@@ -201,7 +194,7 @@ class SimplePhotometer(BasePhotometer):
             )
         phot_table = aperture_photometry(data, aperture, error=error)
         
-        if self.background_method == 'global':
+        if self.local_background_estimator is None:
             return phot_table["aperture_sum"].value[0], phot_table["aperture_sum_err"].value[0]
         else:
             aperture_area = aperture.area_overlap(data)  # aperture area in pixels
@@ -312,13 +305,13 @@ class SimplePhotometer(BasePhotometer):
         self,
         ) -> Dict[str, List]:
         """
-        Define a results dictionary for the photometer depending on whether `background_method` is 'global' or 'local'.
+        Define a results dictionary for the photometer depending on whether `local_background_estimator` is defined.
         
         Returns
         -------
         Dict[str, List]
-            The results dictionary with keys 'flux', 'flux_error'. If `background_method` is 'local', the dictionary
-            will also contain 'background' and 'background_error'.
+            The results dictionary with keys 'flux', 'flux_error'. If `local_background_estimator` is defined, the
+            dictionary will also contain 'background' and 'background_error'.
         """
         
         results = {
@@ -326,7 +319,7 @@ class SimplePhotometer(BasePhotometer):
             'flux_error': [],
         }
         
-        if self.background_method == 'local':
+        if self.local_background_estimator is not None:
             results['background'] = []
             results['background_error'] = []
         
@@ -338,7 +331,8 @@ class SimplePhotometer(BasePhotometer):
         ) -> Dict[str, List]:
         """
         Pad the results dictionary with None values for flux and flux error, and background and background error if
-        `background_method` is 'local'. This is used when a source cannot be matched or its position is invalid.
+        `local_background_estimator' is defined. This is used when a source cannot be matched or its position is
+        invalid.
         
         Parameters
         ----------
@@ -354,7 +348,7 @@ class SimplePhotometer(BasePhotometer):
         results['flux'].append(None)
         results['flux_error'].append(None)
         
-        if self.background_method == 'local':
+        if self.local_background_estimator is not None:
             results['background'].append(None)
             results['background_error'].append(None)
         
@@ -380,7 +374,7 @@ class SimplePhotometer(BasePhotometer):
         phot_function : Callable
             The photometry function to use for computing the flux and flux error. This function should take the image,
             image error, position, and PSF parameters as arguments and return the flux and flux error, and optionally
-            the background and background error if `background_method` is 'local'.
+            the background and background error if `local_background_estimator` is defined.
         image : NDArray
             The image.
         image_err : NDArray
@@ -398,7 +392,7 @@ class SimplePhotometer(BasePhotometer):
             The updated results dictionary with the computed flux, flux error, and background (if applicable).
         """
         
-        if self.background_method == 'global':
+        if self.local_background_estimator is None:
             flux, flux_err = phot_function(
                 image,
                 image_err,
@@ -444,7 +438,7 @@ class OptimalPhotometer(SimplePhotometer):
         Parameters
         ----------
         image : NDArray
-            The image. If `background_method` is 'global', this image will be background subtracted.
+            The image. If `local_background_estimator` is undefined, this image will be background subtracted.
         image_err : NDArray
             The error in the image.
         source_coords : NDArray
@@ -461,7 +455,7 @@ class OptimalPhotometer(SimplePhotometer):
         -------
         Dict[str, List]
             The results of the photometry, including 'flux', 'flux_error', and optionally 'background' and
-            'background_error' if `background_method` is 'local'.
+            'background_error' if `local_background_estimator` is defined.
         """
         
         results = self.define_results_dict()
@@ -516,7 +510,8 @@ class OptimalPhotometer(SimplePhotometer):
         Returns
         -------
         Tuple[float, float] | Tuple[float, float, float, float]
-            The flux and flux error. If `background_method='local'`, the background and its error are also returned.
+            The flux and flux error. If `local_background_estimator` is defined, the background and its error are also
+            returned.
         """
         
         # define pixel coordinates
@@ -537,7 +532,7 @@ class OptimalPhotometer(SimplePhotometer):
         flux = np.sum(image * weights)
         flux_error = np.sqrt(np.sum((error * weights)**2))
         
-        if self.background_method == 'global':
+        if self.local_background_estimator is None:
             return flux, flux_error
         else:
             # estimate local background in the annulus
