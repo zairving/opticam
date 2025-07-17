@@ -38,10 +38,6 @@ from opticam_new.photometers import BasePhotometer
 from opticam_new.helpers import camel_to_snake, pixel_scales
 
 
-
-# TODO: add FWHM column to catalogue tables?
-
-
 class Catalogue:
     """
     Create a catalogue of sources from OPTICAM data.
@@ -380,7 +376,7 @@ class Catalogue:
                     self.logger.info(f"[OPTICAM] Could not find RA and DEC keys in {file} header.")
                     pass
                 
-                mjd = get_time(hdul, file)
+                mjd = self._get_time(hdul, file)
                 
                 # separate files by filter
                 fltr = hdul[0].header["FILTER"]
@@ -641,7 +637,7 @@ class Catalogue:
         self.logger.info(f'[OPTICAM]    semiminor_sigma: {self.psf_params[fltr]["semiminor_sigma"]} binned pixels ({self.psf_params[fltr]["semiminor_sigma"] * self.binning_scale * self.rebin_factor * pixel_scales[fltr]} arcsec)')
         self.logger.info(f'[OPTICAM]    orientation: {self.psf_params[fltr]["orientation"]} degrees')
 
-    def get_data(self, file: str, return_error: bool = False) -> NDArray | Tuple[NDArray, NDArray]:
+    def _get_data(self, file: str, return_error: bool = False) -> NDArray | Tuple[NDArray, NDArray]:
         """
         Get data from a file.
         
@@ -686,7 +682,7 @@ class Catalogue:
         
         return data
 
-    def get_source_coords_from_image(self, image: NDArray, bkg: Background2D | None = None,
+    def _get_source_coords_from_image(self, image: NDArray, bkg: Background2D | None = None,
                                      away_from_edge: bool | None = False, n_sources: int | None = None) -> NDArray:
         """
         Get an array of source coordinates from an image in descending order of source brightness.
@@ -796,10 +792,10 @@ class Catalogue:
             if len(self.camera_files[fltr]) == 0:
                 continue
             
-            reference_image = self.get_data(self.camera_files[fltr][self.reference_indices[fltr]])  # get reference image
+            reference_image = self._get_data(self.camera_files[fltr][self.reference_indices[fltr]])  # get reference image
             
             try:
-                reference_coords = self.get_source_coords_from_image(reference_image, away_from_edge=True, n_sources=n_alignment_sources)  # get source coordinates in descending order of brightness
+                reference_coords = self._get_source_coords_from_image(reference_image, away_from_edge=True, n_sources=n_alignment_sources)  # get source coordinates in descending order of brightness
             except:
                 self.logger.info(f'[OPTICAM] No sources detected in {fltr} reference image ({self.camera_files[fltr][self.reference_indices[fltr]]}). Reducing threshold or npixels in the source finder may help.')
                 continue
@@ -931,7 +927,7 @@ class Catalogue:
         
         for file in batch:
             
-            data = self.get_data(file)  # get image data
+            data = self._get_data(file)  # get image data
             
             bkg = self.background(data)  # get background
             background_median = bkg.background_median
@@ -940,7 +936,7 @@ class Catalogue:
             data_clean = data - bkg.background  # remove background from image
             
             try:
-                coords = self.get_source_coords_from_image(data, bkg)  # get source coordinates in descending order of brightness
+                coords = self._get_source_coords_from_image(data, bkg)  # get source coordinates in descending order of brightness
             except:
                 self.logger.info('[OPTICAM] No sources detected in ' + file + '. Reducing threshold or npixels in the source finder may help.')
                 continue
@@ -1327,7 +1323,7 @@ class Catalogue:
             The filter.
         """
         
-        data = self.get_data(file)
+        data = self._get_data(file)
         
         file_name = file.split('/')[-1].split(".")[0]
         
@@ -1427,7 +1423,7 @@ class Catalogue:
         save_name = camel_to_snake(photometer.__class__.__name__).replace('_photometer', '')
         
         # change save directory based on photometer settings
-        if photometer.background_method == 'local':
+        if photometer.local_background_estimator is not None:
             save_name += '_annulus'
         if not photometer.match_sources:
             save_name = 'forced_' + save_name
@@ -1510,9 +1506,9 @@ class Catalogue:
         file: str,
         ) -> Dict[str, List]:
         
-        image, error = self.get_data(file, return_error=True)  # get image data and error
+        image, error = self._get_data(file, return_error=True)  # get image data and error
         
-        if photometer.background_method == 'global':
+        if photometer.local_background_estimator is None:
             bkg = self.background(image)  # get 2D background
             image = image - bkg.background  # remove background from image
             error = np.sqrt(error**2 + bkg.background_rms**2)  # propagate error
@@ -1546,139 +1542,150 @@ class Catalogue:
         return results
 
 
-def get_time(hdul, file: str) -> float:
-    """
-    Parse the time from the header of a FITS file.
-
-    Parameters
-    ----------
-    hdul
-        The FITS file.
-    file : str
-        The path to the file.
-    
-    Returns
-    -------
-    float
-        The time of the observation in MJD.
-
-    Raises
-    ------
-    KeyError
-        _description_
-    KeyError
-        _description_
-    ValueError
-        _description_
-    """
-    
-    # parse file time
-    if "GPSTIME" in hdul[0].header.keys():
-        gpstime = hdul[0].header["GPSTIME"]
-        split_gpstime = gpstime.split(" ")
-        date = split_gpstime[0]  # get date
-        time = split_gpstime[1].split(".")[0]  # get time (ignoring decimal seconds)
-        mjd = Time(date + "T" + time, format="fits").mjd
-    elif "UT" in hdul[0].header.keys():
-        try:
-            mjd = Time(hdul[0].header["UT"].replace(" ", "T"), format="fits").mjd
-        except:
+    @staticmethod
+    def _get_time(
+        hdul,
+        file: str,
+        ) -> float:
+        """
+        Parse the time from the header of a FITS file.
+        
+        Parameters
+        ----------
+        hdul
+            The FITS file.
+        file : str
+            The path to the file.
+        
+        Returns
+        -------
+        float
+            The time of the observation in MJD.
+        
+        Raises
+        ------
+        KeyError
+            If neither 'GPSTIME' nor 'UT' keys are found in the header.
+        ValueError
+            If the time cannot be parsed from the header.
+        """
+        
+        # parse file time
+        if "GPSTIME" in hdul[0].header.keys():
+            gpstime = hdul[0].header["GPSTIME"]
+            split_gpstime = gpstime.split(" ")
+            date = split_gpstime[0]  # get date
+            time = split_gpstime[1].split(".")[0]  # get time (ignoring decimal seconds)
+            mjd = Time(date + "T" + time, format="fits").mjd
+        elif "UT" in hdul[0].header.keys():
             try:
-                date = hdul[0].header['DATE-OBS']
-                time = hdul[0].header['UT'].split('.')[0]
-                mjd = Time(date + 'T' + time, format='fits').mjd
+                mjd = Time(hdul[0].header["UT"].replace(" ", "T"), format="fits").mjd
             except:
-                raise ValueError('Could not parse time from ' + file + ' header.')
-    else:
-        raise KeyError(f"[OPTICAM] Could not find GPSTIME or UT key in {file} header.")
-    
-    return mjd
+                try:
+                    date = hdul[0].header['DATE-OBS']
+                    time = hdul[0].header['UT'].split('.')[0]
+                    mjd = Time(date + 'T' + time, format='fits').mjd
+                except:
+                    raise ValueError('Could not parse time from ' + file + ' header.')
+        else:
+            raise KeyError(f"[OPTICAM] Could not find GPSTIME or UT key in {file} header.")
+        
+        return mjd
 
-def identify_gaps(files: List[str], log_dir: str):
-    """
-    Identify gaps in the observation sequence and logs them to log_dir/diag/gaps.txt.
-    
-    Parameters
-    ----------
-    files : List[str]
-        The list of files for a single filter.
-    """
-    
-    file_times = {}
-    
-    for file in tqdm(files, desc='[OPTICAM] Identifying gaps'):
-        with fits.open(file) as hdul:
-            file_times[file] = get_time(hdul, file)
-    
-    sorted_files = dict(sorted(file_times.items(), key=lambda x: x[1]))
-    times = np.array(sorted_files.values()).flatten()
-    diffs = np.diff(times)
-    median_exposure_time = np.median(diffs)
-    
-    gaps = np.where(diffs > 2*median_exposure_time)[0]
-    
-    if len(gaps) > 0:
-        print(f"[OPTICAM] Found {len(gaps)} gaps in the observation sequence.")
-        with open(log_dir + "diag/gaps.txt", "w") as file:
-            file.write(f"Median exposure time: {median_exposure_time} d\n")
-            for gap in gaps:
-                file.write(f"Gap between {list(sorted_files.keys())[gap]} and {list(sorted_files.keys())[gap + 1]}: {diffs[gap]} d\n")
-    else:
-        print("[OPTICAM] No gaps found in the observation sequence.")
+    def identify_gaps(
+        self,
+        files: List[str],
+        ) -> None:
+        """
+        Identify gaps in the observation sequence and logs them to log_dir/diag/gaps.txt.
+        
+        Parameters
+        ----------
+        files : List[str]
+            The list of files for a single filter.
+        """
+        
+        file_times = {}
+        
+        for file in tqdm(files, desc='[OPTICAM] Identifying gaps'):
+            with fits.open(file) as hdul:
+                file_times[file] = self._get_time(hdul, file)
+        
+        sorted_files = dict(sorted(file_times.items(), key=lambda x: x[1]))
+        times = np.array(sorted_files.values()).flatten()
+        diffs = np.diff(times)
+        median_exposure_time = np.median(diffs)
+        
+        gaps = np.where(diffs > 2 * median_exposure_time)[0]
+        
+        if len(gaps) > 0:
+            print(f'[OPTICAM] Found {len(gaps)} gaps in the observation sequence.')
+            with open(os.path.join(self.out_directory, 'diag/gaps.txt'), 'w') as file:
+                file.write(f"Median exposure time: {median_exposure_time} d\n")
+                for gap in gaps:
+                    file.write(f"Gap between {list(sorted_files.keys())[gap]} and {list(sorted_files.keys())[gap + 1]}: {diffs[gap]} d\n")
+        else:
+            print('[OPTICAM] No gaps found in the observation sequence.')
 
-def apply_barycentric_correction(original_times: ArrayLike, coords: SkyCoord) -> ArrayLike:
-    """
-    Apply barycentric corrections to a time vector, using an optional reference time.
-    
-    Parameters
-    ----------
-    times : ArrayLike
-        The times to correct.
-    coords : SkyCoord
-        The coordinates of the source.
-    
-    Returns
-    -------
-    ArrayLike
-        The corrected times.
-    """
-    
-    # OPTICAM location
-    observer_coords = EarthLocation.from_geodetic(lon=-115.463611*u.deg, lat=31.044167*u.deg, height=2790*u.m)
-    
-    
-    # format the times
-    times = Time(original_times, format='mjd', scale='utc', location=observer_coords)
-    
-    # compute light travel time to barycentre
-    ltt_bary = times.light_travel_time(coords)
-    
-    # return the corrected times using TDB timescale
-    return (times.tdb + ltt_bary).value
+    @staticmethod
+    def _apply_barycentric_correction(
+        original_times: float | NDArray,
+        coords: SkyCoord,
+        ) -> float | NDArray:
+        """
+        Apply barycentric corrections to a time array.
+        
+        Parameters
+        ----------
+        times : float | NDArray
+            The time(s) to correct.
+        coords : SkyCoord
+            The coordinates of the source.
+        
+        Returns
+        -------
+        float | NDArray
+            The corrected time(s).
+        """
+        
+        # OPTICAM location
+        observer_coords = EarthLocation.from_geodetic(lon=-115.463611*u.deg, lat=31.044167*u.deg, height=2790*u.m)
+        
+        # format the times
+        times = Time(original_times, format='mjd', scale='utc', location=observer_coords)
+        
+        # compute light travel time to barycentre
+        ltt_bary = times.light_travel_time(coords)
+        
+        return (times.tdb + ltt_bary).value
 
-def _rebin_image(image: NDArray, factor: int) -> NDArray:
-    """
-    Rebin an image by a given factor.
-    
-    Parameters
-    ----------
-    image : NDArray
-        The image to rebin.
-    factor : int
-        The factor to rebin by.
-    
-    Returns
-    -------
-    NDArray
-        The rebinned image.
-    """
-    
-    if image.shape[0] % factor != 0 or image.shape[1] % factor != 0:
-        raise ValueError("[OPTICAM] The dimensions of the input data must be divisible by the rebinning factor.")
-    
-    # reshape the array to make it ready for block summation
-    shape = (image.shape[0] // factor, factor, image.shape[1] // factor, factor)
-    reshaped_data = image.reshape(shape)
-    
-    # return rebinned image
-    return reshaped_data.sum(axis=(1, 3))
+    @staticmethod
+    def _rebin_image(
+        image: NDArray,
+        factor: int,
+        ) -> NDArray:
+        """
+        Rebin an image by a given factor in both dimensions.
+        
+        Parameters
+        ----------
+        image : NDArray
+            The image to rebin.
+        factor : int
+            The factor to rebin by.
+        
+        Returns
+        -------
+        NDArray
+            The rebinned image.
+        """
+        
+        if image.shape[0] % factor != 0 or image.shape[1] % factor != 0:
+            raise ValueError(f'[OPTICAM] The dimensions of the input data must be divisible by the rebinning factor. Got shape {image.shape} and factor {factor}.')
+        
+        # reshape the array to efficiently rebin
+        shape = (image.shape[0] // factor, factor, image.shape[1] // factor, factor)
+        reshaped_data = image.reshape(shape)
+        
+        # rebin image by summing over the new axes
+        return reshaped_data.sum(axis=(1, 3))
