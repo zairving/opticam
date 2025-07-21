@@ -10,7 +10,7 @@ from opticam_new.helpers import fwhm_scale
 
 class BasePhotometer(ABC):
     """
-    Base class for performing photometry on OTICAM catalogues.
+    Base class for performing photometry on OPTICAM catalogues.
     """
 
     def __init__(
@@ -40,6 +40,7 @@ class BasePhotometer(ABC):
         
         self.match_sources = match_sources
         self.source_matching_tolerance = source_matching_tolerance
+        self.scale_factor = 1 if match_sources else 2  # use a larger aperture if source matching is disabled
         
         if local_background_estimator is not None:
             assert callable(local_background_estimator), "[OPTICAM] local_background_estimator must be either None or a callable object."
@@ -188,10 +189,11 @@ class SimplePhotometer(BasePhotometer):
         
         aperture = EllipticalAperture(
             position,
-            fwhm_scale * psf_params['semimajor_sigma'],
-            fwhm_scale * psf_params['semiminor_sigma'],
+            fwhm_scale * self.scale_factor * psf_params['semimajor_sigma'],
+            fwhm_scale * self.scale_factor * psf_params['semiminor_sigma'],
             psf_params['orientation'],
             )
+        
         phot_table = aperture_photometry(data, aperture, error=error)
         
         if self.local_background_estimator is None:
