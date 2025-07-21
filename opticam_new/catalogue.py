@@ -19,7 +19,7 @@ import matplotlib.colors as mcolors
 from multiprocessing import cpu_count
 from functools import partial
 from PIL import Image
-from typing import Any, List, Dict, Literal, Callable, Tuple
+from typing import List, Dict, Literal, Callable, Tuple
 from numpy.typing import ArrayLike, NDArray
 from scipy.spatial.distance import cdist
 from scipy.optimize import linear_sum_assignment
@@ -1045,15 +1045,6 @@ class Catalogue:
                                             self.catalogues[fltr]["ycentroid"][j]),
                                         radius=radius, edgecolor=self.colours[j % len(self.colours)], 
                                         facecolor="none", lw=1))
-                # ax[i].add_patch(Circle(xy=(self.catalogues[fltr]["xcentroid"][j],
-                #                             self.catalogues[fltr]["ycentroid"][j]),
-                #                        radius=self.local_background.r_in_scale*radius,
-                #                        edgecolor=self.colours[j % len(self.colours)], facecolor="none", lw=1, ls=":"))
-                # ax[i].add_patch(Circle(xy=(self.catalogues[fltr]["xcentroid"][j], 
-                #                             self.catalogues[fltr]["ycentroid"][j]),
-                #                         radius=self.local_background.r_out_scale*radius,
-                #                         edgecolor=self.colours[j % len(self.colours)], facecolor="none", lw=1,
-                #                         ls=":"))
                 ax[i].text(self.catalogues[fltr]["xcentroid"][j] + 1.05*radius,
                             self.catalogues[fltr]["ycentroid"][j] + 1.05*radius, j + 1, 
                             color=self.colours[j % len(self.colours)])
@@ -1401,7 +1392,10 @@ class Catalogue:
                 os.remove(self.out_directory + f"diag/{fltr}_gif_frames/{file}")
 
 
-    def photometry(self, photometer: BasePhotometer) -> None:
+    def photometry(
+        self,
+        photometer: BasePhotometer,
+        ) -> None:
         """
         Perform photometry on the catalogues using the provided photometer.
         
@@ -1421,7 +1415,7 @@ class Catalogue:
         if not photometer.match_sources:
             save_name = 'forced_' + save_name
         
-        print(f'[OPTICAM] Photometry products will be saved to {save_name}_light_curves in {self.out_directory}.')
+        print(f'[OPTICAM] Photometry results will be saved to {save_name}_light_curves in {self.out_directory}.')
         
         save_dir = os.path.join(self.out_directory, f"{save_name}_light_curves")
         if not os.path.isdir(save_dir):
@@ -1444,7 +1438,7 @@ class Catalogue:
                 self.camera_files[fltr],
                 max_workers=self.number_of_processors,
                 disable=not self.verbose,
-                desc=f"[OPTICAM] Performing photometry for {fltr}",
+                desc=f"[OPTICAM] Performing photometry on {fltr} images",
                 chunksize=chunk_size,
                 bar_format=bar_format,
                 tqdm_class=tqdm,
@@ -1462,7 +1456,7 @@ class Catalogue:
             for i in tqdm(
                 range(len(self.catalogues[fltr])),
                 disable=not self.verbose,
-                desc=f"[OPTICAM] Saving {save_name} photometry results for {fltr} sources",
+                desc=f"[OPTICAM] Saving {fltr} photometry results",
                 ):
                 
                 # unpack results for ith source
