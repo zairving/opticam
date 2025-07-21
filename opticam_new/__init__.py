@@ -3,8 +3,7 @@ from opticam_new.background import DefaultBackground
 from opticam_new.finder import DefaultFinder
 from opticam_new.catalogue import Catalogue
 from opticam_new.differential_photometer import DifferentialPhotometer
-from opticam_new.photometers import BasePhotometer, SimplePhotometer, OptimalPhotometer
-from opticam_new.local_background import BaseLocalBackground, DefaultLocalBackground
-from opticam_new import helpers
-from opticam_new import correctors
+from opticam_new.photometers import SimplePhotometer, OptimalPhotometer
+from opticam_new.local_background import DefaultLocalBackground
+from opticam_new.correctors import FlatFieldCorrector
 from opticam_new.generate import create_synthetic_flats, create_synthetic_observations
