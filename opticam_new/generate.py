@@ -8,8 +8,15 @@ from typing import List
 from opticam_new.helpers import bar_format
 
 
-def __add_two_dimensional_gaussian_to_image(image: NDArray, x_centroid: float, y_centroid: float, peak_flux: float,
-                                            sigma_x: float, sigma_y: float, theta: float) -> NDArray:
+def _add_two_dimensional_gaussian_to_image(
+    image: NDArray,
+    x_centroid: float,
+    y_centroid: float,
+    peak_flux: float,
+    sigma_x: float,
+    sigma_y: float,
+    theta: float,
+    ) -> NDArray:
     """
     Add a source to an image.
     
@@ -46,14 +53,16 @@ def __add_two_dimensional_gaussian_to_image(image: NDArray, x_centroid: float, y
     
     return image + gaussian
 
-def __variable_function(i: float) -> float:
+def _variable_function(
+    i: float,
+    ) -> float:
     """
-    Create a variable flux.
+    Variable flux to be added to a source.
     
     Parameters
     ----------
     i : float
-        The time.
+        The image index (equivalent to time).
     
     Returns
     -------
@@ -61,9 +70,27 @@ def __variable_function(i: float) -> float:
         The flux.
     """
     
-    return 20 * np.sin(2 * np.pi * i * 0.135)
+    return 5 * np.sin(2 * np.pi * i * 0.135)
 
-def __create_base_image(i: int, binning_scale: int) -> NDArray:
+def _create_base_image(
+    i: int,
+    binning_scale: int,
+    ) -> NDArray:
+    """
+    Create a base image with Poisson noise.
+    
+    Parameters
+    ----------
+    i : int
+        The image index, used to seed the random number generator.
+    binning_scale : int
+        The binning scale of the image.
+    
+    Returns
+    -------
+    NDArray
+        The noisy image.
+    """
     
     rng = np.random.default_rng(i)
     
@@ -72,10 +99,20 @@ def __create_base_image(i: int, binning_scale: int) -> NDArray:
     
     return noisy_image
 
-def __create_images(out_dir: str, filters: List[str], N_sources: int, variable_source: int, source_positions: NDArray,
-                 peak_fluxes: NDArray, i: int, binning_scale: int, circular_aperture: bool, overwrite: bool) -> None:
+def _create_images(
+    out_dir: str,
+    filters: List[str],
+    N_sources: int,
+    variable_source: int,
+    source_positions: NDArray,
+    peak_fluxes: NDArray,
+    i: int,
+    binning_scale: int,
+    circular_aperture: bool,
+    overwrite: bool,
+    ) -> None:
     """
-    Create an image for each filter.
+    Create the ith image for each filter.
     
     Parameters
     ----------
@@ -90,9 +127,9 @@ def __create_images(out_dir: str, filters: List[str], N_sources: int, variable_s
     peak_fluxes : NDArray
         The peak fluxes of the sources.
     i : int
-        The time.
+        The image index (equivalent to time).
     binning_scale : int
-        The binning scale.
+        The binning scale of the image.
     circular_aperture : bool
         Whether to apply a circular aperture shadow to the image.
     overwrite : bool
@@ -100,23 +137,36 @@ def __create_images(out_dir: str, filters: List[str], N_sources: int, variable_s
     """
     
     for fltr in filters:
-        
         if os.path.isfile(f"{out_dir}/240101{fltr}{200000000 + i}o.fits.gz") and not overwrite:
             continue
         
-        noisy_image = __create_base_image(i, binning_scale)
+        noisy_image = _create_base_image(i, binning_scale)
         if circular_aperture:
-            noisy_image = __apply_flat_field(noisy_image)  # apply circular aperture shadow
+            noisy_image = _apply_flat_field(noisy_image)  # apply circular aperture shadow
         
         # put sources in the image
         for j in range(N_sources):
             
             if j == variable_source:
-                noisy_image = __add_two_dimensional_gaussian_to_image(noisy_image, *source_positions[j],
-                                                                      peak_fluxes[j] + __variable_function(i), 1, 1, 0)
+                noisy_image = _add_two_dimensional_gaussian_to_image(
+                    noisy_image,
+                    source_positions[j][0],
+                    source_positions[j][1],
+                    peak_fluxes[j] + _variable_function(i),  # add variable flux to the source
+                    2,
+                    2,
+                    0,
+                    )
             else:
-                noisy_image = __add_two_dimensional_gaussian_to_image(noisy_image, *source_positions[j], peak_fluxes[j],
-                                                                      1, 1, 0)
+                noisy_image = _add_two_dimensional_gaussian_to_image(
+                    noisy_image,
+                    source_positions[j][0],
+                    source_positions[j][1],
+                    peak_fluxes[j],
+                    2,
+                    2,
+                    0,
+                    )
         
         # create fits file
         hdu = fits.PrimaryHDU(noisy_image)
@@ -132,11 +182,29 @@ def __create_images(out_dir: str, filters: List[str], N_sources: int, variable_s
         
         # save fits file
         try:
-            hdu.writeto(f"{out_dir}/240101{fltr}{200000000 + i}o.fits.gz", overwrite=overwrite)
+            hdu.writeto(
+                f"{out_dir}/240101{fltr}{200000000 + i}o.fits.gz",
+                overwrite=overwrite,
+                )
         except:
             pass
 
-def __apply_flat_field(image: NDArray):
+def _apply_flat_field(
+    image: NDArray,
+    ) -> NDArray:
+    """
+    Apply a circular aperture shadow to an image.
+    
+    Parameters
+    ----------
+    image : NDArray
+        The image.
+    
+    Returns
+    -------
+    NDArray
+        The image with a circular aperture shadow.
+    """
     
     # define mask to apply circular aperture
     x_mid, y_mid = image.shape[1] // 2, image.shape[0] // 2
@@ -153,15 +221,37 @@ def __apply_flat_field(image: NDArray):
     
     return image
 
-def __create_flats(out_dir: str, filters: list, i: int, binning_scale: int, overwrite: bool):
+def _create_flats(
+    out_dir: str,
+    filters: list,
+    i: int,
+    binning_scale: int,
+    overwrite: bool,
+    ) -> None:
+    """
+    Create the ith flat-field image for each filter. 
+    
+    Parameters
+    ----------
+    out_dir : str
+        The directory to save the flat-field images.
+    filters : list
+        The filters to create flat-field images for.
+    i : int
+        The index of the flat-field image (equivalent to time).
+    binning_scale : int
+        The binning scale of the flat-field image.
+    overwrite : bool
+        Whether to overwrite the flat-field image if it already exists.
+    """
     
     for fltr in filters:
         
         if os.path.isfile(f"{out_dir}/{fltr}-band_image_{i}.fits.gz") and not overwrite:
             continue
         
-        noisy_image = __create_base_image(i, binning_scale)
-        noisy_image = __apply_flat_field(noisy_image)  # apply circular aperture shadow
+        noisy_image = _create_base_image(i, binning_scale)
+        noisy_image = _apply_flat_field(noisy_image)  # apply circular aperture shadow
         
         # create fits file
         hdu = fits.PrimaryHDU(noisy_image)
@@ -181,9 +271,13 @@ def __create_flats(out_dir: str, filters: list, i: int, binning_scale: int, over
         except:
             pass
 
-def create_synthetic_flats(out_dir: str, n_flats: int = 5, overwrite: bool = False):
+def create_synthetic_flats(
+    out_dir: str,
+    n_flats: int = 5,
+    overwrite: bool = False,
+    ) -> None:
     """
-    Create synthetic flat-field images for testing and following the tutorials.
+    Create synthetic flat-field images.
     
     Parameters
     ----------
@@ -200,13 +294,23 @@ def create_synthetic_flats(out_dir: str, n_flats: int = 5, overwrite: bool = Fal
         os.makedirs(out_dir, exist_ok=True)
     
     filters = ["g", "r", "i"]
-    binning_scale = 8
+    binning_scale = 4  # use a large binning factor to reduce the size of the images
     
     for i in tqdm(range(n_flats), desc="Creating synthetic flats", bar_format=bar_format):
-        __create_flats(out_dir, filters, i, binning_scale, overwrite)
+        _create_flats(
+            out_dir,
+            filters,
+            i,
+            binning_scale,
+            overwrite,
+            )
 
-def create_synthetic_observations(out_dir: str, n_images: int = 100, circular_aperture: bool = True,
-                                  overwrite: bool = False):
+def create_synthetic_observations(
+    out_dir: str,
+    n_images: int = 100,
+    circular_aperture: bool = True,
+    overwrite: bool = False,
+    ) -> None:
     """
     Create synthetic observation data for testing and following the tutorials.
     
@@ -229,16 +333,16 @@ def create_synthetic_observations(out_dir: str, n_images: int = 100, circular_ap
     rng = np.random.default_rng(123)
     filters = ["g", "r", "i"]
     
-    binning_scale = 8
+    binning_scale = 4  # use a large binning factor to reduce the size of the images
     
     N_sources = 6
     source_positions = rng.uniform(0 + int(64 / binning_scale), int(2048 / binning_scale - 64 / binning_scale),
                                    (N_sources, 2))  # generate random source positions away from the edges
     peak_fluxes = rng.uniform(100, 1000, N_sources)  # generate random peak fluxes
-    variable_source = 1
+    variable_source = 1  # index of the variable source
     
     for i in tqdm(range(n_images), desc="Creating synthetic observations", bar_format=bar_format):
-        __create_images(
+        _create_images(
             out_dir,
             filters,
             N_sources,
