@@ -1,11 +1,18 @@
 from astropy.io import fits
 import numpy as np
-from numpy.typing import ArrayLike
-from typing import Any, List, Tuple
+from numpy.typing import ArrayLike, NDArray
+from typing import Any, Dict, List, Tuple
 from astropy.io import fits
 import json
 import re
 from types import FunctionType
+from matplotlib import pyplot as plt
+from matplotlib.patches import Circle
+from astropy.visualization import simple_norm
+from matplotlib.figure import Figure
+from matplotlib.axes import Axes
+from astropy.table import QTable
+
 
 
 # custom tqdm progress bar format
@@ -174,3 +181,77 @@ def recursive_log(param: Any, depth: int = 0, max_depth: int = 5) -> Any:
     if hasattr(param, '__dict__'):
         return {key: recursive_log(value, depth + 1, max_depth) for key, value in vars(param).items()}
     return str(param)
+
+
+def plot_catalogue(
+    filters: List[str],
+    stacked_images: Dict[str, NDArray],
+    catalogues: Dict[str, QTable],
+    colours: List[str],
+    ) -> Tuple[Figure, List[Axes]]:
+    
+    fig, axes = plt.subplots(
+        ncols=len(filters),
+        tight_layout=True,
+        figsize=(
+            len(stacked_images) * 5,
+            5,
+            ),
+        )
+    
+    if len(filters) == 1:
+        axes = [axes]
+    
+    for i, fltr in enumerate(filters):
+        
+        plot_image = np.clip(stacked_images[fltr], 0, None)  # clip negative values to zero for better visualisation
+        
+        # plot stacked image
+        axes[i].imshow(
+            plot_image,
+            origin="lower",
+            cmap="Greys_r",
+            interpolation="nearest",
+            norm=simple_norm(
+                plot_image,
+                stretch="log",
+                ),
+            )
+        
+        # get aperture radius
+        radius = 5 * np.median(catalogues[fltr]["semimajor_sigma"].value)
+        
+        for j in range(len(catalogues[fltr])):
+            # label sources
+            axes[i].add_patch(
+                Circle(
+                    xy=(
+                        catalogues[fltr]["xcentroid"][j],
+                        catalogues[fltr]["ycentroid"][j],
+                        ),
+                    radius=radius,
+                    edgecolor=colours[j % len(colours)],
+                    facecolor="none",
+                    lw=1,
+                    ),
+                )
+            axes[i].text(
+                catalogues[fltr]["xcentroid"][j] + 1.05 * radius,
+                catalogues[fltr]["ycentroid"][j] + 1.05 * radius,
+                j + 1,  # source number
+                color=colours[j % len(colours)],
+                )
+            
+            # label plot
+            axes[i].set_title(fltr)
+            axes[i].set_xlabel("X")
+            
+            if i > 0:
+                axes[i].set_ylabel("Y")
+    
+    return fig, axes
+
+
+
+
+
