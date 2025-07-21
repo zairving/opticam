@@ -23,19 +23,18 @@ from typing import Any, List, Dict, Literal, Callable, Tuple
 from numpy.typing import ArrayLike, NDArray
 from scipy.spatial.distance import cdist
 from scipy.optimize import linear_sum_assignment
-from ccdproc import cosmicray_lacosmic  # replace with astroscrappy to reduce dependencies?
+from ccdproc import cosmicray_lacosmic  # TODO: replace with astroscrappy to reduce dependencies?
 import logging
-from types import FunctionType
 import warnings
 import pandas as pd
 
-from opticam_new.helpers import log_binnings, log_filters
-from opticam_new.helpers import bar_format
+from opticam_new.helpers import log_binnings, log_filters, recursive_log
+from opticam_new.helpers import bar_format, pixel_scales
 from opticam_new.background import DefaultBackground
 from opticam_new.finder import DefaultFinder
 from opticam_new.correctors import FlatFieldCorrector
 from opticam_new.photometers import BasePhotometer
-from opticam_new.helpers import camel_to_snake, pixel_scales
+from opticam_new.helpers import camel_to_snake
 
 
 class Catalogue:
@@ -116,6 +115,8 @@ class Catalogue:
         
         self.verbose = verbose
         
+        ########################################### out_directory ###########################################
+        
         self.out_directory = out_directory
         if not self.out_directory.endswith("/"):
             self.out_directory += "/"
@@ -132,6 +133,8 @@ class Catalogue:
             if self.verbose:
                 print(f"[OPTICAM] {self.out_directory} created.")
         
+        ########################################### logger ###########################################
+        
         # configure logger
         self.logger = logging.getLogger('OPTICAM')
         self.logger.setLevel(logging.INFO)
@@ -140,12 +143,14 @@ class Catalogue:
         if self.logger.hasHandlers():
             self.logger.handlers.clear()
         
-        # create console handler
+        # create file handler
         file_handler = logging.FileHandler(self.out_directory + 'info.log')
         file_handler.setLevel(logging.INFO)
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         file_handler.setFormatter(formatter)
         self.logger.addHandler(file_handler)
+        
+        ########################################### sub-directories ###########################################
         
         # create subdirectories
         if not os.path.isdir(self.out_directory + "cat"):
@@ -155,6 +160,8 @@ class Catalogue:
         if not os.path.isdir(self.out_directory + "misc"):
             os.makedirs(self.out_directory + "misc")
         
+        ########################################### data directories ###########################################
+        
         self.data_directory = data_directory
         self.c1_directory = c1_directory
         self.c2_directory = c2_directory
@@ -162,19 +169,7 @@ class Catalogue:
         
         assert self.data_directory is not None or self.c1_directory is not None or self.c2_directory is not None or self.c3_directory is not None, "[OPTICAM] At least one of data_directory, c1_directory, c2_directory, or c3_directory must be defined."
         
-        if self.data_directory is not None:
-            if not self.data_directory[-1].endswith("/"):
-                self.data_directory += "/"
-        else:
-            if self.c1_directory is not None:
-                if not self.c1_directory[-1].endswith("/"):
-                    self.c1_directory += "/"
-            if self.c2_directory is not None:
-                if not self.c2_directory[-1].endswith("/"):
-                    self.c2_directory += "/"
-            if self.c3_directory is not None:
-                if not self.c3_directory[-1].endswith("/"):
-                    self.c3_directory += "/"
+        ########################################### input params ###########################################
         
         # set some useful parameters
         self.rebin_factor = rebin_factor
@@ -185,7 +180,8 @@ class Catalogue:
         self.number_of_processors = number_of_processors
         self.show_plots = show_plots
         
-        # define file paths
+        ########################################### file paths ###########################################
+        
         self.file_paths = []
         if self.data_directory is not None:
             file_names = sorted(os.listdir(self.data_directory))
@@ -209,9 +205,14 @@ class Catalogue:
                     if file.endswith('.fit') or file.endswith('.fits') or file.endswith('.fit.gz') or file.endswith('.fits.gz'):
                         self.file_paths.append(self.c3_directory + file)
         
-        self.ignored_files = []  # list of files to ignore (e.g., if they are corrupted or do not comply with the FITS standard)
+        # list of files to ignore (e.g., if they are corrupted or do not comply with the FITS standard)
+        self.ignored_files = []
+        
+        ########################################### scan data ###########################################
         
         self._scan_data_directory()  # scan data directory
+        
+        ########################################### catalogue colours ###########################################
         
         # define colours for circling sources in catalogues
         self.colours = list(mcolors.TABLEAU_COLORS.keys())
@@ -220,8 +221,12 @@ class Catalogue:
         self.colours.pop(self.colours.index("tab:purple"))
         self.colours.pop(self.colours.index("tab:blue"))
         
+        ########################################### aperture selector ###########################################
+        
         assert callable(aperture_selector), "[OPTICAM] aperture_selector must be callable."
         self.aperture_selector = aperture_selector
+        
+        ########################################### background ###########################################
         
         if background is None:
             box_size = 2048 // self.binning_scale // self.rebin_factor // 16
@@ -233,6 +238,8 @@ class Catalogue:
             self.logger.info(f'[OPTICAM] Using custom background estimator {background.__name__} with parameters {background.__dict__}.')
         else:
             raise ValueError('[OPTICAM] background must be a callable or None. If None, the default background estimator is used.')
+        
+        ########################################### finder ###########################################
         
         if finder is None:
             effective_image_size = 2048 // self.binning_scale // self.rebin_factor
@@ -246,27 +253,32 @@ class Catalogue:
         else:
             raise ValueError('[OPTICAM] finder must be a callable or None. If None, the default source finder is used.')
         
-        # log input parameters
+        ########################################### log input params ###########################################
+        
         self._log_parameters()
+        
+        ########################################### misc attributes ###########################################
         
         self.transforms = {}  # define transforms as empty dictionary
         self.unaligned_files = []  # define unaligned files as empty list
         self.catalogues = {}  # define catalogues as empty dictionary
         self.psf_params = {}  # define PSF parameters as empty dictionary
         
-        # try to load transforms from file
+        ########################################### read transforms ###########################################
+        
         if os.path.isfile(self.out_directory + "cat/transforms.json"):
             with open(self.out_directory + "cat/transforms.json", "r") as file:
                 self.transforms.update(json.load(file))
             if self.verbose:
                 self.logger.info("[OPTICAM] Read transforms from file.")
         
-        # try to load catalogues from file
+        ########################################### read catalogues ###########################################
+        
         for fltr in list(self.camera_files.keys()):
-            if os.path.isfile(self.out_directory + f"cat/{fltr}_catalog.ecsv"):
+            if os.path.isfile(self.out_directory + f"cat/{fltr}_catalogue.ecsv"):
                 self.catalogues.update(
                     {
-                        fltr: QTable.read(self.out_directory + f"cat/{fltr}_catalog.ecsv", format="ascii.ecsv")
+                        fltr: QTable.read(self.out_directory + f"cat/{fltr}_catalogue.ecsv", format="ascii.ecsv")
                         }
                     )
                 self._set_psf_params(fltr)
@@ -471,67 +483,31 @@ class Catalogue:
         Log any and all object parameters to a JSON file.
         """
         
-        def recursive_log(param: Any, depth: int = 0, max_depth: int = 5) -> Any:
-            """
-            Recursively log parameters.
-            
-            Parameters
-            ----------
-            param : Any
-                The parameter to log.
-            depth : int, optional
-                The parameter depth, by default 0.
-            max_depth : int, optional
-                The maximum parameter depth, by default 5. This prevents infinite recursion.
-            
-            Returns
-            -------
-            Any
-                The logged parameter.
-            """
-            
-            if depth > max_depth:
-                return f"<Max depth ({max_depth}) reached>"
-            
-            if isinstance(param, FunctionType):
-                # return function name
-                return param.__name__
-            if isinstance(param, (int, float, str, bool, type(None))):
-                return param
-            if isinstance(param, (list, tuple, set)):
-                return type(param)(recursive_log(item, depth + 1, max_depth) for item in param)
-            if isinstance(param, dict):
-                return {key: recursive_log(value, depth + 1, max_depth) for key, value in param.items()}
-            if hasattr(param, '__dict__'):
-                return {key: recursive_log(value, depth + 1, max_depth) for key, value in vars(param).items()}
-            return str(param)
-        
         # get parameters
         params = dict(recursive_log(self, max_depth=5))
         
         params.update({'filters': list(self.camera_files.keys())})
         
-        # remove some parameters that are either already saved elsewhere or are not needed
-        params.pop('logger')
-        params.pop('bdts')
-        params.pop('gains')
-        params.pop('camera_files')
-        params.pop('colours')
-        params.pop('file_paths')
+        # remove some parameters that are either already saved elsewhere or are not relevant
+        params.pop('logger')  # redundant
+        params.pop('bdts')  # redundant
+        params.pop('gains')  # irrelevant
+        params.pop('camera_files')  # redundant
+        params.pop('colours')  # irrelevant
+        params.pop('file_paths')  # redundant
         
-        # if resuming from a previous run, remove some additional parameters that are already saved elsewhere
         try:
-            params.pop('transforms')
+            params.pop('transforms')  # redundant
         except KeyError:
             pass
         
         try:
-            params.pop('unaligned_files')
+            params.pop('unaligned_files')  # redundant
         except KeyError:
             pass
         
         try:
-            params.pop('catalogues')
+            params.pop('catalogues')  # redundant
         except KeyError:
             pass
         
@@ -812,7 +788,6 @@ class Catalogue:
                 partial(self._align_image,
                         reference_image=reference_image,
                         reference_coords=reference_coords,
-                        n_sources=n_alignment_sources,
                         transform_type=transform_type,
                         translation_limit=translation_limit,
                         rotation_limit=rotation_limit,
@@ -864,10 +839,19 @@ class Catalogue:
             # create catalogue of sources in stacked image and write to file
             self.catalogues.update({fltr: tbl})
             self.catalogues[fltr].write(
-                self.out_directory + f"cat/{fltr}_catalog.ecsv",
+                self.out_directory + f"cat/{fltr}_catalogue.ecsv",
                 format="ascii.ecsv",
                 overwrite=True,
                 )
+            
+            # save stacked image to file
+            np.savez_compressed(
+                os.path.join(
+                    self.out_directory,
+                    f'cat/{fltr}_stacked_image.npz'),
+                stacked_image=stacked_image,
+                )
+            
             self._set_psf_params(fltr)  # set PSF parameters for the filter
         
         self._plot_catalog(stacked_images)
@@ -888,10 +872,21 @@ class Catalogue:
                 for file in self.unaligned_files:
                     unaligned_file.write(file + "\n")
 
-    def _align_image(self, batch: List[str], reference_image: NDArray, reference_coords: NDArray, n_sources: int,
-                     transform_type: Literal['euclidean', 'similarity', 'translation'], translation_limit: int,
-                     rotation_limit: int, scaling_limit: int) -> Tuple[NDArray, Dict[str, float], Dict[str, float],
-                                                                       Dict[str, float]]:
+    def _align_image(
+        self,
+        batch: List[str],
+        reference_image: NDArray,
+        reference_coords: NDArray,
+        transform_type: Literal['euclidean', 'similarity', 'translation'],
+        translation_limit: int,
+        rotation_limit: int,
+        scaling_limit: int,
+        ) -> Tuple[
+            NDArray,
+            Dict[str, float],
+            Dict[str, float],
+            Dict[str, float],
+            ]:
         """
         Align an image based on some reference coordinates.
         
@@ -903,8 +898,6 @@ class Catalogue:
             The reference image.
         reference_coords : NDArray
             The source coordinates in the reference image.
-        n_sources : int
-            The number of sources to use for image alignment.
         transform_type : Literal['euclidean', 'similarity', 'translation']
             The type of transform to use for image alignment.
         translation_limit : int
@@ -1427,6 +1420,8 @@ class Catalogue:
             save_name += '_annulus'
         if not photometer.match_sources:
             save_name = 'forced_' + save_name
+        
+        print(f'[OPTICAM] Photometry products will be saved to {save_name}_light_curves in {self.out_directory}.')
         
         save_dir = os.path.join(self.out_directory, f"{save_name}_light_curves")
         if not os.path.isdir(save_dir):
