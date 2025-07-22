@@ -1,15 +1,20 @@
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
-from astropy.timeseries import LombScargle
-from typing import Dict, List, Literal, Tuple
+from typing import Dict, Literal
 from numpy.typing import NDArray
 import os
 import astropy.units as u
 from astropy.units.quantity import Quantity
 import json
 import warnings
-from stingray import AveragedCrossspectrum, AveragedPowerspectrum, Lightcurve
+from stingray import Lightcurve
+from matplotlib.figure import Figure
+from matplotlib.axes import Axes
+import copy
+from stingray import AveragedPowerspectrum, Powerspectrum
+from stingray import AveragedCrossspectrum, Crossspectrum
+from stingray.lombscargle import LombScarglePowerspectrum
+from stingray import CrossCorrelation
 
 
 class Analyser:
@@ -17,7 +22,14 @@ class Analyser:
     Helper class for analysing OPTICAM light curves.
     """
     
-    def __init__(self, light_curves: Dict[str, Lightcurve], out_directory: str, prefix: str, phot_type: str):
+    def __init__(
+        self,
+        light_curves: Dict[str, Lightcurve],
+        out_directory: str,
+        prefix: str | None,
+        phot_type: str,
+        show_plots: bool = True,
+        ) -> None:
         """
         Helper class for analysing OPTICAM light curves.
         
@@ -28,10 +40,13 @@ class Analyser:
         out_directory : str
             The directory to save the output files (i.e., the same directory as `out_directory` used by
             `opticam_new.Photometer` when creating the light curves).
-        prefix : str
-            The prefix to use for the output files (e.g., the name of the target).
+        prefix : str | None
+            The prefix to use for the output files (e.g., the name of the target source).
         phot_type : str
             The type of photometry used to generate the light curves. This is only used for naming the output files.
+        show_plots : bool, optional
+            Whether to render and show plots, by default `True`. If `False`, plots will not be displayed, and in
+            many cases will not be rendered at all.
         """
         
         self.light_curves = light_curves
@@ -39,6 +54,11 @@ class Analyser:
         self.out_directory = out_directory
         self.prefix = prefix
         self.phot_type = phot_type
+        self.show_plots = show_plots
+        
+        if self.show_plots:
+            if not os.path.isdir(os.path.join(self.out_directory, 'plots')):
+                os.makedirs(os.path.join(self.out_directory, 'plots'))
         
         try:
             with open(os.path.join(self.out_directory, 'misc/input_parameters.json'), 'r') as file:
@@ -56,163 +76,108 @@ class Analyser:
             'i-band': 'tab:olive',  # camera 3
             'z-band': 'tab:olive',  # camera 3
         }
-    
-    def plot(self, title: str | None = None, ax = None) -> plt.Figure:
-        """
-        Plot the light curves.
-        
-        Parameters
-        ----------
-        title : str, optional
-            _description_, by default None
-        ax : _type_, optional
-            _description_, by default None
-        
-        Returns
-        -------
-        plt.Figure
-            The figure containing the light curves.
-        """
-        
-        if ax is None:
-            fig, ax = plt.subplots(figsize=(2 * 6.4, 4.8), tight_layout=True)
-        
-        for fltr, lc in self.light_curves.items():
-            
-            t = (lc.time - self.t_ref) * 86400
-            
-            ax.errorbar(t, lc['relative flux'], lc['relative flux error'], marker='.', ms=2,
-                        linestyle='none', color=self.colours[fltr], ecolor='grey', elinewidth=1, label=fltr)
-        
-        ax.set_xlabel(f'Time from TDB {self.t_ref:.4f} [s]')
-        ax.set_ylabel('Relative Flux')
-        
-        if title is not None:
-            ax.set_title(title)
-        
-        ax.minorticks_on()
-        ax.tick_params(which='both', direction='in', top=True, right=True)
-        
-        ax.legend(markerscale=5)
-        
-        return fig
 
     def update(self, analyser: 'Analyser') -> None:
         """
-        Combine another `Analyser` object with the current one. Useful when creating relative light curves
-        individually per filter.
+        Combine another `Analyser` instance with the current one. Useful when creating relative light curves
+        individually per camera.
         
         Parameters
         ----------
         analyser : Analyser
-            The analyser object being combined with the current one.
+            The analyser instance being combined with the current one.
         """
         
         light_curves = analyser.light_curves
         filters = analyser.filters
         
+        assert not any([fltr in self.filters for fltr in filters]), '[OPTICAM] Cannot combine Analyser instances with overlapping filters.'
+        
         for fltr in filters:
-            self.light_curves[fltr] = light_curves[fltr].copy()
+            self.light_curves[fltr] = copy.copy(light_curves[fltr])
 
-    def lomb_scargle(self, frequencies: NDArray = None, scale: Literal['linear', 'log', 'loglog'] = 'linear', 
-                     show_plot=True) -> Tuple[NDArray, Dict[str, NDArray]] | Dict[str, NDArray]:
+
+    def plot_light_curves(
+        self,
+        title: str | None = None,
+        ) -> Figure:
         """
-        Compute the Lomb-Scargle periodogram for each light curve.
+        Plot the light curves.
         
         Parameters
         ----------
-        frequencies : NDArray, optional
-            The periodogram frequencies, by default None. If None, a suitable frequency range will be inferred from the
-            data.
-        scale : Literal['linear', 'log', 'loglog'], optional
-            The scale to use for the inferred frequencies, by default 'linear'. If 'linear', the frequency grid is
-            linearly spaced. If 'log', the frequency grid is logarithmically spaced. The upper and lower bounds of the
-            frequencies are always the same. If 'loglog', both the frequency and power axes will be in logarithm.
-        show_plot : bool, optional
-            Whether to show the plot of the periodogram(s), by default True.
+        title : str | None, optional
+            The figure title, by default `None`. Only applied if no axes are specified.
+        
         Returns
         -------
-        Tuple[NDArray, Dict[str, NDArray]] | Dict[str, NDArray]
-            If no frequencies are provided, returns a tuple containing the frequencies and a dictionary of periodograms
-            for each light curve. If frequencies are provided, returns a dictionary of periodograms for each light curve.
+        Figure
+            The figure containing the light curves if no axes were specified, otherwise `None`.
         """
         
-        if not os.path.isdir(f'{self.out_directory}/periodograms'):
-            os.mkdir(f'{self.out_directory}/periodograms')
+        fig, axes = plt.subplots(
+            nrows=len(self.light_curves),
+            figsize=(2 * 6.4, .5 * len(self.light_curves) * 4.8),
+            tight_layout=True,
+            sharex=True,
+            gridspec_kw={
+                "hspace": 0,
+                },
+            )
         
-        if frequencies is None:
-            
-            return_frequencies = True
-            
-            t_span = np.mean([lc.time.max() - lc.time.min() for lc in self.light_curves.values()]) * 86400
-            dt = np.min([np.min(np.diff(lc.time)) for lc in self.light_curves.values()]) * 86400
-            
-            lo = 1 / t_span
-            hi = 0.5 / dt
-            
-            if scale == 'linear':
-                frequencies = np.linspace(lo, hi, 10*round(hi/lo))
-            elif scale == 'log' or scale == 'loglog':
-                frequencies = np.logspace(np.log10(lo), np.log10(hi), 10*round(hi/lo))
+        if len(self.light_curves) == 1:
+            axes = [axes]
         
-        results = {}
+        for i, (fltr, lc) in enumerate(self.light_curves.items()):
+            axes[i].errorbar(
+                lc.time,
+                lc.counts,
+                lc.counts_err,
+                marker='none',
+                linestyle='none',
+                ecolor='grey',
+                elinewidth=1,
+                )
+            axes[i].step(
+                lc.time,
+                lc.counts,
+                where='mid',
+                color=self.colours[fltr],
+                lw=1,
+                label=fltr,
+            )
+            axes[i].text(
+                .95,
+                .9,
+                fltr,
+                fontsize='large',
+                transform=axes[i].transAxes,
+                va='top',
+                ha='right',
+            )
         
-        fig, axs = plt.subplots(tight_layout=True, nrows=len(self.light_curves), sharex=True,
-                                figsize=(6.4, (0.5 + 0.5*len(self.light_curves)*4.8)), gridspec_kw={'hspace': 0.})
+        axes[-1].set_xlabel(f'Time from BMJD {self.t_ref:.4f} [s]')
+        axes[len(self.light_curves) // 2].set_ylabel('Relative Flux')
         
-        for i in range(len(self.light_curves)):
-            
-            k = list(self.light_curves.keys())[i]
-            power = LombScargle((self.light_curves[k].time - self.light_curves[k].time.min())*86400,
-                                self.light_curves[k].counts,
-                                self.light_curves[k].counts_err).power(frequencies)
-            results[k] = power
-            
-            axs[i].plot(frequencies, power, color=self.colours[k], lw=1, label=k)
-            
-            axs[i].text(.05, .1, k, transform=axs[i].transAxes, fontsize='large', ha='left')
+        if title is not None:
+            axes[0].set_title(title)
         
-        if scale == 'log':
-            for ax in axs:
-                ax.set_xscale('log')
+        for ax in axes:
+            ax.minorticks_on()
+            ax.tick_params(which='both', direction='in', top=True, right=True)
         
-        if scale == 'loglog':
-            for ax in axs:
-                ax.set_xscale('log')
-                ax.set_yscale('log')
+        fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_type}_light_curves.png')
         
-        def freq2period(x):
-            return 1 / x
-        
-        def period2freq(x):
-            return 1 / x
-        
-        for i, ax in enumerate(axs.flatten()):
-            
-            # ax.minorticks_on()
-            ax.tick_params(which='both', direction='in', right=True)
-            
-            secax = ax.secondary_xaxis('top', functions=(freq2period, period2freq))
-            # secax.minorticks_on()
-            secax.tick_params(which='both', direction='in', top=True, labeltop=True if i == 0 else False)
-            
-            if i == 0:
-                secax.set_xlabel('Period [s]')
-        
-        axs[-1].set_xlabel('Frequency [Hz]')
-        axs[len(self.light_curves)//2].set_ylabel('Power')
-        
-        fig.savefig(f'{self.out_directory}/periodograms/{self.prefix}_{self.phot_type}_periodogram.png')
-        
-        if show_plot:
+        if self.show_plots:
             plt.show()
         
-        if return_frequencies:
-            return frequencies, results
-        
-        return results
+        return fig
 
-    def phase_fold(self, period: Quantity, plot=True) -> Dict[str, NDArray]:
+
+    def phase_fold_light_curves(
+        self,
+        period: Quantity,
+        ) -> Dict[str, NDArray]:
         """
         Phase fold each light curve using the given period.
         
@@ -221,8 +186,6 @@ class Analyser:
         period : Quantity
             The period to use for phase folding. This must be an astropy `Quantity` with units of time (e.g.,
             `astropy.units.s`) to ensure correct handling of the period.
-        plot : bool, optional
-            Whether to plot the phase folded light curves, by default True.
         
         Returns
         -------
@@ -238,7 +201,7 @@ class Analyser:
             phase = (lc.time % period) / period
             results[fltr] = phase
         
-        if plot:
+        if self.show_plots:
             fig, axs = plt.subplots(tight_layout=True, nrows=len(self.light_curves), sharex=True,
                                     figsize=(6.4, (0.5 + 0.5*len(self.light_curves)*4.8)))
             
@@ -255,7 +218,7 @@ class Analyser:
         
         return results
 
-    def phase_bin(self, period: Quantity, n_bins: int = 10, plot=True) -> Dict[str, Dict[str, NDArray]]:
+    def phase_bin_light_curves(self, period: Quantity, n_bins: int = 10, plot=True) -> Dict[str, Dict[str, NDArray]]:
         """
         Phase bin each light curve using the given period.
         
@@ -300,22 +263,29 @@ class Analyser:
             }
         
         if plot:
-            fig, axs = plt.subplots(tight_layout=True, nrows=len(self.light_curves), sharex=True,
+            fig, axes = plt.subplots(tight_layout=True, nrows=len(self.light_curves), sharex=True,
                                     figsize=(6.4, (0.5 + 0.5*len(self.light_curves)*4.8)))
             
             for i in range(len(self.light_curves)):
                 k = list(self.light_curves.keys())[i]
-                axs[i].errorbar(
+                axes[i].errorbar(
                     np.append(results[k]['phase'], results[k]['phase'] + 1),
                     np.append(results[k]['flux'], results[k]['flux']),
                     np.append(results[k]['flux error'], results[k]['flux error']),
-                    marker='.', ms=2, linestyle='none', color=self.colours[k], ecolor='grey', elinewidth=1)
-                axs[i].set_title(k)
+                    marker='none', linestyle='none', color=self.colours[k], ecolor='grey', elinewidth=1)
+                axes[i].step(
+                    np.append(results[k]['phase'], results[k]['phase'] + 1),
+                    np.append(results[k]['flux'], results[k]['flux']),
+                    where='mid',
+                    color=self.colours[k],
+                    lw=1,
+                )
+                axes[i].set_title(k)
             
-            axs[-1].set_xlabel('Phase')
-            axs[len(self.light_curves)//2].set_ylabel('Relative Flux')
+            axes[-1].set_xlabel('Phase')
+            axes[len(self.light_curves)//2].set_ylabel('Relative flux')
             
-            for ax in axs.flatten():
+            for ax in axes.flatten():
                 ax.minorticks_on()
                 ax.tick_params(which='both', direction='in', top=True, right=True)
             
@@ -323,256 +293,448 @@ class Analyser:
         
         return results
 
-    def rebin(self, dt: Quantity) -> 'Analyser':
-        """
-        Rebin the light curves to a new time resolution.
-        
-        Parameters
-        ----------
-        dt : Quantity
-            The desired time resolution. This must be an astropy `Quantity` with units of time (e.g., `astropy.units.s`)
-            to ensure correct handling of the time resolution.
-        
-        Returns
-        -------
-        Analyser
-            A new `Analyser` object containing the rebinned light curves.
-        """
-        
-        def rebin_lc(lc: Lightcurve, dt: Quantity):
-            """
-            Rebin a light curve to a specified time resolution.
-            
-            Parameters
-            ----------
-            lc : Lightcurve
-                The light curve to rebin.
-            dt : float
-                The desired time bin width for rebinned data.
-            
-            Returns
-            -------
-            Tuple[NDArray, NDArray, NDArray]
-                The rebinned time array, the rebinned data values, and the rebinned error values.
-            """
-            
-            dt = float(dt.to(u.day).value)  # convert from given units to days
-            current_dt = np.min(np.diff(lc.time))
-            minimum_number_of_points = int(dt // current_dt)
-            
-            new_x = np.arange(lc.time[0], lc.time[-1] + dt / 2, dt) + dt / 2
-            new_y = np.zeros_like(new_x)
-            new_yerr = np.zeros_like(new_x)
-            
-            for i in range(len(new_x)):
-                mask = (lc.time >= new_x[i] - dt / 2) & (lc.time < new_x[i] + dt / 2)
-                
-                if np.any(mask) and np.sum(mask) >= minimum_number_of_points:
-                    new_y[i] = np.mean(lc.counts[mask])
-                    new_yerr[i] = np.sqrt(np.sum(lc.counts_err[mask]**2)) / np.sum(mask)
-                else:
-                    new_y[i] = np.nan
-                    new_yerr[i] = np.nan
-            
-            # drop NaNs
-            valid_mask = ~np.isnan(new_y)
-            rebinned_lc = Lightcurve(new_x[valid_mask], new_y[valid_mask],
-                                     err=new_yerr[valid_mask])
-            
-            return rebinned_lc
-        
-        rebinned_light_curves = {}
-        
-        for fltr, lc in self.light_curves.items():
-            rebinned_light_curves[fltr] = rebin_lc(lc, dt)
-        
-        return Analyser(rebinned_light_curves, self.out_directory, self.prefix, self.phot_type)
 
-    def compute_averaged_periodograms(self, dt: Quantity, segment_length: Quantity,
-                                      rebin_frequencies: bool = False,
-                                      rebin_factor: float = 0.02) -> Dict[str, AveragedPowerspectrum]:
+    def compute_averaged_periodograms(
+        self,
+        segment_size: Quantity,
+        norm: Literal['frac', 'abs'] = 'frac',
+        scale: Literal['linear', 'log', 'loglog'] = 'linear',
+        ) -> Dict[str, AveragedPowerspectrum]:
         """
-        Compute the averaged periodogram for each light curve using Stingray.
+        Compute the averaged periodograms for each light curve using `stingray.AveragedPowerSpectrum`.
         
         Parameters
         ----------
-        dt : Quantity
-            The time resolution of the light curves. This must be an astropy `Quantity` with units of time
-            (e.g., `astropy.units.s`) to ensure correct handling of the time resolution.
-        segment_length : Quantity
-            The length of the segment to use for the periodogram. This must be an astropy `Quantity` with units of time
-            (e.g., `astropy.units.s`) to ensure correct handling of the segment length.
-        rebin_frequencies : bool, optional
-            Whether to rebin the frequencies to a logarithmic scale, by default False. If True, the frequencies will be
-            rebinned using `rebin_factor`.
-        rebin_factor : float, optional
-            The factor by which to rebin the frequencies, by default 0.02. This is only used if
-            `rebin_frequencies` is True.
+        segment_size : Quantity
+            The size of the segments to use for averaging the periodograms. This must be an astropy `Quantity` with
+            units of time (e.g., `astropy.units.s`) to ensure correct handling of the segment size.
+        norm : Literal['frac', 'abs'], optional
+            The normalisation to use for the periodograms, by default 'frac'. If 'frac', the resulting power is in units
+            of (rms/mean)^2 Hz^{-1}. If 'abs', the resulting power is in units of rms^2 Hz^{-1}.
+        scale : Literal['linear', 'log', 'loglog'], optional
+            The scale to use for the plot, by default 'linear'. If 'linear', all axes are linear. If 'log', the
+            frequency axis is logarithmic. If 'loglog', both the frequency and power axes are logarithmic.
         
         Returns
         -------
         Dict[str, AveragedPowerspectrum]
-            A dictionary containing the averaged periodograms for each light curve.
+            The averaged periodograms for each light curve, where the keys are the filter names and the values are
+            the averaged periodograms.
         """
         
-        segment_length = segment_length.to(u.day).value  # convert from given units to days
-        dt = dt.to(u.day).value  # convert from given units to days
-        
-        # define normalised light curves if they do not already exist
-        if not hasattr(self, 'normalised_light_curves'):
-            self.normalised_light_curves = {}
-            for fltr, lc in self.light_curves.items():
-                mean_flux = np.mean(lc.counts)
-                self.normalised_light_curves[fltr] = Lightcurve(lc.time, lc.counts / mean_flux, err=lc.counts_err / mean_flux)
+        segment_size = segment_size.to(u.day).value  # convert from given units to days
         
         results = {}
+        for k in self.light_curves.keys():
+            ps = AveragedPowerspectrum.from_lightcurve(
+                self.light_curves[k],
+                segment_size,
+                norm=norm,
+                silent=True,
+            )
+            
+            if ps.m < 30:
+                warnings.warn(f"[OPTICAM] Averaged periodogram for {k} has fewer than 30 segments. Consider reducing your segment size.")
+            
+            ps.freq /= 86400  # convert to Hz
+            results[k] = ps
         
-        for fltr, lc in self.normalised_light_curves.items():
-            lc_segments = segment_lc(lc, dt, segment_length)
-            
-            print(f'[OPTICAM] Computing averaged periodogram for {fltr} with {len(lc_segments)} segments.')
-            
-            periodogram = AveragedPowerspectrum.from_lc_iterable(lc_segments, dt, norm='frac')
-            
-            if rebin_frequencies:
-                periodogram = periodogram.rebin_log(rebin_factor)
-            
-            results[fltr] = periodogram
+        if self.show_plots:
+            fig = _plot(results, scale)
+            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_type}_L-S_periodograms.png')
+            plt.show()
         
         return results
 
-    def compute_cross_spectra(self, dt: Quantity | float, segment_length: Quantity | float,
-                              rebin_frequencies: bool = False, 
-                              rebin_factor: float = 0.02) -> Dict[str, AveragedCrossspectrum]:
+    def compute_periodograms(
+        self,
+        norm: Literal['frac', 'abs'] = 'frac',
+        scale: Literal['linear', 'log', 'loglog'] = 'linear',
+        ) -> Dict[str, Powerspectrum]:
         """
-        Compute the cross spectrum for each pair of light curves using Stingray.
+        Compute the periodograms for each light curve using `stingray.Powerspectrum`.
         
         Parameters
         ----------
-        dt : Quantity | float
-            The time resolution of the light curves. Can either be a float (where the units are assumed to be the same
-            as the light curve time units) or an astropy `Quantity` with units of time (e.g., `astropy.units.s`) to
-            ensure correct handling of the time resolution.
-        segment_length : Quantity | float
-            The length of the segment to use for the periodogram. Can either be a float (where the units are assumed
-            to be the same as the light curve time units) or an astropy `Quantity` with units of time (e.g.,
-            `astropy.units.s`) to ensure correct handling of the segment length.
-        rebin_frequencies : bool, optional
-            Whether to rebin the frequencies to a logarithmic scale, by default False. If True, the frequencies will be
-            rebinned using `rebin_factor`.
-        rebin_factor : float, optional
-            The factor by which to rebin the frequencies, by default 0.02. This is only used if
-            `rebin_frequencies` is True.
+        norm : Literal['frac', 'abs'], optional
+            The normalisation to use for the periodograms, by default 'frac'. If 'frac', the resulting power is in units
+            of (rms/mean)^2 Hz^{-1}. If 'abs', the resulting power is in units of rms^2 Hz^{-1}.
+        scale : Literal['linear', 'log', 'loglog'], optional
+            The scale to use for the plot, by default 'linear'. If 'linear', all axes are linear. If 'log', the
+            frequency axis is logarithmic. If 'loglog', both the frequency and power axes are logarithmic.
         
         Returns
         -------
-        Dict[str, Dict[str, NDArray]]
-            A dictionary containing the cross spectra for each pair of light curves.
+        Dict[str, Powerspectrum]
+            A dictionary containing the periodograms for each light curve.
         """
         
-        # ensure dt and segment_length are in units of days
-        if isinstance(dt, u.Quantity):
-            dt = dt.to(u.day).value
-        if isinstance(segment_length, u.Quantity):
-            segment_length = segment_length.to(u.day).value
+        results = {}
         
-        # define normalised light curves if they do not already exist
-        if not hasattr(self, 'normalised_light_curves'):
-            self.normalised_light_curves = {}
-            for fltr, lc in self.light_curves.items():
-                mean_flux = np.mean(lc.counts)
-                self.normalised_light_curves[fltr] = Lightcurve(lc.time, lc.counts / mean_flux, err=lc.counts_err / mean_flux)
+        for fltr, lc in self.light_curves.items():
+            ps = Powerspectrum.from_lightcurve(lc, norm=norm, silent=True)
+            ps.freq /= 86400  # convert to Hz
+            results[fltr] = ps
+        
+        if self.show_plots:
+            fig = _plot(results, scale)
+            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_type}_periodograms.png')
+            plt.show()
+        
+        return results
+
+    def compute_crossspectra(
+        self,
+        norm: Literal['frac', 'abs'] = 'frac',
+        scale: Literal['linear', 'log', 'loglog'] = 'linear',
+        ) -> Dict[str, Crossspectrum]:
+        """
+        Compute the cross-spectra for each pair of light curves using `stingray.Crossspectrum`.
+        
+        Parameters
+        ----------
+        norm : Literal['frac', 'abs'], optional
+            The normalisation to use for the cross-spectra, by default 'frac'. If 'frac', the resulting power is in
+            units of (rms/mean)^2 Hz^{-1}. If 'abs', the resulting power is in units of rms^2 Hz^{-1}.
+        scale : Literal['linear', 'log', 'loglog'], optional
+            The scale to use for the plot, by default 'linear'. If 'linear', all axes are linear. If 'log', the
+            frequency axis is logarithmic. If 'loglog', both the frequency and power axes are logarithmic.
+        
+        Returns
+        -------
+        Dict[str, Crossspectrum]
+            A dictionary containing the cross-spectra for each pair of light curves, where the keys are tuples of
+            filter names and the values are the cross-spectra.
+        """
         
         results = {}
-        fltrs = list(self.normalised_light_curves.keys())
         
-        for fltr1, lc1 in self.normalised_light_curves.items():
-            i = fltrs.index(fltr1)
-            for fltr2, lc2 in self.normalised_light_curves.items():
-                j = fltrs.index(fltr2)
-                if i >= j:
+        for fltr1, lc1 in self.light_curves.items():
+            for fltr2, lc2 in self.light_curves.items():
+                if fltr1 == fltr2:
                     continue
-                
-                lc_segments_1 = segment_lc(lc1, float(dt), float(segment_length))
-                lc_segments_2 = segment_lc(lc2, float(dt), float(segment_length))
-                
-                lc_segments_1, lc_segments_2 = get_matching_segments(lc_segments_1, lc_segments_2)
-                
-                print(f'[OPTICAM] Computing cross spectrum for {fltr1} and {fltr2} with {len(lc_segments_1)} segments.')
-                
-                # use second light curve as reference
-                cross_spectrum = AveragedCrossspectrum.from_lc_iterable(lc_segments_2, lc_segments_1, dt,
-                                                                        segment_length)
-                
-                if rebin_frequencies:
-                    cross_spectrum = cross_spectrum.rebin_log(rebin_factor)
-                
-                results[f'{fltr1}_{fltr2}'] = cross_spectrum
+                cs = Crossspectrum.from_lightcurve(
+                    lc1,
+                    lc2,
+                    norm=norm,
+                    silent=True,
+                    )
+                cs.freq /= 86400  # convert to Hz
+                results[(fltr1, fltr2)] = cs
+        
+        if self.show_plots:
+            fig = _plot(results, scale)
+            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_type}_cross_spectra.png')
+            plt.show()
+        
+        return results
+
+    def compute_averaged_crossspectra(
+        self,
+        segment_size: Quantity,
+        norm: Literal['frac', 'abs'] = 'frac',
+        scale: Literal['linear', 'log', 'loglog'] = 'linear',
+        ) -> Dict[str, AveragedCrossspectrum]:
+        """
+        Compute the cross-spectra for each pair of light curves using `stingray.Crossspectrum`.
+        
+        Parameters
+        ----------
+        segment_size : Quantity
+            The size of the segments to use for averaging the cross-spectra. This must be an astropy `Quantity` with
+            units of time (e.g., `astropy.units.s`) to ensure correct handling of the segment size.
+        norm : Literal['frac', 'abs'], optional
+            The normalisation to use for the cross-spectra, by default 'frac'. If 'frac', the resulting power is in
+            units of (rms/mean)^2 Hz^{-1}. If 'abs', the resulting power is in units of rms^2 Hz^{-1}.
+        scale : Literal['linear', 'log', 'loglog'], optional
+            The scale to use for the plot, by default 'linear'. If 'linear', all axes are linear. If 'log', the
+            frequency axis is logarithmic. If 'loglog', both the frequency and power axes are logarithmic.
+        
+        Returns
+        -------
+        Dict[str, AveragedCrossspectrum]
+            A dictionary containing the averaged cross-spectra for each pair of light curves, where the keys are tuples
+            of filter names and the values are the cross-spectra.
+        """
+        
+        segment_size = segment_size.to(u.day).value  # convert from given units to days
+        
+        results = {}
+        
+        for fltr1, lc1 in self.light_curves.items():
+            for fltr2, lc2 in self.light_curves.items():
+                if fltr1 == fltr2:
+                    continue
+                cs = AveragedCrossspectrum.from_lightcurve(
+                    lc1,
+                    lc2,
+                    segment_size=segment_size,
+                    norm=norm,
+                    silent=True,
+                    )
+                cs.freq /= 86400  # convert to Hz
+                results[(fltr1, fltr2)] = cs
+        
+        if self.show_plots:
+            fig = _plot(results, scale)
+            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_type}_averaged_cross_spectra.png')
+            plt.show()
+        
+        return results
+
+    def compute_lomb_scargle_periodograms(
+        self,
+        norm: Literal['frac', 'abs'] = 'frac',
+        scale: Literal['linear', 'log', 'loglog'] = 'linear',
+        ) -> Dict[str, LombScarglePowerspectrum]:
+        """
+        Compute the Lomb-Scargle periodogram for each light curve using `stingray.LombScarglePowerspectrum`.
+        
+        Parameters
+        ----------
+        norm : Literal['frac', 'abs'], optional
+            The normalization to use for the periodograms, by default 'frac'. If 'frac', the resulting power is in units
+            of (rms/mean)^2 Hz^{-1}. If 'abs', the resulting power is in units of rms^2 Hz^{-1}.
+        scale : Literal['linear', 'log', 'loglog'], optional
+            The scale to use for the inferred frequencies, by default 'linear'. If 'linear', the frequency grid is
+            linearly spaced. If 'log', the frequency grid is logarithmically spaced. If 'loglog', both the frequency
+            and power axes will be in logarithm. The upper and lower bounds of the frequencies are the same in all
+            cases.
+        Returns
+        -------
+        Tuple[NDArray, Dict[str, NDArray]] | Dict[str, NDArray]
+            If no frequencies are provided, returns a tuple containing the frequencies and a dictionary of periodograms
+            for each light curve. If frequencies are provided, returns a dictionary of periodogram powers for each light
+            curve.
+        """
+        
+        results = {}
+        
+        for k in self.light_curves.keys():
+            # don't use .from_lightcurve() here as it causes an error
+            lsp = LombScarglePowerspectrum(
+                self.light_curves[k],
+                norm=norm,
+                power_type='absolute',
+            )
+            lsp.freq /= 86400  # convert to Hz
+            results[k] = lsp
+        
+        if self.show_plots:
+            fig = _plot(results, scale)
+            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_type}_L-S_periodograms.png')
+            plt.show()
+        
+        return results
+
+    def compute_cross_correlations(
+        self,
+        mode: Literal['same', 'valid', 'full'] = 'same',
+        norm: Literal['none', 'variance'] = 'variance',
+        ) -> Dict[str, CrossCorrelation]:
+        """
+        Compute the cross-correlations for each pair of light curves using `stingray.CrossCorrelation`.
+        
+        Returns
+        -------
+        Dict[str, CrossCorrelation]
+            A dictionary containing the cross-correlations for each pair of light curves, where the keys are tuples of
+            filter names and the values are the cross-correlations.
+        """
+        
+        results = {}
+        
+        for fltr1, lc1 in self.light_curves.items():
+            for fltr2, lc2 in self.light_curves.items():
+                if fltr1 == fltr2:
+                    continue
+                cc = CrossCorrelation(
+                    lc1,
+                    lc2,
+                    mode=mode,
+                    norm=norm,
+                    )
+                # convert times to seconds
+                cc.dt *= 86400
+                cc.time_lags *= 86400
+                cc.time_shift *= 86400
+                results[(fltr1, fltr2)] = cc
+        
+        if self.show_plots:
+            fig = _plot(results)
+            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_type}_cross_correlations.png')
+            plt.show()
         
         return results
 
 
-def segment_lc(lc: Lightcurve, dt: float, segment_length: float) -> List[Lightcurve]:
-    """
-    Segment a light curve into smaller segments of a given length.
-    
-    Parameters
-    ----------
-    lc : Lightcurve
-        The light curve to segment.
-    dt : float
-        The time resolution of the light curve.
-    segment_length : float
-        The length of each segment.
-    
-    Returns
-    -------
-    List[Lightcurve]
-        A list of segmented light curves.
-    """
-    
-    n_decimal_places = max(len(str(segment_length).split('.')[1]), len(str(dt).split('.')[1]))
-    
-    N = round(segment_length / dt)  # number of points in each segment
-    
-    segments = []
-    
-    i = 0
-    while i + N < len(lc.time):
-        if round(lc.time[i + N] - lc.time[i], n_decimal_places) == segment_length:
-            segments.append(Lightcurve(lc.time[i:i + N], lc.counts[i:i + N], err=lc.counts_err[i:i + N]))
-        i += N
-    # check the last segment
-    if round(lc.time[-1] - lc.time[i], n_decimal_places) == segment_length:
-        segments.append(Lightcurve(lc.time[i:], lc.counts[i:], err=lc.counts_err[i:]))
-    
-    return segments
 
-def get_matching_segments(segments1: List[Lightcurve], segments2: List[Lightcurve]) -> Tuple[List[Lightcurve], List[Lightcurve]]:
+
+
+def _plot(
+    results: Dict[str, 
+                    AveragedPowerspectrum | 
+                    Powerspectrum | 
+                    Crossspectrum | 
+                    AveragedCrossspectrum | 
+                    LombScarglePowerspectrum |
+                    CrossCorrelation
+                    ],
+    scale: Literal['linear', 'log', 'loglog'] = 'linear',
+    ) -> Figure:
     """
-    Get matching segments from two lists of light curves.
+    Plot the results of some timing analysis. Not intended to be called directly by the user, but rather via
+    various timing methods.
     
     Parameters
     ----------
-    segments1 : List[Lightcurve]
-        The first list of light curves.
-    segments2 : List[Lightcurve]
-        The second list of light curves.
+    results : Dict[str, AveragedPowerspectrum  |  Powerspectrum  |  Crossspectrum  |  AveragedCrossspectrum  |  
+    LombScarglePowerspectrum | CrossCorrelation]
+        The timming analysis results, where the keys are the filter names and the values are the results.
+    scale : Literal['linear', 'log', 'loglog'], optional
+        The scale to use for the plot, by default 'linear'. If 'linear', all axes are linear. If 'log', the
+        x-axis is logarithmic. If 'loglog', both the x- and y-axes are logarithmic.
     
     Returns
     -------
-    Tuple[List[Lightcurve], List[Lightcurve]]
-        A tuple containing the matching segments from both lists.
+    Figure
+        The figure containing the plot.
     """
     
-    matching_segments1 = []
-    matching_segments2 = []
+    fig, axes = plt.subplots(
+        figsize=(6.4, 4.8 * .5 * len(results)),
+        tight_layout=True,
+        nrows=len(results),
+        sharex=True,
+        gridspec_kw={'hspace': 0.},
+    )
     
-    for seg1 in segments1:
-        for seg2 in segments2:
-            if np.isclose(seg1.time[0], seg2.time[0]) and np.isclose(seg1.time[-1], seg2.time[-1]):
-                matching_segments1.append(seg1)
-                matching_segments2.append(seg2)
-                break
+    if len(results) == 1:
+        axes = [axes]
     
-    return matching_segments1, matching_segments2
+    for i, key in enumerate(results.keys()):
+        if isinstance(results[key], 
+                      AveragedPowerspectrum | 
+                      Powerspectrum | 
+                      Crossspectrum | 
+                      AveragedCrossspectrum |
+                      LombScarglePowerspectrum
+                      ):
+            x = results[key].freq
+            y = results[key].power
+            yerr = _define_yerr(results[key])
+            
+            x_label = 'Frequency [Hz]'
+            y_label = f'Power [{_get_normalisation_units(results[key].norm)}]'
+        elif isinstance(results[key], CrossCorrelation):
+            x = results[key].time_lags
+            y = results[key].corr
+            yerr = None
+            
+            x_label = 'Time lag [s]'
+            y_label = 'Correlation'
+        
+        axes[i].step(
+            x,
+            y,
+            color='k',
+            lw=1,
+            where='mid',
+        )
+        
+        if yerr is not None:
+            axes[i].errorbar(
+                x,
+                y,
+                yerr,
+                linestyle='none',
+                marker='none',
+                ecolor='grey',
+                elinewidth=1,
+                )
+        
+        axes[i].text(
+            .95,
+            .9,
+            key,
+            transform=axes[i].transAxes,
+            fontsize='large',
+            ha='right',
+            va='top',
+        )
+    
+    if scale == 'log':
+        for ax in axes:
+            ax.set_xscale('log')
+    elif scale == 'loglog':
+        for ax in axes:
+            ax.set_xscale('log')
+            ax.set_yscale('log')
+    
+    for ax in axes:
+        ax.minorticks_on()
+        ax.tick_params(which='both', direction='in', top=True, right=True)
+    
+    axes[-1].set_xlabel(x_label)
+    axes[len(results) // 2].set_ylabel(y_label)
+    
+    return fig
+
+def _get_normalisation_units(
+    norm: Literal['abs', 'frac'],
+    ) -> str:
+    """
+    Get the units of the normalisation based on the specified normalisation type.
+    
+    Parameters
+    ----------
+    norm : Literal['abs', 'frac']
+        The normalisation type. Can be 'abs' for absolute normalisation or 'frac' for fractional normalisation.
+    
+    Returns
+    -------
+    str
+        The units of the normalisation.
+    
+    Raises
+    ------
+    ValueError
+        If the specified normalisation type is invalid.
+    """
+    
+    if norm == 'frac':
+        return '(rms/mean)$^2$ Hz$^{{-1}}$'
+    elif norm == 'abs':
+        return 'rms$^2$ Hz$^{{-1}}$'
+    else:
+        raise ValueError(f"[OPTICAM] Invalid normalisation type: {norm}. Must be 'frac' or 'abs'.")
+
+def _define_yerr(
+    obj: AveragedPowerspectrum |
+    Powerspectrum |
+    Crossspectrum |
+    AveragedCrossspectrum |
+    LombScarglePowerspectrum,
+    ) -> NDArray | None:
+    """
+    Determine the y-error for the given object.
+    
+    Parameters
+    ----------
+    obj : AveragedPowerspectrum | Powerspectrum | Crossspectrum | AveragedCrossspectrum | LombScarglePowerspectrum
+        The object for which to determine the y-error.
+    
+    Returns
+    -------
+    NDArray | None
+        The y-error array if it exists (and a sufficient number of segments has been averaged), otherwise `None`.
+    """
+    
+    if hasattr(obj, 'm'):
+        if obj.m > 1:
+            return obj.power_err
+    
+    return None
+
+
+
