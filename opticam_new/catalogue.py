@@ -648,10 +648,10 @@ class Catalogue:
             data = cosmicray_lacosmic(data, gain_apply=False)[0]
         
         if self.rebin_factor > 1:
-            data = _rebin_image(data, self.rebin_factor)
+            data = self._rebin_image(data, self.rebin_factor)
             
             if return_error:
-                error = _rebin_image(error, self.rebin_factor)
+                error = self._rebin_image(error, self.rebin_factor)
         
         if return_error:
             return data, error
