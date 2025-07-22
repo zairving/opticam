@@ -55,6 +55,7 @@ def _add_two_dimensional_gaussian_to_image(
 
 def _variable_function(
     i: float,
+    fltr: str,
     ) -> float:
     """
     Variable flux to be added to a source.
@@ -63,6 +64,8 @@ def _variable_function(
     ----------
     i : float
         The image index (equivalent to time).
+    fltr : str
+        The filter of the image, used to introduce a lag between filters.
     
     Returns
     -------
@@ -70,7 +73,14 @@ def _variable_function(
         The flux.
     """
     
-    return 5 * np.sin(2 * np.pi * i * 0.135)
+    if fltr == 'g':
+        phase = 0
+    elif fltr == 'r':
+        phase = - np.pi / 2
+    elif fltr == 'i':
+        phase = - np.pi
+    
+    return 20 * np.sin(2 * np.pi * i * 0.135 + phase)
 
 def _create_base_image(
     i: int,
@@ -144,6 +154,11 @@ def _create_images(
         if circular_aperture:
             noisy_image = _apply_flat_field(noisy_image)  # apply circular aperture shadow
         
+        # PSF parameters
+        semimajor_sigma = noisy_image.shape[0] // 256
+        semiminor_sigma = noisy_image.shape[1] // 256
+        orientation = 0
+        
         # put sources in the image
         for j in range(N_sources):
             
@@ -152,10 +167,10 @@ def _create_images(
                     noisy_image,
                     source_positions[j][0],
                     source_positions[j][1],
-                    peak_fluxes[j] + _variable_function(i),  # add variable flux to the source
-                    2,
-                    2,
-                    0,
+                    peak_fluxes[j] + _variable_function(i, fltr),  # add variable flux to the source
+                    semimajor_sigma,
+                    semiminor_sigma,
+                    orientation,
                     )
             else:
                 noisy_image = _add_two_dimensional_gaussian_to_image(
@@ -163,9 +178,9 @@ def _create_images(
                     source_positions[j][0],
                     source_positions[j][1],
                     peak_fluxes[j],
-                    2,
-                    2,
-                    0,
+                    semimajor_sigma,
+                    semiminor_sigma,
+                    orientation,
                     )
         
         # create fits file
@@ -271,9 +286,10 @@ def _create_flats(
         except:
             pass
 
-def create_synthetic_flats(
+def generate_flats(
     out_dir: str,
     n_flats: int = 5,
+    binning_scale: int = 4,
     overwrite: bool = False,
     ) -> None:
     """
@@ -285,6 +301,8 @@ def create_synthetic_flats(
         The directory to save the data.
     n_flats : int, optional
         The number of flats per camera, by default 5.
+    binning_scale : int, optional
+        The binning scale of the flat-field images, by default 4 (512x512).
     overwrite : bool, optional
         Whether to overwrite data if they currently exist, by default False.
     """
@@ -294,7 +312,6 @@ def create_synthetic_flats(
         os.makedirs(out_dir, exist_ok=True)
     
     filters = ["g", "r", "i"]
-    binning_scale = 4  # use a large binning factor to reduce the size of the images
     
     for i in tqdm(range(n_flats), desc="Creating synthetic flats", bar_format=bar_format):
         _create_flats(
@@ -305,10 +322,11 @@ def create_synthetic_flats(
             overwrite,
             )
 
-def create_synthetic_observations(
+def generate_observations(
     out_dir: str,
     n_images: int = 100,
     circular_aperture: bool = True,
+    binning_scale: int = 4,
     overwrite: bool = False,
     ) -> None:
     """
@@ -322,6 +340,8 @@ def create_synthetic_observations(
         The number of images to create, by default 100.
     circular_aperture : bool, optional
         Whether to apply a circular aperture shadow to the images, by default True.
+    binning_scale : int, optional
+        The binning scale of the images, by default 4 (512x512).
     overwrite : bool, optional
         Whether to overwrite data if they currently exist, by default False.
     """
@@ -332,8 +352,6 @@ def create_synthetic_observations(
     
     rng = np.random.default_rng(123)
     filters = ["g", "r", "i"]
-    
-    binning_scale = 4  # use a large binning factor to reduce the size of the images
     
     N_sources = 6
     source_positions = rng.uniform(0 + int(64 / binning_scale), int(2048 / binning_scale - 64 / binning_scale),
@@ -354,3 +372,68 @@ def create_synthetic_observations(
             circular_aperture,
             overwrite
             )
+
+
+def generate_gappy_observations(
+    out_dir: str,
+    n_images: int = 1000,
+    circular_aperture: bool = True,
+    binning_scale: int = 4,
+    overwrite: bool = False,
+    ) -> None:
+    """
+    Create synthetic observation data for testing and following the tutorials.
+    
+    Parameters
+    ----------
+    out_dir : str
+        The directory to save the data.
+    n_images : int, optional
+        The number of images to create, by default 100.
+    circular_aperture : bool, optional
+        Whether to apply a circular aperture shadow to the images, by default True.
+    binning_scale : int, optional
+        The binning scale of the images, by default 4 (512x512).
+    overwrite : bool, optional
+        Whether to overwrite data if they currently exist, by default False.
+    """
+    
+    # create directory if it does not exist
+    if not os.path.isdir(out_dir):
+        os.makedirs(out_dir, exist_ok=True)
+    
+    rng = np.random.default_rng(123)
+    filters = ["g", "r", "i"]
+    
+    N_sources = 6
+    source_positions = rng.uniform(0 + int(64 / binning_scale), int(2048 / binning_scale - 64 / binning_scale),
+                                   (N_sources, 2))  # generate random source positions away from the edges
+    peak_fluxes = rng.uniform(100, 1000, N_sources)  # generate random peak fluxes
+    variable_source = 1  # index of the variable source
+    
+    gap_probability = .01  # probability of skipping an image
+    
+    for i in tqdm(range(n_images), desc="Creating synthetic observations", bar_format=bar_format):
+        
+        # randomly skip some images to create gaps
+        if rng.random() < gap_probability:
+            # if an image is skipped, increase the probability of skipping the next one to creaate larger gaps
+            gap_probability = .95
+            continue
+        else:
+            gap_probability = .01  # reset the probability of skipping the next image
+        
+        _create_images(
+            out_dir,
+            filters,
+            N_sources,
+            variable_source,
+            source_positions,
+            peak_fluxes,
+            i,
+            binning_scale,
+            circular_aperture,
+            overwrite
+            )
+
+
