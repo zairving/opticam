@@ -451,7 +451,7 @@ class DifferentialPhotometer:
         time *= 86400
         
         if ax is None:
-            fig, ax = plt.subplots(tight_layout=True, figsize=(1.5 * 6.4, 4.8))
+            fig, ax = plt.subplots(tight_layout=True)
             standalone_plot = True
         else:
             standalone_plot = False
@@ -460,16 +460,26 @@ class DifferentialPhotometer:
             time,
             relative_light_curve.counts,
             np.abs(relative_light_curve.counts_err),
-            fmt="k.",
-            ms=2,
+            marker='none',
+            linestyle='none',
             ecolor="grey",
             elinewidth=1,
+            )
+        ax.step(
+            time,
+            relative_light_curve.counts,
+            where='mid',
+            color='k',
+            lw=1,
             )
         
         if standalone_plot:
             ax.set_title(f'{fltr} (Source ID: {target}, Comparison ID(s): {', '.join([str(comp) for comp in comparisons])})')
-            ax.set_xlabel(f"Time from TDB {t_ref:.4f} [s]")
+            ax.set_xlabel(f"Time from BMJD {t_ref:.4f} [s]")
             ax.set_ylabel("Relative flux")
+            
+            ax.minorticks_on()
+            ax.tick_params(which='both', direction='in', top=True, right=True)
             
             fig.savefig(os.path.join(self.out_directory, f'relative_light_curves/{prefix}_{fltr}_{save_label}.png'))
             
@@ -490,7 +500,7 @@ class DifferentialPhotometer:
         ) -> None:
         """
         Plot the relative light curves for a target source with respect to one or more comparison sources for multiple filters.
-
+        
         Parameters
         ----------
         relative_light_curves : Dict[str, Dict[str, ArrayLike]]
@@ -507,10 +517,17 @@ class DifferentialPhotometer:
             The label to use when saving the relative light curve.
         """
         
-        fig, axes = plt.subplots(nrows=len(relative_light_curves), tight_layout=True, sharex=True,
-                                figsize=(1.5 * 6.4, 2 * len(relative_light_curves) / 3 * 4.8))
-        
-        for fltr, relative_light_curve in relative_light_curves.items():
+        fig, axes = plt.subplots(
+            nrows=len(relative_light_curves),
+            tight_layout=True,
+            sharex=True,
+            figsize=(1.5 * 6.4, 2 * len(relative_light_curves) / 3 * 4.8),
+            gridspec_kw={
+                "hspace": 0,
+                },
+            )
+
+        for i, (fltr, relative_light_curve) in enumerate(relative_light_curves.items()):
             self._plot_relative_light_curve(
                 relative_light_curve,
                 t_ref,
@@ -519,10 +536,21 @@ class DifferentialPhotometer:
                 prefix,
                 fltr,
                 save_label,
-                axes[self.filters.index(fltr)],
+                axes[i],
                 )
+            axes[i].text(
+                .95,
+                .9,
+                fltr,
+                transform=axes[self.filters.index(fltr)].transAxes,
+                ha='right',
+                va='top',
+                fontsize='large',
+            )
+            axes[i].minorticks_on()
+            axes[i].tick_params(which='both', direction='in', top=True, right=True)
         
-        axes[-1].set_xlabel(f"Time from TDB {t_ref:.4f} [s]")
+        axes[-1].set_xlabel(f"Time from BMJD {t_ref:.4f} [s]")
         axes[int(len(relative_light_curves) / 2)].set_ylabel("Relative flux")
         
         fig.savefig(os.path.join(self.out_directory, f'relative_light_curves/{prefix}_{save_label}.png'))
@@ -651,7 +679,7 @@ class DifferentialPhotometer:
             color='r',
             lw=1,
         )
-        axes[2].set_xlabel(f"Time from TDB {t_ref} [s]")
+        axes[2].set_xlabel(f"Time from BMJD {t_ref} [s]")
         axes[2].set_ylabel("Normalised relative flux")
         
         ########################################### format plot ###########################################
