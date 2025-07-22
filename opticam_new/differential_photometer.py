@@ -12,7 +12,7 @@ import matplotlib.colors as mcolors
 from matplotlib.axes import Axes
 
 from opticam_new.analyser import Analyser
-from opticam_new.helpers import plot_catalogue
+from opticam_new.helpers import plot_catalogue, infer_gtis
 
 # TODO: it should be possible to improve camera matching by taking into account the pixel-scale and FoV differences between the cameras.
 
@@ -357,9 +357,16 @@ class DifferentialPhotometer:
         relative_flux = filtered_target_df["flux"].values / comp_fluxes
         relative_flux_error = relative_flux * np.abs(np.sqrt(np.square(filtered_target_df["flux_error"].values / filtered_target_df["flux"].values) + np.square(comp_flux_errors / comp_fluxes)))
         
-        # create and return Lightcurve object
+        # mask non-finite values
         valid_mask = np.isfinite(relative_flux) & np.isfinite(relative_flux_error)
-        return Lightcurve(time[valid_mask], relative_flux[valid_mask], err=relative_flux_error[valid_mask])
+        time = time[valid_mask]
+        relative_flux = relative_flux[valid_mask]
+        relative_flux_error = relative_flux_error[valid_mask]
+        
+        # infer light curve GTIs
+        gtis = infer_gtis(time, threshold=1.5)
+        
+        return Lightcurve(time, relative_flux, err=relative_flux_error, gti=gtis)
     
     def _filter_dataframes_to_common_time_column(
         self,

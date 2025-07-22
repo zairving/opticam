@@ -252,6 +252,39 @@ def plot_catalogue(
     return fig, axes
 
 
-
-
+def infer_gtis(time: NDArray, threshold: float = 1.5) -> NDArray:
+    """
+    Infer GTIs from a light curve.
+    
+    Parameters
+    ----------
+    time : ArrayLike
+        The time array.
+    threshold : float, optional
+        The threshold for detecting gaps in units of the median time resolution, by default 1.5.
+    
+    Returns
+    -------
+    List[Tuple[float, float]]
+        The inferred GTIs.
+    """
+    
+    time = np.asarray(time)
+    
+    # compute the gap threshold
+    gap_threshold = threshold * np.median(np.diff(time))
+    
+    # define GTI starts and stops
+    gti_starts = [time[0]]
+    gti_stops = []
+    
+    # compute GTIs
+    for i in range(1, time.size):
+        if time[i] - time[i - 1] > gap_threshold:
+            gti_stops.append(time[i - 1])
+            gti_starts.append(time[i])
+    gti_stops.append(time[-1])
+    
+    # define GTIs in stingray format
+    return np.array(list(zip(gti_starts, gti_stops)))
 
