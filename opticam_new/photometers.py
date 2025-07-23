@@ -301,7 +301,7 @@ class SimplePhotometer(BasePhotometer):
             return None
         else:
             # get the position of the closest source (assumed to be the source of interest)
-            return source_coords[np.argmin(distances)]
+            return image_coords[np.argmin(distances)]
 
     def define_results_dict(
         self,
