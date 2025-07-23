@@ -9,13 +9,14 @@ import json
 import warnings
 from stingray import Lightcurve
 from matplotlib.figure import Figure
-from matplotlib.axes import Axes
 import copy
 from stingray import AveragedPowerspectrum, Powerspectrum
 from stingray import AveragedCrossspectrum, Crossspectrum
 from stingray.lombscargle import LombScarglePowerspectrum
 from stingray import CrossCorrelation
+from pandas import DataFrame
 
+from opticam_new.helpers import infer_gtis
 
 class Analyser:
     """
@@ -24,10 +25,10 @@ class Analyser:
     
     def __init__(
         self,
-        light_curves: Dict[str, Lightcurve],
         out_directory: str,
-        prefix: str | None,
-        phot_type: str,
+        light_curves: Dict[str, Lightcurve] | Dict[str, DataFrame] | None = None,
+        prefix: str | None = None,
+        phot_label: str | None = None,
         show_plots: bool = True,
         ) -> None:
         """
@@ -35,66 +36,137 @@ class Analyser:
         
         Parameters
         ----------
-        light_curves : Dict[str, Lightcurve]
-            The light curves to analyse, where the keys are the filter names and the values are the light curves.
         out_directory : str
             The directory to save the output files (i.e., the same directory as `out_directory` used by
             `opticam_new.Photometer` when creating the light curves).
-        prefix : str | None
+        light_curves : Dict[str, Lightcurve] | Dict[str, DataFrame] | None, optional
+            The light curves to analyse, where the keys are the filter names and the values are either Lightcurve
+            objects or DataFrames containing 'TDB', 'rel_flux', and 'rel_flux_err' columns. Leave as `None` to create an
+            empty analyser that can be populated later using the `join()` method.
+        prefix : str | None, optional
             The prefix to use for the output files (e.g., the name of the target source).
-        phot_type : str
-            The type of photometry used to generate the light curves. This is only used for naming the output files.
+        phot_label : str, optional
+            The label for the photometry routine used to generate the light curves, used in the output file names.
         show_plots : bool, optional
-            Whether to render and show plots, by default `True`. If `False`, plots will not be displayed, and in
-            many cases will not be rendered at all.
+            Whether to render and show plots, by default `True`.
         """
         
-        self.light_curves = light_curves
-        self.filters = list(light_curves.keys())
+        self.light_curves = self._validate_light_curves(light_curves)
+        
         self.out_directory = out_directory
+        if not os.path.isdir(out_directory):
+            try:
+                os.makedirs(out_directory)
+            except Exception as e:
+                raise Exception(f'[OPTICAM] could not create output directory {out_directory}: {e}')
+        
         self.prefix = prefix
-        self.phot_type = phot_type
+        self.phot_label = phot_label
         self.show_plots = show_plots
         
         if self.show_plots:
             if not os.path.isdir(os.path.join(self.out_directory, 'plots')):
                 os.makedirs(os.path.join(self.out_directory, 'plots'))
         
-        try:
-            with open(os.path.join(self.out_directory, 'misc/input_parameters.json'), 'r') as file:
-                input_parameters = json.load(file)
-            self.t_ref = input_parameters['t_ref']
-        except FileNotFoundError:
-            warnings.warn(f"[OPTICAM] input_parameters.json not found in {self.out_directory}/misc/. "
-                          "Reference times will be inferred from light curves.")
-            self.t_ref = min([lc['TDB'].min() for lc in light_curves.values()])
+        if len(self.light_curves) > 0:
+            self.t_ref = float(min([np.min(lc.time) for lc in self.light_curves.values()]))
         
+        # define plotting colours for each filter
         self.colours = {
-            'g-band': 'tab:green',  # camera 1
             'u-band': 'tab:green',  # camera 1
+            'g-band': 'tab:green',  # camera 1
             'r-band': 'tab:orange',  # camera 2
             'i-band': 'tab:olive',  # camera 3
             'z-band': 'tab:olive',  # camera 3
         }
-
-    def update(self, analyser: 'Analyser') -> None:
+    
+    @staticmethod
+    def _validate_light_curves(
+        light_curves: Dict[str, Lightcurve | DataFrame] | None,
+        ) -> Dict[str, Lightcurve]:
         """
-        Combine another `Analyser` instance with the current one. Useful when creating relative light curves
-        individually per camera.
+        Validate the light curves by converting DataFrames to Lightcurve objects and inferring GTIs.
+        
+        Parameters
+        ----------
+        light_curves : Dict[str, Lightcurve | DataFrame] | None
+            The light curves to validate, where the keys are the filter names and the values are either Lightcurve
+            objects or DataFrames containing 'TDB', 'rel_flux', and 'rel_flux_err' columns. If `None`, an empty
+            dictionary will be returned.
+        
+        Returns
+        -------
+        Dict[str, Lightcurve]
+            If `light_curves` is `None`, returns an empty dictionary. Otherwise, returns a dictionary containing the 
+            validated light curves, where the keys are the filter names and the values are Lightcurve objects.
+        """
+        
+        validated_light_curves = {}
+        
+        if light_curves:
+            for fltr in light_curves.keys():
+                if isinstance(light_curves[fltr], DataFrame):
+                    # get columns
+                    time = light_curves[fltr]['TDB'].values
+                    counts = light_curves[fltr]['rel_flux'].values
+                    counts_err = light_curves[fltr]['rel_flux_err'].values
+                    
+                    # infer GTIs
+                    gtis = infer_gtis(time, threshold=1.5)
+                    
+                    # convert DataFrame to Lightcurve
+                    validated_light_curves[fltr] = Lightcurve(
+                        time,
+                        counts,
+                        err=counts_err,
+                        gti=gtis,
+                        )
+                elif isinstance(light_curves[fltr], Lightcurve):
+                    validated_light_curves[fltr] = light_curves[fltr]
+                else:
+                    raise TypeError(f'[OPTICAM] Light curve for filter {fltr} must be either a DataFrame or a Lightcurve object, but got {type(light_curves[fltr])}.')
+        
+        return validated_light_curves
+
+    def join(
+        self,
+        analyser: 'Analyser',
+        ) -> 'Analyser':
+        """
+        Combine another `Analyser` instance with the current one. If the new `Analyser` has light curves with filters
+        that are not present in the current `Analyser`, those filters will be added. If the new `Analyser` has light
+        curves with filters that are already present in the current `Analyser`, those light curves will be merged.
         
         Parameters
         ----------
         analyser : Analyser
             The analyser instance being combined with the current one.
+        
+        Returns
+        -------
+        Analyser
+            A new `Analyser` instance with the combined light curves.
         """
         
-        light_curves = analyser.light_curves
-        filters = analyser.filters
+        assert analyser.light_curves, f'[OPTICAM] cannot join an empty analyser.'
         
-        assert not any([fltr in self.filters for fltr in filters]), '[OPTICAM] Cannot combine Analyser instances with overlapping filters.'
+        new_light_curves = copy.copy(self.light_curves)
         
-        for fltr in filters:
-            self.light_curves[fltr] = copy.copy(light_curves[fltr])
+        for fltr in analyser.light_curves.keys():
+            if fltr not in self.light_curves.keys():
+                # if a new filter is being added, copy the light curve
+                new_light_curves[fltr] = copy.copy(analyser.light_curves[fltr])
+            else:
+                # if an existing filter is being added, merge the light curves
+                new_light_curves[fltr] = self.light_curves[fltr].join(analyser.light_curves[fltr])
+        
+        return Analyser(
+            out_directory=self.out_directory,
+            light_curves=new_light_curves,
+            prefix=self.prefix,
+            phot_label=self.phot_label,
+            show_plots=self.show_plots,
+        )
 
 
     def plot_light_curves(
@@ -107,12 +179,12 @@ class Analyser:
         Parameters
         ----------
         title : str | None, optional
-            The figure title, by default `None`. Only applied if no axes are specified.
+            The figure title, by default `None`.
         
         Returns
         -------
         Figure
-            The figure containing the light curves if no axes were specified, otherwise `None`.
+            The figure containing the light curves.
         """
         
         fig, axes = plt.subplots(
@@ -129,8 +201,11 @@ class Analyser:
             axes = [axes]
         
         for i, (fltr, lc) in enumerate(self.light_curves.items()):
+            
+            t = (np.asarray(lc.time) - self.t_ref) * 86400
+            
             axes[i].errorbar(
-                lc.time,
+                t,
                 lc.counts,
                 lc.counts_err,
                 marker='none',
@@ -139,7 +214,7 @@ class Analyser:
                 elinewidth=1,
                 )
             axes[i].step(
-                lc.time,
+                t,
                 lc.counts,
                 where='mid',
                 color=self.colours[fltr],
@@ -156,8 +231,8 @@ class Analyser:
                 ha='right',
             )
         
-        axes[-1].set_xlabel(f'Time from BMJD {self.t_ref:.4f} [s]')
-        axes[len(self.light_curves) // 2].set_ylabel('Relative Flux')
+        axes[-1].set_xlabel(f'Time from BMJD {self.t_ref:.4f} [s]', fontsize='large')
+        axes[len(self.light_curves) // 2].set_ylabel('Relative flux', fontsize='large')
         
         if title is not None:
             axes[0].set_title(title)
@@ -166,7 +241,7 @@ class Analyser:
             ax.minorticks_on()
             ax.tick_params(which='both', direction='in', top=True, right=True)
         
-        fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_type}_light_curves.png')
+        fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_light_curves.png')
         
         if self.show_plots:
             plt.show()
@@ -341,7 +416,7 @@ class Analyser:
         
         if self.show_plots:
             fig = _plot(results, scale)
-            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_type}_L-S_periodograms.png')
+            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_L-S_periodograms.png')
             plt.show()
         
         return results
@@ -378,7 +453,7 @@ class Analyser:
         
         if self.show_plots:
             fig = _plot(results, scale)
-            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_type}_periodograms.png')
+            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_periodograms.png')
             plt.show()
         
         return results
@@ -424,7 +499,7 @@ class Analyser:
         
         if self.show_plots:
             fig = _plot(results, scale)
-            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_type}_cross_spectra.png')
+            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_cross_spectra.png')
             plt.show()
         
         return results
@@ -477,7 +552,7 @@ class Analyser:
         
         if self.show_plots:
             fig = _plot(results, scale)
-            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_type}_averaged_cross_spectra.png')
+            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_averaged_cross_spectra.png')
             plt.show()
         
         return results
@@ -522,7 +597,7 @@ class Analyser:
         
         if self.show_plots:
             fig = _plot(results, scale)
-            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_type}_L-S_periodograms.png')
+            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_L-S_periodograms.png')
             plt.show()
         
         return results
@@ -562,7 +637,7 @@ class Analyser:
         
         if self.show_plots:
             fig = _plot(results)
-            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_type}_cross_correlations.png')
+            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_cross_correlations.png')
             plt.show()
         
         return results
