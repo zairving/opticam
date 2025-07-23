@@ -5,7 +5,6 @@ from numpy.typing import NDArray
 import os
 import astropy.units as u
 from astropy.units.quantity import Quantity
-import json
 import warnings
 from stingray import Lightcurve
 from matplotlib.figure import Figure
@@ -128,6 +127,7 @@ class Analyser:
         
         return validated_light_curves
 
+
     def join(
         self,
         analyser: 'Analyser',
@@ -167,6 +167,26 @@ class Analyser:
             phot_label=self.phot_label,
             show_plots=self.show_plots,
         )
+    
+    def rebin_light_curves(
+        self,
+        dt: Quantity,
+        ) -> None:
+        """
+        Rebin the light curves to a desired time resolution using `stingray.Lightcurve.rebin()`.
+        
+        Parameters
+        ----------
+        dt : Quantity
+            The desired time resolution for the rebinned light curves. This must be an astropy `Quantity` with units of
+            time (e.g., `astropy.units.s`) to ensure correct handling of the time resolution.
+        """
+        
+        # convert dt to days
+        dt = dt.to(u.day).value
+        
+        for fltr, lc in self.light_curves.items():
+            self.light_curves[fltr] = lc.rebin(dt, method='mean')
 
 
     def plot_light_curves(
@@ -376,7 +396,9 @@ class Analyser:
         scale: Literal['linear', 'log', 'loglog'] = 'linear',
         ) -> Dict[str, AveragedPowerspectrum]:
         """
-        Compute the averaged periodograms for each light curve using `stingray.AveragedPowerSpectrum`.
+        Compute the averaged periodograms for each light curve using `stingray.AveragedPowerSpectrum`. It's usually a
+        good idea to call the rebin() method to rebin your light curves to a regular time grid before calling this 
+        method.
         
         Parameters
         ----------
@@ -427,7 +449,8 @@ class Analyser:
         scale: Literal['linear', 'log', 'loglog'] = 'linear',
         ) -> Dict[str, Powerspectrum]:
         """
-        Compute the periodograms for each light curve using `stingray.Powerspectrum`.
+        Compute the periodograms for each light curve using `stingray.Powerspectrum`. It's usually a good idea to call 
+        the rebin() method to rebin your light curves to a regular time grid before calling this method.
         
         Parameters
         ----------
@@ -464,7 +487,8 @@ class Analyser:
         scale: Literal['linear', 'log', 'loglog'] = 'linear',
         ) -> Dict[str, Crossspectrum]:
         """
-        Compute the cross-spectra for each pair of light curves using `stingray.Crossspectrum`.
+        Compute the cross-spectra for each pair of light curves using `stingray.Crossspectrum`. It's usually a good idea
+        to call the rebin() method to rebin your light curves to a regular time grid before calling this method.
         
         Parameters
         ----------
@@ -511,7 +535,8 @@ class Analyser:
         scale: Literal['linear', 'log', 'loglog'] = 'linear',
         ) -> Dict[str, AveragedCrossspectrum]:
         """
-        Compute the cross-spectra for each pair of light curves using `stingray.Crossspectrum`.
+        Compute the cross-spectra for each pair of light curves using `stingray.Crossspectrum`. It's usually a good idea
+        to call the rebin() method to rebin your light curves to a regular time grid before calling this method.
         
         Parameters
         ----------
