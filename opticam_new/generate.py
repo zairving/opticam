@@ -82,8 +82,7 @@ def _variable_function(
     
     return 20 * np.sin(2 * np.pi * i * 0.135 + phase)
 
-def _create_base_image(
-    i: int,
+def _create_image(
     binning_scale: int,
     ) -> NDArray:
     """
@@ -91,8 +90,6 @@ def _create_base_image(
     
     Parameters
     ----------
-    i : int
-        The image index, used to seed the random number generator.
     binning_scale : int
         The binning scale of the image.
     
@@ -102,12 +99,31 @@ def _create_base_image(
         The noisy image.
     """
     
+    return np.zeros((int(2048 / binning_scale), int(2048 / binning_scale))) + 100
+
+def _add_noise(
+    image: NDArray,
+    i: int,
+    ) -> NDArray:
+    """
+    Add Poisson noise to an image.
+    
+    Parameters
+    ----------
+    image : NDArray
+        The image to add noise to.
+    i : int
+        The image index, used to seed the random number generator.
+    
+    Returns
+    -------
+    NDArray
+        The noisy image.
+    """
+    
     rng = np.random.default_rng(i)
     
-    base_image = np.zeros((int(2048 / binning_scale), int(2048 / binning_scale))) + 100  # create blank image
-    noisy_image = base_image + np.sqrt(base_image) * rng.standard_normal(base_image.shape)  # add Poisson noise
-    
-    return noisy_image
+    return rng.normal(image, np.sqrt(image))
 
 def _create_images(
     out_dir: str,
@@ -150,9 +166,11 @@ def _create_images(
         if os.path.isfile(f"{out_dir}/240101{fltr}{200000000 + i}o.fits.gz") and not overwrite:
             continue
         
-        noisy_image = _create_base_image(i, binning_scale)
+        # generate image
+        image = _create_image(binning_scale)
         if circular_aperture:
-            noisy_image = _apply_flat_field(noisy_image)  # apply circular aperture shadow
+            image = _apply_flat_field(image)  # apply circular aperture shadow
+        noisy_image = _add_noise(image, i)  # add Poisson noise
         
         # PSF parameters
         semimajor_sigma = noisy_image.shape[0] // 256
@@ -265,8 +283,10 @@ def _create_flats(
         if os.path.isfile(f"{out_dir}/{fltr}-band_image_{i}.fits.gz") and not overwrite:
             continue
         
-        noisy_image = _create_base_image(i, binning_scale)
-        noisy_image = _apply_flat_field(noisy_image)  # apply circular aperture shadow
+        # create flat-field image
+        image = _create_image(binning_scale)
+        image = _apply_flat_field(image)  # apply circular aperture shadow
+        noisy_image = _add_noise(image, 123 * (i + 123))  # ensure different noise from observation images
         
         # create fits file
         hdu = fits.PrimaryHDU(noisy_image)
@@ -313,7 +333,7 @@ def generate_flats(
     
     filters = ["g", "r", "i"]
     
-    for i in tqdm(range(n_flats), desc="Creating synthetic flats", bar_format=bar_format):
+    for i in tqdm(range(n_flats), desc="Generating flats", bar_format=bar_format):
         _create_flats(
             out_dir,
             filters,
@@ -359,7 +379,7 @@ def generate_observations(
     peak_fluxes = rng.uniform(100, 1000, N_sources)  # generate random peak fluxes
     variable_source = 1  # index of the variable source
     
-    for i in tqdm(range(n_images), desc="Creating synthetic observations", bar_format=bar_format):
+    for i in tqdm(range(n_images), desc="Generating observations", bar_format=bar_format):
         _create_images(
             out_dir,
             filters,
@@ -413,7 +433,7 @@ def generate_gappy_observations(
     
     gap_probability = .01  # probability of skipping an image
     
-    for i in tqdm(range(n_images), desc="Creating synthetic observations", bar_format=bar_format):
+    for i in tqdm(range(n_images), desc="Generating observations", bar_format=bar_format):
         
         # randomly skip some images to create gaps
         if rng.random() < gap_probability:
