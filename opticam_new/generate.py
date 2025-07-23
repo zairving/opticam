@@ -379,6 +379,8 @@ def generate_observations(
     peak_fluxes = rng.uniform(100, 1000, N_sources)  # generate random peak fluxes
     variable_source = 1  # index of the variable source
     
+    print(f'[OPTICAM] variable source is at ({source_positions[variable_source][0]:.0f}, {source_positions[variable_source][1]:.0f})')
+    
     for i in tqdm(range(n_images), desc="Generating observations", bar_format=bar_format):
         _create_images(
             out_dir,
@@ -430,6 +432,8 @@ def generate_gappy_observations(
                                    (N_sources, 2))  # generate random source positions away from the edges
     peak_fluxes = rng.uniform(100, 1000, N_sources)  # generate random peak fluxes
     variable_source = 1  # index of the variable source
+    
+    print(f'[OPTICAM] variable source is at ({source_positions[variable_source][0]:.0f}, {source_positions[variable_source][1]:.0f})')
     
     gap_probability = .01  # probability of skipping an image
     
