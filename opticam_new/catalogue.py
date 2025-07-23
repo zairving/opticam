@@ -34,7 +34,7 @@ from opticam_new.background import DefaultBackground
 from opticam_new.finder import DefaultFinder
 from opticam_new.correctors import FlatFieldCorrector
 from opticam_new.photometers import BasePhotometer
-from opticam_new.helpers import camel_to_snake
+from opticam_new.helpers import camel_to_snake, sort_filters
 
 
 class Catalogue:
@@ -328,8 +328,7 @@ class Catalogue:
                         self.camera_files[fltr + '-band'].append(file)  # add file name to dict list
         
         # sort camera files so filters match camera order
-        key_order = {'g-band': 0, 'u-band': 0, "g'-band": 0, "u'-band": 0, "r-band": 1, "r'-band": 1, 'i-band': 2, 'z-band': 2, "i'-band": 2, "z'-band": 2}
-        self.camera_files = dict(sorted(self.camera_files.items(), key=lambda x: key_order[x[0]]))
+        self.camera_files = sort_filters(self.camera_files)
         
         # sort files by time
         for key in list(self.camera_files.keys()):
