@@ -288,3 +288,40 @@ def infer_gtis(time: NDArray, threshold: float = 1.5) -> NDArray:
     # define GTIs in stingray format
     return np.array(list(zip(gti_starts, gti_stops)))
 
+
+def sort_filters(
+    d: Dict[str, Any],
+    ) -> Dict[str, Any]:
+    """
+    Sort a dictionary whose keys are filter names in the order of the camera filters (e.g., u/g, r, i/z).
+    
+    Parameters
+    ----------
+    d : Dict[str, Any]
+        A dictionary with filter names as keys.
+    
+    Returns
+    -------
+    Dict[str, Any]
+        The sorted dictionary.
+    """
+    
+    key_order = {
+        'u-band': 0,
+        "u'-band": 0,
+        'g-band': 0,
+        "g'-band": 0,
+        "r-band": 1,
+        "r'-band": 1,
+        'i-band': 2,
+        "i'-band": 2,
+        'z-band': 2,
+        "z'-band": 2,
+        }
+    
+    return dict(sorted(d.items(), key=lambda x: key_order[x[0]]))
+
+
+
+
+
