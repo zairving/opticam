@@ -181,9 +181,9 @@ class DifferentialPhotometer:
             
             # save relative light curve to CSV
             df = pd.DataFrame({
-                "TDB": relative_light_curve.time,
-                "relative flux": relative_light_curve.counts,
-                "relative flux error": relative_light_curve.counts_err
+                'TDB': relative_light_curve.time,
+                'rel_flux': relative_light_curve.counts,
+                'rel_flux_err': relative_light_curve.counts_err
             })
             df.to_csv(
                 os.path.join(self.out_directory, f'relative_light_curves/{prefix}_{fltr}_{save_label}.csv'),
@@ -191,7 +191,12 @@ class DifferentialPhotometer:
             )
             
             # return Analyser object
-            return Analyser({fltr: relative_light_curve}, self.out_directory, prefix, phot_label)
+            return Analyser(
+                self.out_directory,
+                light_curves={fltr: relative_light_curve}, 
+                prefix=prefix,
+                phot_label=phot_label,
+                )
         else:
             # define dictionaries to store relative light curves for each camera
             relative_light_curves = {}
@@ -252,7 +257,12 @@ class DifferentialPhotometer:
                 df.to_csv(os.path.join(self.out_directory, f'relative_light_curves/{prefix}_{k}_{save_label}.csv'),
                                        index=False)
             
-            return Analyser(relative_light_curves, self.out_directory, prefix, phot_label)
+            return Analyser(
+                self.out_directory,
+                light_curves=relative_light_curves,
+                prefix=prefix,
+                phot_label=phot_label,
+                )
     
     def _compute_relative_light_curve(
         self,
