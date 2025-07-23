@@ -15,7 +15,7 @@ from stingray.lombscargle import LombScarglePowerspectrum
 from stingray import CrossCorrelation
 from pandas import DataFrame
 
-from opticam_new.helpers import infer_gtis
+from opticam_new.helpers import infer_gtis, sort_filters
 
 class Analyser:
     """
@@ -125,7 +125,7 @@ class Analyser:
                 else:
                     raise TypeError(f'[OPTICAM] Light curve for filter {fltr} must be either a DataFrame or a Lightcurve object, but got {type(light_curves[fltr])}.')
         
-        return validated_light_curves
+        return sort_filters(validated_light_curves)
 
 
     def join(
@@ -389,6 +389,44 @@ class Analyser:
         return results
 
 
+    def compute_periodograms(
+        self,
+        norm: Literal['frac', 'abs'] = 'frac',
+        scale: Literal['linear', 'log', 'loglog'] = 'linear',
+        ) -> Dict[str, Powerspectrum]:
+        """
+        Compute the periodograms for each light curve using `stingray.Powerspectrum`. It's usually a good idea to call 
+        the rebin() method to rebin your light curves to a regular time grid before calling this method.
+        
+        Parameters
+        ----------
+        norm : Literal['frac', 'abs'], optional
+            The normalisation to use for the periodograms, by default 'frac'. If 'frac', the resulting power is in units
+            of (rms/mean)^2 Hz^{-1}. If 'abs', the resulting power is in units of rms^2 Hz^{-1}.
+        scale : Literal['linear', 'log', 'loglog'], optional
+            The scale to use for the plot, by default 'linear'. If 'linear', all axes are linear. If 'log', the
+            frequency axis is logarithmic. If 'loglog', both the frequency and power axes are logarithmic.
+        
+        Returns
+        -------
+        Dict[str, Powerspectrum]
+            A dictionary containing the periodograms for each light curve.
+        """
+        
+        results = {}
+        
+        for fltr, lc in self.light_curves.items():
+            ps = Powerspectrum.from_lightcurve(lc, norm=norm, silent=True)
+            ps.freq /= 86400  # convert to Hz
+            results[fltr] = ps
+        
+        if self.show_plots:
+            fig = _plot(results, scale)
+            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_periodograms.png')
+            plt.show()
+        
+        return results
+
     def compute_averaged_periodograms(
         self,
         segment_size: Quantity,
@@ -430,8 +468,7 @@ class Analyser:
                 silent=True,
             )
             
-            if ps.m < 30:
-                warnings.warn(f"[OPTICAM] Averaged periodogram for {k} has fewer than 30 segments. Consider reducing your segment size.")
+            print(f'[OPTICAM] {ps.m} {k} segments averaged.')
             
             ps.freq /= 86400  # convert to Hz
             results[k] = ps
@@ -443,43 +480,6 @@ class Analyser:
         
         return results
 
-    def compute_periodograms(
-        self,
-        norm: Literal['frac', 'abs'] = 'frac',
-        scale: Literal['linear', 'log', 'loglog'] = 'linear',
-        ) -> Dict[str, Powerspectrum]:
-        """
-        Compute the periodograms for each light curve using `stingray.Powerspectrum`. It's usually a good idea to call 
-        the rebin() method to rebin your light curves to a regular time grid before calling this method.
-        
-        Parameters
-        ----------
-        norm : Literal['frac', 'abs'], optional
-            The normalisation to use for the periodograms, by default 'frac'. If 'frac', the resulting power is in units
-            of (rms/mean)^2 Hz^{-1}. If 'abs', the resulting power is in units of rms^2 Hz^{-1}.
-        scale : Literal['linear', 'log', 'loglog'], optional
-            The scale to use for the plot, by default 'linear'. If 'linear', all axes are linear. If 'log', the
-            frequency axis is logarithmic. If 'loglog', both the frequency and power axes are logarithmic.
-        
-        Returns
-        -------
-        Dict[str, Powerspectrum]
-            A dictionary containing the periodograms for each light curve.
-        """
-        
-        results = {}
-        
-        for fltr, lc in self.light_curves.items():
-            ps = Powerspectrum.from_lightcurve(lc, norm=norm, silent=True)
-            ps.freq /= 86400  # convert to Hz
-            results[fltr] = ps
-        
-        if self.show_plots:
-            fig = _plot(results, scale)
-            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_periodograms.png')
-            plt.show()
-        
-        return results
 
     def compute_crossspectra(
         self,
@@ -572,6 +572,9 @@ class Analyser:
                     norm=norm,
                     silent=True,
                     )
+                
+                print(f'[OPTICAM] {cs.m} {fltr1} x {fltr2} segments averaged.')
+                
                 cs.freq /= 86400  # convert to Hz
                 results[(fltr1, fltr2)] = cs
         
@@ -581,6 +584,7 @@ class Analyser:
             plt.show()
         
         return results
+
 
     def compute_lomb_scargle_periodograms(
         self,
@@ -626,6 +630,7 @@ class Analyser:
             plt.show()
         
         return results
+
 
     def compute_cross_correlations(
         self,
