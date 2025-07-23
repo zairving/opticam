@@ -118,8 +118,6 @@ class Catalogue:
         ########################################### out_directory ###########################################
         
         self.out_directory = out_directory
-        if not self.out_directory.endswith("/"):
-            self.out_directory += "/"
         
         # create output directory if it does not exist
         if not os.path.isdir(self.out_directory):
@@ -144,7 +142,7 @@ class Catalogue:
             self.logger.handlers.clear()
         
         # create file handler
-        file_handler = logging.FileHandler(self.out_directory + 'info.log')
+        file_handler = logging.FileHandler(os.path.join(self.out_directory, 'info.log'))
         file_handler.setLevel(logging.INFO)
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         file_handler.setFormatter(formatter)
@@ -153,12 +151,12 @@ class Catalogue:
         ########################################### sub-directories ###########################################
         
         # create subdirectories
-        if not os.path.isdir(self.out_directory + "cat"):
-            os.makedirs(self.out_directory + "cat")
-        if not os.path.isdir(self.out_directory + "diag"):
-            os.makedirs(self.out_directory + "diag")
-        if not os.path.isdir(self.out_directory + "misc"):
-            os.makedirs(self.out_directory + "misc")
+        if not os.path.isdir(os.path.join(self.out_directory, "cat")):
+            os.makedirs(os.path.join(self.out_directory, "cat"))
+        if not os.path.isdir(os.path.join(self.out_directory, "diag")):
+            os.makedirs(os.path.join(self.out_directory, "diag"))
+        if not os.path.isdir(os.path.join(self.out_directory, "misc")):
+            os.makedirs(os.path.join(self.out_directory, "misc"))
         
         ########################################### data directories ###########################################
         
@@ -187,23 +185,23 @@ class Catalogue:
             file_names = sorted(os.listdir(self.data_directory))
             for file in file_names:
                 if file.endswith('.fit') or file.endswith('.fits') or file.endswith('.fit.gz') or file.endswith('.fits.gz'):
-                    self.file_paths.append(self.data_directory + file)
+                    self.file_paths.append(os.path.join(self.data_directory, file))
         else:
             if self.c1_directory is not None:
                 file_names = sorted(os.listdir(self.c1_directory))
                 for file in file_names:
                     if file.endswith('.fit') or file.endswith('.fits') or file.endswith('.fit.gz') or file.endswith('.fits.gz'):
-                        self.file_paths.append(self.c1_directory + file)
+                        self.file_paths.append(os.path.join(self.c1_directory, file))
             if self.c2_directory is not None:
                 file_names = sorted(os.listdir(self.c2_directory))
                 for file in file_names:
                     if file.endswith('.fit') or file.endswith('.fits') or file.endswith('.fit.gz') or file.endswith('.fits.gz'):
-                        self.file_paths.append(self.c2_directory + file)
+                        self.file_paths.append(os.path.join(self.c2_directory, file))
             if self.c3_directory is not None:
                 file_names = sorted(os.listdir(self.c3_directory))
                 for file in file_names:
                     if file.endswith('.fit') or file.endswith('.fits') or file.endswith('.fit.gz') or file.endswith('.fits.gz'):
-                        self.file_paths.append(self.c3_directory + file)
+                        self.file_paths.append(os.path.join(self.c3_directory, file))
         
         # list of files to ignore (e.g., if they are corrupted or do not comply with the FITS standard)
         self.ignored_files = []
@@ -266,8 +264,8 @@ class Catalogue:
         
         ########################################### read transforms ###########################################
         
-        if os.path.isfile(self.out_directory + "cat/transforms.json"):
-            with open(self.out_directory + "cat/transforms.json", "r") as file:
+        if os.path.isfile(os.path.join(self.out_directory, "cat/transforms.json")):
+            with open(os.path.join(self.out_directory, "cat/transforms.json"), "r") as file:
                 self.transforms.update(json.load(file))
             if self.verbose:
                 self.logger.info("[OPTICAM] Read transforms from file.")
@@ -275,10 +273,13 @@ class Catalogue:
         ########################################### read catalogues ###########################################
         
         for fltr in list(self.camera_files.keys()):
-            if os.path.isfile(self.out_directory + f"cat/{fltr}_catalogue.ecsv"):
+            if os.path.isfile(os.path.join(self.out_directory, f"cat/{fltr}_catalogue.ecsv")):
                 self.catalogues.update(
                     {
-                        fltr: QTable.read(self.out_directory + f"cat/{fltr}_catalogue.ecsv", format="ascii.ecsv")
+                        fltr: QTable.read(
+                            os.path.join(self.out_directory, f"cat/{fltr}_catalogue.ecsv"),
+                            format="ascii.ecsv",
+                            )
                         }
                     )
                 self._set_psf_params(fltr)
@@ -396,12 +397,12 @@ class Catalogue:
             try:
                 # try to compute barycentric dynamical time
                 coords = SkyCoord(ra, dec, unit=(u.hourangle, u.deg))
-                bdt = apply_barycentric_correction(mjd, coords)
-            except:
+                bdt = self._apply_barycentric_correction(mjd, coords)
+            except Exception as e:
                 bdt = mjd
-                self.logger.info(f"[OPTICAM] Could not compute BDT for {file}.")
-        except:
-            self.logger.info(f'[OPTICAM] Skipping file {file} because it could not be read. This is usually due to the file not conforming to the FITS standard, or the file being corrupted.')
+                self.logger.info(f"[OPTICAM] Could not compute BDT for {file}: {e}. Using MJD instead.")
+        except Exception as e:
+            self.logger.info(f'[OPTICAM] Skipping file {file} because it could not be read: {e}')
             return None, None, None, None
         
         return bdt, fltr, binning, gain
@@ -451,14 +452,14 @@ class Catalogue:
         if unique_filters.size > 3:
             log_filters([file_path for file_path in self.file_paths if file_path not in self.ignored_files],
                         self.out_directory)
-            raise ValueError(f"[OPTICAM] More than three filters found. Image filters have been logged to {self.out_directory}diag/filters.json.")
+            raise ValueError(f"[OPTICAM] More than three filters found. Image filters have been logged to {os.path.join(self.out_directory, 'diag/filters.json')}.")
         
         # ensure there is at most one type of binning
         unique_binning = np.unique(list(binnings.values()))
         if len(unique_binning) > 1:
             log_binnings([file_path for file_path in self.file_paths if file_path not in self.ignored_files],
                          self.out_directory)
-            raise ValueError(f"[OPTICAM] Inconsistent binning detected. All images must have the same binning. Image binnings have been logged to {self.out_directory}diag/binnings.json.")
+            raise ValueError(f"[OPTICAM] Inconsistent binning detected. All images must have the same binning. Image binnings have been logged to {os.path.join(self.out_directory, 'diag/binnings.json')}.")
         else:
             self.binning = unique_binning[0]
             self.binning_scale = int(self.binning[0])
@@ -515,7 +516,7 @@ class Catalogue:
         params = dict(sorted(params.items()))
         
         # write parameters to file
-        with open(self.out_directory + "misc/input_parameters.json", "w") as file:
+        with open(os.path.join(self.out_directory, "misc/input_parameters.json"), "w") as file:
             json.dump(params, file, indent=4)
 
     def _plot_time_between_files(self) -> None:
@@ -583,9 +584,9 @@ class Catalogue:
         for ax in axes.flatten():
             ax.minorticks_on()
             ax.tick_params(which="both", direction="in", top=True, right=True)
-        
-        fig.savefig(self.out_directory + "diag/header_times.png")
-        
+
+        fig.savefig(os.path.join(self.out_directory, "diag/header_times.png"))
+
         if self.show_plots:
             plt.show(fig)
         else:
@@ -638,10 +639,13 @@ class Catalogue:
             raise ValueError(f"[OPTICAM] Could not open file {file}.")
         
         if return_error:
-            error = np.sqrt(data*self.gains[file])
+            error = np.sqrt(data * self.gains[file])
         
         if self.flat_corrector is not None:
             data = self.flat_corrector.correct(data, fltr)
+            
+            if return_error:
+                error = self.flat_corrector.correct(error, fltr)
         
         # remove cosmic rays if required
         if self.remove_cosmic_rays:
@@ -742,7 +746,7 @@ class Catalogue:
         """
         
         # if catalogues already exist, skip
-        if os.path.isfile(self.out_directory + 'cat/catalogues.png') and not overwrite:
+        if os.path.isfile(os.path.join(self.out_directory, 'cat/catalogues.png')) and not overwrite:
             print('[OPTICAM] Catalogs already exist. To overwrite, set overwrite to True.')
             return
         
@@ -839,7 +843,7 @@ class Catalogue:
             # create catalogue of sources in stacked image and write to file
             self.catalogues.update({fltr: tbl})
             self.catalogues[fltr].write(
-                self.out_directory + f"cat/{fltr}_catalogue.ecsv",
+                os.path.join(self.out_directory, f"cat/{fltr}_catalogue.ecsv"),
                 format="ascii.ecsv",
                 overwrite=True,
                 )
@@ -863,12 +867,12 @@ class Catalogue:
         #     self._visualise_psfs(stacked_image, fltr, show_diagnostic_plots)
         
         # save transforms to file
-        with open(self.out_directory + "cat/transforms.json", "w") as file:
+        with open(os.path.join(self.out_directory, "cat/transforms.json"), "w") as file:
             json.dump(self.transforms, file, indent=4)
         
         # write unaligned files to file
         if len(self.unaligned_files) > 0:
-            with open(self.out_directory + "diag/unaligned_files.txt", "w") as unaligned_file:
+            with open(os.path.join(self.out_directory, "diag/unaligned_files.txt"), "w") as unaligned_file:
                 for file in self.unaligned_files:
                     unaligned_file.write(file + "\n")
 
@@ -1053,9 +1057,9 @@ class Catalogue:
                 ax[i].set_title(fltr)
                 ax[i].set_xlabel("X")
                 ax[i].set_ylabel("Y")
-        
-        fig.savefig(self.out_directory + "cat/catalogues.png")
-        
+
+        fig.savefig(os.path.join(self.out_directory, "cat/catalogues.png"))
+
         if self.show_plots:
             plt.show(fig)
         else:
@@ -1101,9 +1105,9 @@ class Catalogue:
                 ax.set_title(fltr)
                 ax.set_xlabel("X")
                 ax.set_ylabel("Y")
-        
-        fig.savefig(self.out_directory + "diag/background_meshes.png")
-        
+
+        fig.savefig(os.path.join(self.out_directory, "diag/background_meshes.png"))
+
         if show and self.show_plots:
             plt.show(fig)
         else:
@@ -1168,14 +1172,14 @@ class Catalogue:
                 'TDB': bdts,
                 'RMS': backgrounds,
                 'median': rmss
-            }).to_csv(self.out_directory + 'diag/' + fltr + '_background.csv', index=False)
-        
+            }).to_csv(os.path.join(self.out_directory, f'diag/{fltr}_background.csv'), index=False)
+
         for ax in axs.flatten():
             ax.minorticks_on()
             ax.tick_params(which="both", direction="in", top=True, right=True)
         
         # save plot
-        fig.savefig(self.out_directory + "diag/background.png")
+        fig.savefig(os.path.join(self.out_directory, "diag/background.png"))
         
         # either show or close plot
         if show and self.show_plots:
@@ -1250,7 +1254,7 @@ class Catalogue:
             
             ax.set_title(f'{fltr} source {source}')
             
-            fig.savefig(self.out_directory + f'diag/{fltr}_source_{source}_psf.png')
+            fig.savefig(os.path.join(self.out_directory, f'diag/{fltr}_source_{source}_psf.png'))
             
             if show and self.show_plots:
                 plt.show()
@@ -1279,13 +1283,13 @@ class Catalogue:
             # skip cameras with no images
             if len(self.camera_files[fltr]) == 0:
                 continue
-            elif os.path.exists(self.out_directory + f"cat/{fltr}_images.gif") and not overwrite:
+            elif os.path.exists(os.path.join(self.out_directory, f"cat/{fltr}_images.gif")) and not overwrite:
                 print(f"[OPTICAM] {fltr} GIF already exists. To overwrite, set overwrite to True.")
                 continue
             
             # create gif frames directory if it does not exist
-            if not os.path.isdir(self.out_directory + f"diag/{fltr}_gif_frames"):
-                os.mkdir(self.out_directory + f"diag/{fltr}_gif_frames")
+            if not os.path.isdir(os.path.join(self.out_directory, f"diag/{fltr}_gif_frames")):
+                os.mkdir(os.path.join(self.out_directory, f"diag/{fltr}_gif_frames"))
             
             chunksize = max(1, len(self.camera_files[fltr]) // 100)  # chunk size for parallel processing (must be >= 1)
             process_map(partial(self._create_gif_frames, fltr=fltr), self.camera_files[fltr],
@@ -1354,7 +1358,7 @@ class Catalogue:
         
         ax.set_title(title, color=colour)
         
-        fig.savefig(self.out_directory + 'diag/' + fltr + '_gif_frames/' + file_name + '.png')
+        fig.savefig(os.path.join(self.out_directory, f'diag/{fltr}_gif_frames/{file_name}.png'))
 
     def _compile_gif(self, fltr: str, keep_frames: bool) -> None:
         """
@@ -1372,13 +1376,22 @@ class Catalogue:
         frames = []
         for file in tqdm(self.camera_files[fltr], disable=not self.verbose, desc=f"[OPTICAM] Loading {fltr} GIF frames"):
             try:
-                frames.append(Image.open(self.out_directory + 'diag/' + fltr + '_gif_frames/' + file.split('/')[-1].split(".")[0] + '.png'))
+                frames.append(Image.open(os.path.join(self.out_directory, f'diag/{fltr}_gif_frames/{file.split('/')[-1].split(".")[0]}.png')))
             except:
                 pass
         
         # save gif
-        frames[0].save(self.out_directory + 'cat/' + fltr + '_images.gif', format='GIF', append_images=frames[1:], 
-                       save_all=True, duration=200, loop=0)
+        frames[0].save(
+            os.path.join(
+                self.out_directory,
+                f'cat/{fltr}_images.gif',
+                ),
+            format='GIF',
+            append_images=frames[1:],
+            save_all=True,
+            duration=200,
+            loop=0,
+            )
         
         # close images
         for frame in frames:
@@ -1387,9 +1400,9 @@ class Catalogue:
         
         # delete frames after gif is saved
         if not keep_frames:
-            for file in tqdm(os.listdir(self.out_directory + f"diag/{fltr}_gif_frames"), disable=not self.verbose,
+            for file in tqdm(os.listdir(os.path.join(self.out_directory, f"diag/{fltr}_gif_frames")), disable=not self.verbose,
                              desc=f"[OPTICAM] Deleting {fltr} GIF frames"):
-                os.remove(self.out_directory + f"diag/{fltr}_gif_frames/{file}")
+                os.remove(os.path.join(self.out_directory, f"diag/{fltr}_gif_frames/{file}"))
 
 
     def photometry(
