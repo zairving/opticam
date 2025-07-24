@@ -15,7 +15,7 @@ from stingray.lombscargle import LombScarglePowerspectrum
 from stingray import CrossCorrelation
 from pandas import DataFrame
 
-from opticam_new.helpers import infer_gtis, sort_filters
+from opticam_new.helpers import infer_gtis, sort_filters, colours
 
 class Analyser:
     """
@@ -25,7 +25,7 @@ class Analyser:
     def __init__(
         self,
         out_directory: str,
-        light_curves: Dict[str, Lightcurve] | Dict[str, DataFrame] | None = None,
+        light_curves: Dict[str, Lightcurve | DataFrame] | None = None,
         prefix: str | None = None,
         phot_label: str | None = None,
         show_plots: bool = True,
@@ -38,7 +38,7 @@ class Analyser:
         out_directory : str
             The directory to save the output files (i.e., the same directory as `out_directory` used by
             `opticam_new.Photometer` when creating the light curves).
-        light_curves : Dict[str, Lightcurve] | Dict[str, DataFrame] | None, optional
+        light_curves : Dict[str, Lightcurve | DataFrame] | None, optional
             The light curves to analyse, where the keys are the filter names and the values are either Lightcurve
             objects or DataFrames containing 'TDB', 'rel_flux', and 'rel_flux_err' columns. Leave as `None` to create an
             empty analyser that can be populated later using the `join()` method.
@@ -69,15 +69,6 @@ class Analyser:
         
         if len(self.light_curves) > 0:
             self.t_ref = float(min([np.min(lc.time) for lc in self.light_curves.values()]))
-        
-        # define plotting colours for each filter
-        self.colours = {
-            'u-band': 'tab:green',  # camera 1
-            'g-band': 'tab:green',  # camera 1
-            'r-band': 'tab:orange',  # camera 2
-            'i-band': 'tab:olive',  # camera 3
-            'z-band': 'tab:olive',  # camera 3
-        }
     
     @staticmethod
     def _validate_light_curves(
@@ -107,8 +98,8 @@ class Analyser:
                 if isinstance(light_curves[fltr], DataFrame):
                     # get columns
                     time = light_curves[fltr]['TDB'].values
-                    counts = light_curves[fltr]['rel_flux'].values
-                    counts_err = light_curves[fltr]['rel_flux_err'].values
+                    counts = light_curves[fltr]['counts'].values
+                    counts_err = light_curves[fltr]['counts_err'].values
                     
                     # infer GTIs
                     gtis = infer_gtis(time, threshold=1.5)
@@ -237,7 +228,7 @@ class Analyser:
                 t,
                 lc.counts,
                 where='mid',
-                color=self.colours[fltr],
+                color=colours[fltr],
                 lw=1,
                 label=fltr,
             )
@@ -252,7 +243,7 @@ class Analyser:
             )
         
         axes[-1].set_xlabel(f'Time from BMJD {self.t_ref:.4f} [s]', fontsize='large')
-        axes[len(self.light_curves) // 2].set_ylabel('Relative flux', fontsize='large')
+        axes[len(self.light_curves) // 2].set_ylabel('Counts', fontsize='large')
         
         if title is not None:
             axes[0].set_title(title)
@@ -305,11 +296,11 @@ class Analyser:
                 axs[i].errorbar(np.append(results[k], results[k] + 1),
                                 np.append(self.light_curves[k].counts, self.light_curves[k].counts),
                                 np.append(self.light_curves[k].counts_err, self.light_curves[k].counts_err),
-                                marker='.', ms=2, linestyle='none', color=self.colours[k], ecolor='grey', elinewidth=1)
+                                marker='.', ms=2, linestyle='none', color=colours[k], ecolor='grey', elinewidth=1)
                 axs[i].set_title(k)
             
             axs[-1].set_xlabel('Phase')
-            axs[len(self.light_curves)//2].set_ylabel('Relative Flux')
+            axs[len(self.light_curves)//2].set_ylabel('Counts')
         
         return results
 
@@ -367,18 +358,18 @@ class Analyser:
                     np.append(results[k]['phase'], results[k]['phase'] + 1),
                     np.append(results[k]['flux'], results[k]['flux']),
                     np.append(results[k]['flux error'], results[k]['flux error']),
-                    marker='none', linestyle='none', color=self.colours[k], ecolor='grey', elinewidth=1)
+                    marker='none', linestyle='none', color=colours[k], ecolor='grey', elinewidth=1)
                 axes[i].step(
                     np.append(results[k]['phase'], results[k]['phase'] + 1),
                     np.append(results[k]['flux'], results[k]['flux']),
                     where='mid',
-                    color=self.colours[k],
+                    color=colours[k],
                     lw=1,
                 )
                 axes[i].set_title(k)
             
             axes[-1].set_xlabel('Phase')
-            axes[len(self.light_curves)//2].set_ylabel('Relative flux')
+            axes[len(self.light_curves)//2].set_ylabel('Counts')
             
             for ax in axes.flatten():
                 ax.minorticks_on()
@@ -389,20 +380,20 @@ class Analyser:
         return results
 
 
-    def compute_periodograms(
+    def compute_power_spectra(
         self,
         norm: Literal['frac', 'abs'] = 'frac',
         scale: Literal['linear', 'log', 'loglog'] = 'linear',
         ) -> Dict[str, Powerspectrum]:
         """
-        Compute the periodograms for each light curve using `stingray.Powerspectrum`. It's usually a good idea to call 
+        Compute the power spectrum for each light curve using `stingray.Powerspectrum`. It's usually a good idea to call 
         the rebin() method to rebin your light curves to a regular time grid before calling this method.
         
         Parameters
         ----------
         norm : Literal['frac', 'abs'], optional
-            The normalisation to use for the periodograms, by default 'frac'. If 'frac', the resulting power is in units
-            of (rms/mean)^2 Hz^{-1}. If 'abs', the resulting power is in units of rms^2 Hz^{-1}.
+            The normalisation to use for the power spectra, by default 'frac'. If 'frac', the resulting power is in
+            units of (rms/mean)^2 Hz^{-1}. If 'abs', the resulting power is in units of rms^2 Hz^{-1}.
         scale : Literal['linear', 'log', 'loglog'], optional
             The scale to use for the plot, by default 'linear'. If 'linear', all axes are linear. If 'log', the
             frequency axis is logarithmic. If 'loglog', both the frequency and power axes are logarithmic.
@@ -410,7 +401,8 @@ class Analyser:
         Returns
         -------
         Dict[str, Powerspectrum]
-            A dictionary containing the periodograms for each light curve.
+            A dictionary containing the power spectrum for each light curve, where the keys are the filter names and the
+            values are the power spectra.
         """
         
         results = {}
@@ -427,25 +419,25 @@ class Analyser:
         
         return results
 
-    def compute_averaged_periodograms(
+    def compute_averaged_power_spectra(
         self,
         segment_size: Quantity,
         norm: Literal['frac', 'abs'] = 'frac',
         scale: Literal['linear', 'log', 'loglog'] = 'linear',
         ) -> Dict[str, AveragedPowerspectrum]:
         """
-        Compute the averaged periodograms for each light curve using `stingray.AveragedPowerSpectrum`. It's usually a
+        Compute the averaged power spectrum for each light curve using `stingray.AveragedPowerSpectrum`. It's usually a
         good idea to call the rebin() method to rebin your light curves to a regular time grid before calling this 
         method.
         
         Parameters
         ----------
         segment_size : Quantity
-            The size of the segments to use for averaging the periodograms. This must be an astropy `Quantity` with
+            The size of the segments to use for averaging the power spectra. This must be an astropy `Quantity` with
             units of time (e.g., `astropy.units.s`) to ensure correct handling of the segment size.
         norm : Literal['frac', 'abs'], optional
-            The normalisation to use for the periodograms, by default 'frac'. If 'frac', the resulting power is in units
-            of (rms/mean)^2 Hz^{-1}. If 'abs', the resulting power is in units of rms^2 Hz^{-1}.
+            The normalisation to use for the power spectra, by default 'frac'. If 'frac', the resulting power is in
+            units of (rms/mean)^2 Hz^{-1}. If 'abs', the resulting power is in units of rms^2 Hz^{-1}.
         scale : Literal['linear', 'log', 'loglog'], optional
             The scale to use for the plot, by default 'linear'. If 'linear', all axes are linear. If 'log', the
             frequency axis is logarithmic. If 'loglog', both the frequency and power axes are logarithmic.
@@ -453,8 +445,8 @@ class Analyser:
         Returns
         -------
         Dict[str, AveragedPowerspectrum]
-            The averaged periodograms for each light curve, where the keys are the filter names and the values are
-            the averaged periodograms.
+            The averaged power spectrum for each light curve, where the keys are the filter names and the values are
+            the averaged power spectra.
         """
         
         segment_size = segment_size.to(u.day).value  # convert from given units to days
@@ -475,7 +467,7 @@ class Analyser:
         
         if self.show_plots:
             fig = _plot(results, scale)
-            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_L-S_periodograms.png')
+            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_averaged_power_spectra.png')
             plt.show()
         
         return results
@@ -675,7 +667,6 @@ class Analyser:
 
 
 
-
 def _plot(
     results: Dict[str, 
                     AveragedPowerspectrum | 
@@ -756,6 +747,7 @@ def _plot(
                 marker='none',
                 ecolor='grey',
                 elinewidth=1,
+                zorder=0,
                 )
         
         axes[i].text(
@@ -767,6 +759,17 @@ def _plot(
             ha='right',
             va='top',
         )
+        
+        if isinstance(results[key], CrossCorrelation):
+            axes[i].text(
+                .05,
+                .9,
+                f'time shift: {results[key].time_shift:.1f} s',
+                transform=axes[i].transAxes,
+                fontsize='large',
+                ha='left',
+                va='top',
+            )
     
     if scale == 'log':
         for ax in axes:
