@@ -661,8 +661,13 @@ class Catalogue:
         
         return data
 
-    def _get_source_coords_from_image(self, image: NDArray, bkg: Background2D | None = None,
-                                     away_from_edge: bool | None = False, n_sources: int | None = None) -> NDArray:
+    def _get_source_coords_from_image(
+        self,
+        image: NDArray,
+        bkg: Background2D | None = None,
+        away_from_edge: bool | None = False,
+        n_sources: int | None = None,
+        ) -> NDArray:
         """
         Get an array of source coordinates from an image in descending order of source brightness.
         
@@ -689,7 +694,6 @@ class Catalogue:
         
         cat = self.finder(image_clean, self.threshold*bkg.background_rms)  # find sources in background-subtracted image
         tbl = SourceCatalog(image_clean, cat, background=bkg.background).to_table()  # create catalogue of sources
-        # tbl = clip_extended_sources(tbl)
         tbl.sort('segment_flux', reverse=True)  # sort catalogue by flux in descending order
         
         coords = np.array([tbl["xcentroid"], tbl["ycentroid"]]).T
@@ -1113,9 +1117,12 @@ class Catalogue:
             fig.clear()
             plt.close(fig)
 
-    def _plot_backgrounds(self, background_median: Dict[str, Dict[str, NDArray]],
-                          background_rms: Dict[str, Dict[str, NDArray]],
-                          show: bool) -> None:
+    def _plot_backgrounds(
+        self,
+        background_median: Dict[str, Dict[str, NDArray]],
+        background_rms: Dict[str, Dict[str, NDArray]],
+        show: bool,
+        ) -> None:
         """
         Plot the time-varying background for each camera.
         
@@ -1140,11 +1147,13 @@ class Catalogue:
             if len(files) == 0:
                 continue
             
-            bdts = np.array([self.bdts[file] for file in files])
-            plot_times = (bdts - self.t_ref)*86400  # convert to seconds from first observation
+            # get values from background_median and background_rms dicts
+            backgrounds = list(background_median[fltr].values())
+            rmss = list(background_rms[fltr].values())
             
-            backgrounds = list(background_median[fltr].values())  # get background median for camera
-            rmss = list(background_rms[fltr].values())  # get background RMS for camera
+            # match times to background_median and background_rms keys
+            bdts = np.array([self.bdts[file] for file in files if file in background_median[fltr]])
+            plot_times = (bdts - self.t_ref) * 86400  # convert time to seconds from first observation
             
             if len(self.catalogues) == 1:
                 axs[0].set_title(fltr)
@@ -1518,13 +1527,15 @@ class Catalogue:
             # estimate source detection threshold from noisy image
             threshold = detect_threshold(image, self.threshold, error=error)
         
+        image_coords = None  # assume no image coordinates by default
         if photometer.match_sources:
-            segm = self.finder(image, threshold)
-            tbl = SourceCatalog(image, segm).to_table()
-            image_coords = np.array([tbl["xcentroid"].value,
-                                     tbl["ycentroid"].value]).T
-        else:
-            image_coords = None
+            try:
+                segm = self.finder(image, threshold)
+                tbl = SourceCatalog(image, segm).to_table()
+                image_coords = np.array([tbl["xcentroid"].value,
+                                        tbl["ycentroid"].value]).T
+            except Exception as e:
+                self.logger.warning(f"[OPTICAM] Could not determine source coordinates in {file}: {e}")
         
         results = photometer.compute(image, error, source_coords, image_coords, self.psf_params[fltr])
         
