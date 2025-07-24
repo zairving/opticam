@@ -107,7 +107,7 @@ class DifferentialPhotometer:
         self,
         fltr: str,
         target: int,
-        comparisons: List[int],
+        comparisons: int | List[int],
         phot_label: str,
         prefix: str | None = None,
         match_other_cameras = False,
@@ -126,9 +126,8 @@ class DifferentialPhotometer:
             The filter to compute the relative light curve for.
         target : int
             The catalogue ID of the target source.
-        comparison : List[int]
-            The catalogue ID(s) of the comparison source(s). Even if a single comparison source is used, this should
-            be a list of length 1.
+        comparisons : int | List[int]
+            The catalogue ID(s) of the comparison source(s).
         phot_label : str
             The photometry label, used for file reading and labelling.
         prefix : str, optional
@@ -146,8 +145,6 @@ class DifferentialPhotometer:
             An Analyser object containing the relative light curve(s).
         """
         
-        save_label = f'{phot_label}_light_curve'
-        
         if not os.path.isdir(os.path.join(self.out_directory, 'relative_light_curves')):
             os.mkdir(os.path.join(self.out_directory, 'relative_light_curves'))
         
@@ -155,51 +152,27 @@ class DifferentialPhotometer:
         if fltr not in self.filters:
             raise ValueError('[OPTICAM] ' + fltr + ' is not a valid filter.')
         
+        if isinstance(comparisons, int):
+            # if a single comparison source is given, convert to list
+            comparisons = [comparisons]
+        
+        relative_light_curves = {}
+        
         if not match_other_cameras:
             # compute and plot relative light curve for single filter
-            relative_light_curve = self._compute_relative_light_curve(
+            relative_light_curves[fltr] = self._compute_relative_light_curve(
                 fltr,
                 target,
                 comparisons,
+                prefix,
                 phot_label,
-                self.t_ref,
                 show_diagnostics,
                 )
             
-            if relative_light_curve is None:
+            if relative_light_curves[fltr] is None:
                 raise ValueError(f"[OPTICAM] Could not compute relative light curve for filter {fltr}, target {target}, comparisons {comparisons}.")
-            
-            self._plot_relative_light_curve(
-                relative_light_curve,
-                self.t_ref,
-                target=target,
-                comparisons=comparisons,
-                prefix=prefix,
-                fltr=fltr,
-                save_label=save_label,
-                )
-            
-            # save relative light curve to CSV
-            df = pd.DataFrame({
-                'TDB': relative_light_curve.time,
-                'rel_flux': relative_light_curve.counts,
-                'rel_flux_err': relative_light_curve.counts_err
-            })
-            df.to_csv(
-                os.path.join(self.out_directory, f'relative_light_curves/{prefix}_{fltr}_{save_label}.csv'),
-                index=False,
-            )
-            
-            # return Analyser object
-            return Analyser(
-                self.out_directory,
-                light_curves={fltr: relative_light_curve}, 
-                prefix=prefix,
-                phot_label=phot_label,
-                )
         else:
             # define dictionaries to store relative light curves for each camera
-            relative_light_curves = {}
             targets_ = {}
             comparisons_ = {}
             
@@ -232,45 +205,25 @@ class DifferentialPhotometer:
                     cat_fltr,
                     targets_[cat_fltr],
                     comparisons_[cat_fltr],
+                    prefix,
                     phot_label,
-                    self.t_ref, 
                     show_diagnostics,
                     )
-            
-            # plot the relative light curves for each filter
-            self._plot_relative_light_curves(
-                relative_light_curves,
-                self.t_ref,
-                targets_,
-                comparisons_,
-                prefix,
-                save_label,
-                )
-            
-            # save relative light curves
-            for (k, v) in relative_light_curves.items():
-                df = pd.DataFrame({
-                    "TDB": v.time,
-                    "relative flux": v.counts,
-                    "relative flux error": v.counts_err
-                })
-                df.to_csv(os.path.join(self.out_directory, f'relative_light_curves/{prefix}_{k}_{save_label}.csv'),
-                                       index=False)
-            
-            return Analyser(
-                self.out_directory,
-                light_curves=relative_light_curves,
-                prefix=prefix,
-                phot_label=phot_label,
-                )
+        
+        return Analyser(
+            self.out_directory,
+            light_curves=relative_light_curves,
+            prefix=prefix,
+            phot_label=phot_label,
+            )
     
     def _compute_relative_light_curve(
         self,
         fltr: str,
         target: int,
         comparisons: List[int],
+        prefix: str | None,
         phot_label: str,
-        t_ref: float,
         show_diagnostics: bool,
         ) -> Lightcurve | None:
         """
@@ -282,21 +235,24 @@ class DifferentialPhotometer:
         fltr : str
             The filter to compute the relative light curve for.
         target : int
-            The catalog ID of the target source.
+            The catalogue ID of the target source.
         comparisons : List[int]
-            The catalog ID(s) of the comparison source(s).
-        phot_type : Literal['aperture', 'annulus';, 'normal', 'optimal']
-            The type of photometry to use.
-        t_ref : float
-            The time of the earliest observation (used for plotting the relative light curve in seconds from t_ref).
+            The catalogue ID(s) of the comparison source(s).
+        prefix : str | None
+            The prefix to use when saving the relative light curve (e.g., the target star's name), by default None.
+        phot_label : str
+            The photometry label, used for file reading and labelling.
         show_diagnostics : bool
-            Whether to show diagnostic plots for each comparison source.
+            Whether to show diagnostic plots, by default True.
         
         Returns
         -------
-        Lightcurve
-            The relative light curve (as a Stingray Lightcurve object).
+        Lightcurve | None
+            The relative light curve for the target source with respect to the comparison sources, or None if the light
+            curve could not be computed.
         """
+        
+        # TODO: create functions to clean up this code
         
         # subdirectory where results will be saved
         light_curve_dir = f'{phot_label}_light_curves'
@@ -322,7 +278,7 @@ class DifferentialPhotometer:
                 continue
             comp_dfs.append(comparison_df)
         
-        # ensure all light curve DataFrames have a common time column
+        # ensure all DataFrames have the same time column
         filtered_target_df, filtered_comp_dfs = self._filter_dataframes_to_common_time_column(
             target_df,
             comp_dfs,
@@ -337,7 +293,6 @@ class DifferentialPhotometer:
                 filtered_target_df,
                 df,
                 phot_label,
-                t_ref,
                 show_diagnostics,
             )
         
@@ -353,30 +308,64 @@ class DifferentialPhotometer:
                             df,
                             df2,
                             phot_label,
-                            t_ref,
                             show_diagnostics,
                             )
+        
+        time = filtered_target_df["TDB"].values
         
         # get total flux and error of comparison sources
         comp_fluxes = np.sum([df["flux"].values for df in filtered_comp_dfs], axis=0)
         comp_flux_errors = np.sqrt(np.sum([np.square(df["flux_error"].values) for df in filtered_comp_dfs], axis=0))
         
-        time = filtered_target_df["TDB"].values
-        
         # compute relative flux and error
         relative_flux = filtered_target_df["flux"].values / comp_fluxes
         relative_flux_error = relative_flux * np.abs(np.sqrt(np.square(filtered_target_df["flux_error"].values / filtered_target_df["flux"].values) + np.square(comp_flux_errors / comp_fluxes)))
         
+        # scale relative flux by mean comparison flux to get flux in counts
+        counts = relative_flux * np.mean(comp_fluxes)
+        counts_err = relative_flux_error * np.mean(comp_fluxes)
+        
         # mask non-finite values
         valid_mask = np.isfinite(relative_flux) & np.isfinite(relative_flux_error)
         time = time[valid_mask]
+        counts = counts[valid_mask]
+        counts_err = counts_err[valid_mask]
         relative_flux = relative_flux[valid_mask]
         relative_flux_error = relative_flux_error[valid_mask]
         
         # infer light curve GTIs
         gtis = infer_gtis(time, threshold=1.5)
         
-        return Lightcurve(time, relative_flux, err=relative_flux_error, gti=gtis)
+        # save relative light curve to CSV
+        df = pd.DataFrame({
+            'TDB': time,
+            'counts': counts,
+            'counts_err': counts_err,
+            'rel_flux': relative_flux,
+            'rel_flux_err': relative_flux_error,
+        })
+        df.to_csv(
+            os.path.join(self.out_directory, f'relative_light_curves/{prefix}_{fltr}_{phot_label}_light_curve.csv'),
+            index=False,
+        )
+        
+        lc = Lightcurve(
+            time,
+            counts,
+            err=counts_err,
+            gti=gtis,
+        )
+        
+        self._plot_relative_light_curve(
+            lc,
+            target,
+            comparisons,
+            prefix,
+            fltr,
+            phot_label,
+        )
+        
+        return lc
     
     def _filter_dataframes_to_common_time_column(
         self,
@@ -423,12 +412,11 @@ class DifferentialPhotometer:
     def _plot_relative_light_curve(
         self,
         relative_light_curve: Lightcurve,
-        t_ref: float,
         target: int,
         comparisons: List[int],
         prefix: str | None,
         fltr: str,
-        save_label: str,
+        phot_label: str,
         ax: Axes | None = None,
         ) -> None:
         """
@@ -438,26 +426,25 @@ class DifferentialPhotometer:
         Parameters
         ----------
         relative_light_curve : Lightcurve
-            The relative light curve.
-        t_ref : float
-            The time of the earliest observation (used for plotting the relative light curve in seconds from t_ref).
+            The relative light curve to plot.
         target : int
-            The catalog ID of the target source.
+            The catalogue ID of the target source.
         comparisons : List[int]
-            The catalog ID(s) of the comparison source(s).
+            The catalogue ID(s) of the comparison source(s).
         prefix : str | None
-            The prefix to use when saving the relative light curve (e.g., the target star's name).
+            The prefix to use when saving the relative light curve (e.g., the target star's name), by default None.
         fltr : str
-            The filter.
-        save_label : str
-            The label to use when saving the relative light curve.
+            The filter to plot the relative light curve for.
+        phot_label : str
+            The photometry label, used for file reading and labelling.
         ax : Axes, optional
-            The axes to plot the relative light curve on. If None, a new figure and axes will be created.
+            The axes to plot the relative light curve on, by default None. If None, a new figure and axes will be 
+            created.
         """
         
         # convert time to seconds from t_ref
         time = np.asarray(relative_light_curve.time).copy()
-        time -= t_ref
+        time -= self.t_ref
         time *= 86400
         
         if ax is None:
@@ -485,91 +472,19 @@ class DifferentialPhotometer:
         
         if standalone_plot:
             ax.set_title(f'{fltr} (Source ID: {target}, Comparison ID(s): {', '.join([str(comp) for comp in comparisons])})')
-            ax.set_xlabel(f"Time from BMJD {t_ref:.4f} [s]")
+            ax.set_xlabel(f"Time from BMJD {self.t_ref:.4f} [s]")
             ax.set_ylabel("Relative flux")
             
             ax.minorticks_on()
             ax.tick_params(which='both', direction='in', top=True, right=True)
             
-            fig.savefig(os.path.join(self.out_directory, f'relative_light_curves/{prefix}_{fltr}_{save_label}.png'))
+            fig.savefig(os.path.join(self.out_directory, f'relative_light_curves/{prefix}_{fltr}_{phot_label}_light_curve.png'))
             
             if self.show_plots:
                 plt.show()
             else:
                 fig.clear()
                 plt.close(fig)
-    
-    def _plot_relative_light_curves(
-        self,
-        relative_light_curves: Dict[str, Lightcurve],
-        t_ref: float,
-        targets: Dict[str, int],
-        comparisons: Dict[str, List[int]],
-        prefix: str | None,
-        save_label: str,
-        ) -> None:
-        """
-        Plot the relative light curves for a target source with respect to one or more comparison sources for multiple filters.
-        
-        Parameters
-        ----------
-        relative_light_curves : Dict[str, Dict[str, ArrayLike]]
-            The relative light curves for each filter.
-        t_ref : float
-            The time of the earliest observation (used for plotting the relative light curve in seconds from t_ref).
-        targets : Dict[str, int]
-            The catalog ID of the target source for each filter.
-        comparisons : Dict[str, List[int]]
-            The catalog ID(s) of the comparison source(s) for each filter.
-        prefix : str | None
-            The prefix to use when saving the relative light curve (e.g., the target star's name).
-        save_label : str
-            The label to use when saving the relative light curve.
-        """
-        
-        fig, axes = plt.subplots(
-            nrows=len(relative_light_curves),
-            tight_layout=True,
-            sharex=True,
-            figsize=(1.5 * 6.4, 2 * len(relative_light_curves) / 3 * 4.8),
-            gridspec_kw={
-                "hspace": 0,
-                },
-            )
-
-        for i, (fltr, relative_light_curve) in enumerate(relative_light_curves.items()):
-            self._plot_relative_light_curve(
-                relative_light_curve,
-                t_ref,
-                targets[fltr],
-                comparisons[fltr],
-                prefix,
-                fltr,
-                save_label,
-                axes[i],
-                )
-            axes[i].text(
-                .95,
-                .9,
-                fltr,
-                transform=axes[self.filters.index(fltr)].transAxes,
-                ha='right',
-                va='top',
-                fontsize='large',
-            )
-            axes[i].minorticks_on()
-            axes[i].tick_params(which='both', direction='in', top=True, right=True)
-        
-        axes[-1].set_xlabel(f"Time from BMJD {t_ref:.4f} [s]")
-        axes[int(len(relative_light_curves) / 2)].set_ylabel("Relative flux")
-        
-        fig.savefig(os.path.join(self.out_directory, f'relative_light_curves/{prefix}_{save_label}.png'))
-        
-        if self.show_plots:
-            plt.show(fig)
-        else:
-            fig.clear()
-            plt.close(fig)
     
     def _plot_diag(
         self,
@@ -579,7 +494,6 @@ class DifferentialPhotometer:
         comparison1_df: pd.DataFrame,
         comparison2_df: pd.DataFrame,
         phot_label: str,
-        t_ref: float,
         show: bool,
         ) -> None:
         """
@@ -606,7 +520,7 @@ class DifferentialPhotometer:
         """
         
         # convert time to seconds from t_ref
-        time = (comparison1_df["TDB"].values - t_ref) * 86400
+        time = (comparison1_df["TDB"].values - self.t_ref) * 86400
         
         fig, axes = plt.subplots(
             nrows=3,
@@ -689,7 +603,7 @@ class DifferentialPhotometer:
             color='r',
             lw=1,
         )
-        axes[2].set_xlabel(f"Time from BMJD {t_ref} [s]")
+        axes[2].set_xlabel(f"Time from BMJD {self.t_ref} [s]")
         axes[2].set_ylabel("Normalised relative flux")
         
         ########################################### format plot ###########################################
