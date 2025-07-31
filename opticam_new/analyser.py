@@ -186,6 +186,34 @@ class Analyser:
         for fltr, lc in self.light_curves.items():
             self.light_curves[fltr] = lc.rebin(dt, method='mean')
 
+    def _convert_lc_time_to_seconds(
+        self,
+        lc: Lightcurve,
+        ) -> Lightcurve:
+        """
+        Convert the time of a light curve from days to seconds, relative to the reference time.
+        
+        Parameters
+        ----------
+        lc : Lightcurve
+            The light curve to convert.
+        
+        Returns
+        -------
+        Lightcurve
+            The light curve with time converted to seconds, relative to the reference time.
+        """
+        
+        t = (np.asarray(lc.time) - self.t_ref) * 86400
+        gti = (np.asarray(lc.gti) - self.t_ref) * 86400
+        
+        return Lightcurve(
+            t,
+            lc.counts,
+            err=lc.counts_err,
+            gti=gti,
+            err_dist=lc.err_dist,
+        )
 
     def plot_light_curves(
         self,
@@ -413,9 +441,16 @@ class Analyser:
         
         results = {}
         
-        for fltr, lc in self.light_curves.items():
-            ps = Powerspectrum.from_lightcurve(lc, norm='abs', silent=True)
-            ps.freq /= 86400  # convert to Hz
+        for fltr in self.light_curves.keys():
+            
+            lc = self._convert_lc_time_to_seconds(self.light_curves[fltr])
+            
+            ps = Powerspectrum.from_lightcurve(
+                lc,
+                norm='abs',
+                silent=True,
+                )
+            
             results[fltr] = ps
         
         if self.show_plots:
@@ -428,6 +463,7 @@ class Analyser:
     def compute_averaged_power_spectra(
         self,
         segment_size: Quantity,
+        rebin_factor: float | None = None,
         scale: Literal['linear', 'log', 'loglog'] = 'linear',
         ) -> Dict[str, AveragedPowerspectrum]:
         """
@@ -440,6 +476,10 @@ class Analyser:
         segment_size : Quantity
             The size of the segments to use for averaging the power spectra. This must be an astropy `Quantity` with
             units of time (e.g., `astropy.units.s`) to ensure correct handling of the segment size.
+        rebin_factor : float | None, optional
+            The factor by which to rebin the power spectrum in frequency. If 'None', no rebinning will be performed.
+            If a float, the power spectrum will be geometrically/logarithmically rebinned with each bin being a factor
+            `1 + rebin_factor` larger than the previous one.
         scale : Literal['linear', 'log', 'loglog'], optional
             The scale to use for the plot, by default 'linear'. If 'linear', all axes are linear. If 'log', the
             frequency axis is logarithmic. If 'loglog', both the frequency and power axes are logarithmic.
@@ -451,12 +491,15 @@ class Analyser:
             the averaged power spectra.
         """
         
-        segment_size = segment_size.to(u.day).value  # convert from given units to days
+        segment_size = segment_size.to(u.s).value  # convert from given units to days
         
         results = {}
         for k in self.light_curves.keys():
+            
+            lc = self._convert_lc_time_to_seconds(self.light_curves[k])
+            
             ps = AveragedPowerspectrum.from_lightcurve(
-                self.light_curves[k],
+                lc,
                 segment_size,
                 norm='abs',
                 silent=True,
@@ -464,7 +507,9 @@ class Analyser:
             
             print(f'[OPTICAM] {ps.m} {k} segments averaged.')
             
-            ps.freq /= 86400  # convert to Hz
+            if rebin_factor:
+                ps = ps.rebin_log(rebin_factor)
+            
             results[k] = ps
         
         if self.show_plots:
@@ -823,9 +868,8 @@ def _define_yerr(
         The y-error array if it exists (and a sufficient number of segments has been averaged), otherwise `None`.
     """
     
-    if hasattr(obj, 'm'):
-        if obj.m > 1:
-            return obj.power_err
+    if isinstance(obj, (AveragedPowerspectrum, AveragedCrossspectrum)):
+        return obj.power_err
     
     return None
 
