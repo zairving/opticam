@@ -59,7 +59,7 @@ class BasePhotometer(ABC):
         """
         Perform photometry on the given image using the provided source coordinates and PSF parameters. If defining a
         custom photometer, this method must be implemented. The resulting dictionary must contain 'flux' and
-        'flux_error' keys, as well as any additional metrics that the photometer computes. The time stamps for each
+        'flux_err' keys, as well as any additional metrics that the photometer computes. The time stamps for each
         image are handled by the catalogue, and so they do not need to be included in the results dictionary.
         
         Parameters
@@ -318,12 +318,12 @@ class SimplePhotometer(BasePhotometer):
         
         results = {
             'flux': [],
-            'flux_error': [],
+            'flux_err': [],
         }
         
         if self.local_background_estimator is not None:
             results['background'] = []
-            results['background_error'] = []
+            results['background_err'] = []
         
         return results
 
@@ -348,11 +348,11 @@ class SimplePhotometer(BasePhotometer):
         """
         
         results['flux'].append(None)
-        results['flux_error'].append(None)
+        results['flux_err'].append(None)
         
         if self.local_background_estimator is not None:
             results['background'].append(None)
-            results['background_error'].append(None)
+            results['background_err'].append(None)
         
         return results
 
@@ -403,7 +403,7 @@ class SimplePhotometer(BasePhotometer):
             )
             
             results['flux'].append(flux)
-            results['flux_error'].append(flux_err)
+            results['flux_err'].append(flux_err)
         else:
             flux, flux_err, background, background_err = phot_function(
                 image,
@@ -413,9 +413,9 @@ class SimplePhotometer(BasePhotometer):
             )
             
             results['flux'].append(flux)
-            results['flux_error'].append(flux_err)
+            results['flux_err'].append(flux_err)
             results['background'].append(background)
-            results['background_error'].append(background_err)
+            results['background_err'].append(background_err)
         
         return results
 
