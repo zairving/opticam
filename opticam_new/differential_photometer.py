@@ -4,8 +4,6 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from astropy.table import QTable
-from scipy.spatial.distance import cdist
-from scipy.optimize import linear_sum_assignment
 import json
 from stingray import Lightcurve
 import matplotlib.colors as mcolors
@@ -14,7 +12,6 @@ from matplotlib.axes import Axes
 from opticam_new.analyser import Analyser
 from opticam_new.helpers import plot_catalogue, infer_gtis
 
-# TODO: it should be possible to improve camera matching by taking into account the pixel-scale and FoV differences between the cameras.
 
 class DifferentialPhotometer:
     """
@@ -110,7 +107,6 @@ class DifferentialPhotometer:
         comparisons: int | List[int],
         phot_label: str,
         prefix: str | None = None,
-        match_other_cameras = False,
         show_diagnostics: bool = True,
         ) -> Analyser:
         """
@@ -132,10 +128,6 @@ class DifferentialPhotometer:
             The photometry label, used for file reading and labelling.
         prefix : str, optional
             The prefix to use when saving the relative light curve (e.g., the target star's name), by default None.
-        match_other_cameras : bool, optional
-            Whether to try and automatically match the target and comparison sources across OPTICAM's other cameras, by
-            default False. Note that this can incorrectly match sources, particularly if the fields are crowded, and so
-            it is recommended to manually check the results.
         show_diagnostics : bool, optional
             Whether to show diagnostic plots, by default True.
         
@@ -158,57 +150,18 @@ class DifferentialPhotometer:
         
         relative_light_curves = {}
         
-        if not match_other_cameras:
-            # compute and plot relative light curve for single filter
-            relative_light_curves[fltr] = self._compute_relative_light_curve(
-                fltr,
-                target,
-                comparisons,
-                prefix,
-                phot_label,
-                show_diagnostics,
-                )
-            
-            if relative_light_curves[fltr] is None:
-                raise ValueError(f"[OPTICAM] Could not compute relative light curve for filter {fltr}, target {target}, comparisons {comparisons}.")
-        else:
-            # define dictionaries to store relative light curves for each camera
-            targets_ = {}
-            comparisons_ = {}
-            
-            # get source coordinates for input filter
-            input_filter_coords = np.array([self.catalogues[fltr]['xcentroid'], self.catalogues[fltr]['ycentroid']]).T
-            
-            for cat_fltr in self.filters:
-                # get target and comparison source indices
-                if cat_fltr == fltr:
-                    # if the current filter is the input filter, the target and comparison sources are already known
-                    targets_[cat_fltr] = target
-                    comparisons_[cat_fltr] = comparisons
-                else:
-                    # if the current filter is not the input filter, the target and comparison sources need to be matched
-                    # using the Hungarian algorithm
-                    fltr_coords = np.array([self.catalogues[cat_fltr]['xcentroid'], self.catalogues[cat_fltr]['ycentroid']]).T  # get source coordinates for current filter
-                    distance_matrix = cdist(input_filter_coords, fltr_coords)  # compute distance matrix
-                    input_filter_indices, fltr_indices = linear_sum_assignment(distance_matrix)  # solve assignment problem
-                    
-                    # get target and comparison source indices
-                    targets_[cat_fltr] = int(fltr_indices[np.where(input_filter_indices == target - 1)[0]]) + 1
-                    comparisons_[cat_fltr] = [int(fltr_indices[np.where(input_filter_indices == comp - 1)[0]]) + 1 for comp in comparisons]
-                    
-                    print(f'[OPTICAM] Matched {fltr} source {target} to {cat_fltr} source {targets_[cat_fltr]}.')
-                    for i in range(len(comparisons)):
-                        print(f'[OPTICAM] Matched {fltr} source {comparisons[i]} to {cat_fltr} source {comparisons_[cat_fltr][i]}')
-                
-                # compute relative light curve for current filter
-                relative_light_curves[cat_fltr] = self._compute_relative_light_curve(
-                    cat_fltr,
-                    targets_[cat_fltr],
-                    comparisons_[cat_fltr],
-                    prefix,
-                    phot_label,
-                    show_diagnostics,
-                    )
+        # compute and plot relative light curve for single filter
+        relative_light_curves[fltr] = self._compute_relative_light_curve(
+            fltr,
+            target,
+            comparisons,
+            prefix,
+            phot_label,
+            show_diagnostics,
+            )
+        
+        if relative_light_curves[fltr] is None:
+            raise ValueError(f"[OPTICAM] Could not compute relative light curve for filter {fltr}, target {target}, comparisons {comparisons}.")
         
         return Analyser(
             self.out_directory,
@@ -315,21 +268,15 @@ class DifferentialPhotometer:
         
         # get total flux and error of comparison sources
         comp_fluxes = np.sum([df["flux"].values for df in filtered_comp_dfs], axis=0)
-        comp_flux_errors = np.sqrt(np.sum([np.square(df["flux_error"].values) for df in filtered_comp_dfs], axis=0))
+        comp_flux_errors = np.sqrt(np.sum([np.square(df["flux_err"].values) for df in filtered_comp_dfs], axis=0))
         
         # compute relative flux and error
         relative_flux = filtered_target_df["flux"].values / comp_fluxes
-        relative_flux_error = relative_flux * np.abs(np.sqrt(np.square(filtered_target_df["flux_error"].values / filtered_target_df["flux"].values) + np.square(comp_flux_errors / comp_fluxes)))
-        
-        # scale relative flux by mean comparison flux to get flux in counts
-        counts = relative_flux * np.mean(comp_fluxes)
-        counts_err = relative_flux_error * np.mean(comp_fluxes)
+        relative_flux_error = relative_flux * np.abs(np.sqrt(np.square(filtered_target_df["flux_err"].values / filtered_target_df["flux"].values) + np.square(comp_flux_errors / comp_fluxes)))
         
         # mask non-finite values
         valid_mask = np.isfinite(relative_flux) & np.isfinite(relative_flux_error)
         time = time[valid_mask]
-        counts = counts[valid_mask]
-        counts_err = counts_err[valid_mask]
         relative_flux = relative_flux[valid_mask]
         relative_flux_error = relative_flux_error[valid_mask]
         
@@ -339,8 +286,6 @@ class DifferentialPhotometer:
         # save relative light curve to CSV
         df = pd.DataFrame({
             'TDB': time,
-            'counts': counts,
-            'counts_err': counts_err,
             'rel_flux': relative_flux,
             'rel_flux_err': relative_flux_error,
         })
@@ -351,8 +296,8 @@ class DifferentialPhotometer:
         
         lc = Lightcurve(
             time,
-            counts,
-            err=counts_err,
+            relative_flux,
+            err=relative_flux_error,
             gti=gtis,
         )
         
@@ -534,7 +479,7 @@ class DifferentialPhotometer:
         
         # compute relative flux and error
         relative_flux = comparison1_df["flux"].values / comparison2_df["flux"].values
-        relative_flux_error = relative_flux * np.abs(np.sqrt(np.square(comparison1_df["flux_error"].values / comparison1_df["flux"].values) + np.square(comparison2_df["flux_error"].values / comparison2_df["flux"].values)))
+        relative_flux_error = relative_flux * np.abs(np.sqrt(np.square(comparison1_df["flux_err"].values / comparison1_df["flux"].values) + np.square(comparison2_df["flux_err"].values / comparison2_df["flux"].values)))
         
         ########################################### normalised light curves ###########################################
         
@@ -542,7 +487,7 @@ class DifferentialPhotometer:
         axes[0].errorbar(
             time,
             comparison1_df["flux"] / comparison1_df["flux"].median(),
-            np.abs(comparison1_df["flux_error"] / comparison1_df["flux"].median()),
+            np.abs(comparison1_df["flux_err"] / comparison1_df["flux"].median()),
             fmt="kx-",
             ms=5,
             elinewidth=1,
@@ -552,7 +497,7 @@ class DifferentialPhotometer:
         axes[0].errorbar(
             time,
             comparison2_df["flux"] / comparison2_df["flux"].median(),
-            np.abs(comparison2_df["flux_error"] / comparison2_df["flux"].median()),
+            np.abs(comparison2_df["flux_err"] / comparison2_df["flux"].median()),
             fmt="r+-",
             ms=5,
             elinewidth=1,
@@ -569,8 +514,8 @@ class DifferentialPhotometer:
             comparison1_df["flux"] / comparison1_df["flux"].median() - comparison2_df["flux"] / comparison2_df["flux"].median(),
             np.sqrt(np.sum(
                 [
-                    np.square(comparison1_df["flux_error"].values / comparison1_df["flux"].values),
-                    np.square(comparison2_df["flux_error"].values / comparison2_df["flux"].values),
+                    np.square(comparison1_df["flux_err"].values / comparison1_df["flux"].values),
+                    np.square(comparison2_df["flux_err"].values / comparison2_df["flux"].values),
                 ],
                 axis=0,
                 ),
