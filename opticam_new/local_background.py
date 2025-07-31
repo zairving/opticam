@@ -73,7 +73,7 @@ class BaseLocalBackground(ABC):
 
 class DefaultLocalBackground(BaseLocalBackground):
     """
-    Elliptical annulus local background estimator.
+    Default local background estimator using an elliptical annulus.
     """
     
     def __call__(
