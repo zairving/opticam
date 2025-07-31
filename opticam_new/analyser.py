@@ -5,7 +5,6 @@ from numpy.typing import NDArray
 import os
 import astropy.units as u
 from astropy.units.quantity import Quantity
-import warnings
 from stingray import Lightcurve
 from matplotlib.figure import Figure
 import copy
@@ -96,25 +95,33 @@ class Analyser:
         if light_curves:
             for fltr in light_curves.keys():
                 if isinstance(light_curves[fltr], DataFrame):
-                    # get columns
-                    time = light_curves[fltr]['TDB'].values
-                    counts = light_curves[fltr]['counts'].values
-                    counts_err = light_curves[fltr]['counts_err'].values
+                    time = np.asarray(light_curves[fltr]['TDB'].values)
+                    counts = np.asarray(light_curves[fltr]['rel_flux'].values)
+                    counts_err = np.asarray(light_curves[fltr]['rel_flux_err'].values)
                     
                     # infer GTIs
                     gtis = infer_gtis(time, threshold=1.5)
-                    
-                    # convert DataFrame to Lightcurve
-                    validated_light_curves[fltr] = Lightcurve(
-                        time,
-                        counts,
-                        err=counts_err,
-                        gti=gtis,
-                        )
                 elif isinstance(light_curves[fltr], Lightcurve):
-                    validated_light_curves[fltr] = light_curves[fltr]
+                    time = np.asarray(light_curves[fltr].time)
+                    counts = np.asarray(light_curves[fltr].counts)
+                    counts_err = np.asarray(light_curves[fltr].counts_err)
+                    gtis = light_curves[fltr].gti
                 else:
                     raise TypeError(f'[OPTICAM] Light curve for filter {fltr} must be either a DataFrame or a Lightcurve object, but got {type(light_curves[fltr])}.')
+                
+                # normalise flux
+                mean_flux = np.mean(counts)
+                counts /= mean_flux
+                counts_err /= mean_flux
+                
+                # convert DataFrame to Lightcurve
+                validated_light_curves[fltr] = Lightcurve(
+                    time,
+                    counts,
+                    err=counts_err,
+                    gti=gtis,
+                    err_dist='gauss',
+                    )
         
         return sort_filters(validated_light_curves)
 
@@ -213,25 +220,28 @@ class Analyser:
         
         for i, (fltr, lc) in enumerate(self.light_curves.items()):
             
-            t = (np.asarray(lc.time) - self.t_ref) * 86400
+            for lc_segment in lc.split_by_gti(min_points=1):
             
-            axes[i].errorbar(
-                t,
-                lc.counts,
-                lc.counts_err,
-                marker='none',
-                linestyle='none',
-                ecolor='grey',
-                elinewidth=1,
+                t = (np.asarray(lc_segment.time) - self.t_ref) * 86400
+                
+                axes[i].errorbar(
+                    t,
+                    lc_segment.counts,
+                    lc_segment.counts_err,
+                    marker='none',
+                    linestyle='none',
+                    ecolor='grey',
+                    elinewidth=1,
+                    )
+                axes[i].step(
+                    t,
+                    lc_segment.counts,
+                    where='mid',
+                    color=colours[fltr],
+                    lw=1,
+                    label=fltr,
                 )
-            axes[i].step(
-                t,
-                lc.counts,
-                where='mid',
-                color=colours[fltr],
-                lw=1,
-                label=fltr,
-            )
+            
             axes[i].text(
                 .95,
                 .9,
@@ -243,7 +253,7 @@ class Analyser:
             )
         
         axes[-1].set_xlabel(f'Time from BMJD {self.t_ref:.4f} [s]', fontsize='large')
-        axes[len(self.light_curves) // 2].set_ylabel('Counts', fontsize='large')
+        axes[len(self.light_curves) // 2].set_ylabel('Relative flux', fontsize='large')
         
         if title is not None:
             axes[0].set_title(title)
@@ -300,7 +310,7 @@ class Analyser:
                 axs[i].set_title(k)
             
             axs[-1].set_xlabel('Phase')
-            axs[len(self.light_curves)//2].set_ylabel('Counts')
+            axs[len(self.light_curves)//2].set_ylabel('Relative Flux')
         
         return results
 
@@ -369,7 +379,7 @@ class Analyser:
                 axes[i].set_title(k)
             
             axes[-1].set_xlabel('Phase')
-            axes[len(self.light_curves)//2].set_ylabel('Counts')
+            axes[len(self.light_curves)//2].set_ylabel('Relative flux')
             
             for ax in axes.flatten():
                 ax.minorticks_on()
@@ -382,7 +392,6 @@ class Analyser:
 
     def compute_power_spectra(
         self,
-        norm: Literal['frac', 'abs'] = 'frac',
         scale: Literal['linear', 'log', 'loglog'] = 'linear',
         ) -> Dict[str, Powerspectrum]:
         """
@@ -391,9 +400,6 @@ class Analyser:
         
         Parameters
         ----------
-        norm : Literal['frac', 'abs'], optional
-            The normalisation to use for the power spectra, by default 'frac'. If 'frac', the resulting power is in
-            units of (rms/mean)^2 Hz^{-1}. If 'abs', the resulting power is in units of rms^2 Hz^{-1}.
         scale : Literal['linear', 'log', 'loglog'], optional
             The scale to use for the plot, by default 'linear'. If 'linear', all axes are linear. If 'log', the
             frequency axis is logarithmic. If 'loglog', both the frequency and power axes are logarithmic.
@@ -408,7 +414,7 @@ class Analyser:
         results = {}
         
         for fltr, lc in self.light_curves.items():
-            ps = Powerspectrum.from_lightcurve(lc, norm=norm, silent=True)
+            ps = Powerspectrum.from_lightcurve(lc, norm='abs', silent=True)
             ps.freq /= 86400  # convert to Hz
             results[fltr] = ps
         
@@ -422,7 +428,6 @@ class Analyser:
     def compute_averaged_power_spectra(
         self,
         segment_size: Quantity,
-        norm: Literal['frac', 'abs'] = 'frac',
         scale: Literal['linear', 'log', 'loglog'] = 'linear',
         ) -> Dict[str, AveragedPowerspectrum]:
         """
@@ -435,9 +440,6 @@ class Analyser:
         segment_size : Quantity
             The size of the segments to use for averaging the power spectra. This must be an astropy `Quantity` with
             units of time (e.g., `astropy.units.s`) to ensure correct handling of the segment size.
-        norm : Literal['frac', 'abs'], optional
-            The normalisation to use for the power spectra, by default 'frac'. If 'frac', the resulting power is in
-            units of (rms/mean)^2 Hz^{-1}. If 'abs', the resulting power is in units of rms^2 Hz^{-1}.
         scale : Literal['linear', 'log', 'loglog'], optional
             The scale to use for the plot, by default 'linear'. If 'linear', all axes are linear. If 'log', the
             frequency axis is logarithmic. If 'loglog', both the frequency and power axes are logarithmic.
@@ -456,7 +458,7 @@ class Analyser:
             ps = AveragedPowerspectrum.from_lightcurve(
                 self.light_curves[k],
                 segment_size,
-                norm=norm,
+                norm='abs',
                 silent=True,
             )
             
@@ -475,7 +477,6 @@ class Analyser:
 
     def compute_crossspectra(
         self,
-        norm: Literal['frac', 'abs'] = 'frac',
         scale: Literal['linear', 'log', 'loglog'] = 'linear',
         ) -> Dict[str, Crossspectrum]:
         """
@@ -484,9 +485,6 @@ class Analyser:
         
         Parameters
         ----------
-        norm : Literal['frac', 'abs'], optional
-            The normalisation to use for the cross-spectra, by default 'frac'. If 'frac', the resulting power is in
-            units of (rms/mean)^2 Hz^{-1}. If 'abs', the resulting power is in units of rms^2 Hz^{-1}.
         scale : Literal['linear', 'log', 'loglog'], optional
             The scale to use for the plot, by default 'linear'. If 'linear', all axes are linear. If 'log', the
             frequency axis is logarithmic. If 'loglog', both the frequency and power axes are logarithmic.
@@ -507,7 +505,7 @@ class Analyser:
                 cs = Crossspectrum.from_lightcurve(
                     lc1,
                     lc2,
-                    norm=norm,
+                    norm='abs',
                     silent=True,
                     )
                 cs.freq /= 86400  # convert to Hz
@@ -523,7 +521,6 @@ class Analyser:
     def compute_averaged_crossspectra(
         self,
         segment_size: Quantity,
-        norm: Literal['frac', 'abs'] = 'frac',
         scale: Literal['linear', 'log', 'loglog'] = 'linear',
         ) -> Dict[str, AveragedCrossspectrum]:
         """
@@ -535,9 +532,6 @@ class Analyser:
         segment_size : Quantity
             The size of the segments to use for averaging the cross-spectra. This must be an astropy `Quantity` with
             units of time (e.g., `astropy.units.s`) to ensure correct handling of the segment size.
-        norm : Literal['frac', 'abs'], optional
-            The normalisation to use for the cross-spectra, by default 'frac'. If 'frac', the resulting power is in
-            units of (rms/mean)^2 Hz^{-1}. If 'abs', the resulting power is in units of rms^2 Hz^{-1}.
         scale : Literal['linear', 'log', 'loglog'], optional
             The scale to use for the plot, by default 'linear'. If 'linear', all axes are linear. If 'log', the
             frequency axis is logarithmic. If 'loglog', both the frequency and power axes are logarithmic.
@@ -561,7 +555,7 @@ class Analyser:
                     lc1,
                     lc2,
                     segment_size=segment_size,
-                    norm=norm,
+                    norm='abs',
                     silent=True,
                     )
                 
@@ -580,7 +574,6 @@ class Analyser:
 
     def compute_lomb_scargle_periodograms(
         self,
-        norm: Literal['frac', 'abs'] = 'frac',
         scale: Literal['linear', 'log', 'loglog'] = 'linear',
         ) -> Dict[str, LombScarglePowerspectrum]:
         """
@@ -588,9 +581,6 @@ class Analyser:
         
         Parameters
         ----------
-        norm : Literal['frac', 'abs'], optional
-            The normalization to use for the periodograms, by default 'frac'. If 'frac', the resulting power is in units
-            of (rms/mean)^2 Hz^{-1}. If 'abs', the resulting power is in units of rms^2 Hz^{-1}.
         scale : Literal['linear', 'log', 'loglog'], optional
             The scale to use for the inferred frequencies, by default 'linear'. If 'linear', the frequency grid is
             linearly spaced. If 'log', the frequency grid is logarithmically spaced. If 'loglog', both the frequency
@@ -610,7 +600,7 @@ class Analyser:
             # don't use .from_lightcurve() here as it causes an error
             lsp = LombScarglePowerspectrum(
                 self.light_curves[k],
-                norm=norm,
+                norm='abs',
                 power_type='absolute',
             )
             lsp.freq /= 86400  # convert to Hz
@@ -789,15 +779,15 @@ def _plot(
     return fig
 
 def _get_normalisation_units(
-    norm: Literal['abs', 'frac'],
+    norm: str,
     ) -> str:
     """
     Get the units of the normalisation based on the specified normalisation type.
     
     Parameters
     ----------
-    norm : Literal['abs', 'frac']
-        The normalisation type. Can be 'abs' for absolute normalisation or 'frac' for fractional normalisation.
+    norm : str
+        The normalisation type.
     
     Returns
     -------
@@ -810,12 +800,7 @@ def _get_normalisation_units(
         If the specified normalisation type is invalid.
     """
     
-    if norm == 'frac':
-        return '(rms/mean)$^2$ Hz$^{{-1}}$'
-    elif norm == 'abs':
-        return 'rms$^2$ Hz$^{{-1}}$'
-    else:
-        raise ValueError(f"[OPTICAM] Invalid normalisation type: {norm}. Must be 'frac' or 'abs'.")
+    return '(fractional rms)$^2$ Hz$^{{-1}}$'
 
 def _define_yerr(
     obj: AveragedPowerspectrum |
