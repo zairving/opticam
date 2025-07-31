@@ -1540,7 +1540,7 @@ class Catalogue:
         results = photometer.compute(image, error, source_coords, image_coords, self.psf_params[fltr])
         
         assert 'flux' in results, f"[OPTICAM] Photometer {photometer.__class__.__name__}'s compute method must return a 'flux' key."
-        assert 'flux_error' in results, f"[OPTICAM] Photometer {photometer.__class__.__name__}'s compute method must return a 'flux_error' key."
+        assert 'flux_err' in results, f"[OPTICAM] Photometer {photometer.__class__.__name__}'s compute method must return a 'flux_err' key."
         
         # results check
         for key, values in results.items():
