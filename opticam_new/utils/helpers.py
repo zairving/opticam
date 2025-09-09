@@ -14,42 +14,6 @@ from matplotlib.axes import Axes
 from astropy.table import QTable
 
 
-
-# custom tqdm progress bar format
-bar_format= '{l_bar}{bar}|[{elapsed}<{remaining}]'
-
-# camera pixel scales
-pixel_scales = {
-    'u-band': 0.1397,  # camera 1
-    "u'-band": 0.1397,  # camera 1
-    'g-band': 0.1397,  # camera 1
-    "g'-band": 0.1397,  # camera 1
-    'r-band': 0.1406,  # camera 2
-    "r'-band": 0.1406,  # camera 2
-    'i-band': 0.1661,  # camera 3
-    "i'-band": 0.1661,  # camera 3
-    'z-band': 0.1661,  # camera 3
-    "z'-band": 0.1661,  # camera 3
-    }
-
-# plotting colours for each filter
-colours = {
-    'u-band': 'tab:purple',  # camera 1
-    "u'-band": 'tab:purple',  # camera 1
-    'g-band': 'tab:green',  # camera 1
-    "g'-band": 'tab:green',  # camera 1
-    'r-band': 'tab:orange',  # camera 2
-    "r'-band": 'tab:orange',  # camera 2
-    'i-band': 'tab:olive',  # camera 3
-    "i'-band": 'tab:olive',  # camera 3
-    'z-band': 'tab:brown',  # camera 3
-    "z'-band": 'tab:brown',  # camera 3
-}
-
-# stdev -> FWHM scale factor
-fwhm_scale = 2 * np.sqrt(2 * np.log(2))
-
-
 def camel_to_snake(
     string: str,
     ) -> str:
@@ -273,42 +237,6 @@ def plot_catalogue(
     return fig, axes
 
 
-def infer_gtis(time: NDArray, threshold: float = 1.5) -> NDArray:
-    """
-    Infer GTIs from a light curve.
-    
-    Parameters
-    ----------
-    time : ArrayLike
-        The time array.
-    threshold : float, optional
-        The threshold for detecting gaps in units of the median time resolution, by default 1.5.
-    
-    Returns
-    -------
-    List[Tuple[float, float]]
-        The inferred GTIs.
-    """
-    
-    time = np.asarray(time)
-    
-    # compute the gap threshold
-    gap_threshold = threshold * np.median(np.diff(time))
-    
-    # define GTI starts and stops
-    gti_starts = [time[0]]
-    gti_stops = []
-    
-    # compute GTIs
-    for i in range(1, time.size):
-        if time[i] - time[i - 1] > gap_threshold:
-            gti_stops.append(time[i - 1])
-            gti_starts.append(time[i])
-    gti_stops.append(time[-1])
-    
-    # define GTIs in stingray format
-    return np.array(list(zip(gti_starts, gti_stops)))
-
 
 def sort_filters(
     d: Dict[str, Any],
@@ -341,8 +269,5 @@ def sort_filters(
         }
     
     return dict(sorted(d.items(), key=lambda x: key_order[x[0]]))
-
-
-
 
 
