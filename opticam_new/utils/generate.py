@@ -5,7 +5,7 @@ import numpy as np
 from numpy.typing import NDArray
 from typing import List
 
-from opticam_new.helpers import bar_format
+from opticam_new.utils.constants import bar_format
 
 
 def _add_two_dimensional_gaussian_to_image(
