@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from typing import Dict, Literal
+from typing import Dict, Literal, Tuple
 from numpy.typing import NDArray
 import os
 import astropy.units as u
@@ -14,13 +14,15 @@ from stingray.lombscargle import LombScarglePowerspectrum
 from stingray import CrossCorrelation
 from pandas import DataFrame
 
-from opticam_new.helpers import infer_gtis, sort_filters, colours
+from opticam_new.utils.helpers import sort_filters
+from opticam_new.utils.time_helpers import infer_gtis
+from opticam_new.utils.constants import colors
 
 class Analyser:
     """
     Helper class for analysing OPTICAM light curves.
     """
-    
+
     def __init__(
         self,
         out_directory: str,
@@ -68,7 +70,7 @@ class Analyser:
         
         if len(self.light_curves) > 0:
             self.t_ref = float(min([np.min(lc.time) for lc in self.light_curves.values()]))
-    
+
     @staticmethod
     def _validate_light_curves(
         light_curves: Dict[str, Lightcurve | DataFrame] | None,
@@ -165,7 +167,7 @@ class Analyser:
             phot_label=self.phot_label,
             show_plots=self.show_plots,
         )
-    
+
     def rebin_light_curves(
         self,
         dt: Quantity,
@@ -214,6 +216,7 @@ class Analyser:
             gti=gti,
             err_dist=lc.err_dist,
         )
+
 
     def plot_light_curves(
         self,
@@ -265,7 +268,7 @@ class Analyser:
                     t,
                     lc_segment.counts,
                     where='mid',
-                    color=colours[fltr],
+                    color=colors[fltr],
                     lw=1,
                     label=fltr,
                 )
@@ -281,7 +284,7 @@ class Analyser:
             )
         
         axes[-1].set_xlabel(f'Time from BMJD {self.t_ref:.4f} [s]', fontsize='large')
-        axes[len(self.light_curves) // 2].set_ylabel('Relative flux', fontsize='large')
+        axes[len(self.light_curves) // 2].set_ylabel('Normalised flux', fontsize='large')
         
         if title is not None:
             axes[0].set_title(title)
@@ -334,7 +337,7 @@ class Analyser:
                 axs[i].errorbar(np.append(results[k], results[k] + 1),
                                 np.append(self.light_curves[k].counts, self.light_curves[k].counts),
                                 np.append(self.light_curves[k].counts_err, self.light_curves[k].counts_err),
-                                marker='.', ms=2, linestyle='none', color=colours[k], ecolor='grey', elinewidth=1)
+                                marker='.', ms=2, linestyle='none', color=colors[k], ecolor='grey', elinewidth=1)
                 axs[i].set_title(k)
             
             axs[-1].set_xlabel('Phase')
@@ -342,7 +345,13 @@ class Analyser:
         
         return results
 
-    def phase_bin_light_curves(self, period: Quantity, n_bins: int = 10, plot=True) -> Dict[str, Dict[str, NDArray]]:
+    def phase_bin_light_curves(
+        self,
+        period: Quantity,
+        t0: float | None = None,
+        n_bins: int = 10,
+        plot=True,
+        ) -> Dict[str, Dict[str, NDArray]]:
         """
         Phase bin each light curve using the given period.
         
@@ -351,6 +360,8 @@ class Analyser:
         period : Quantity
             The period to use for phase binning. This must be an astropy `Quantity` with units of time (e.g.,
             `astropy.units.s`) to ensure correct handling of the period.
+        t0 : float | None, optional
+            Time of zero phase, by default `None`. If `None`, the first time value in the light curve will be used.
         n_bins : int, optional
             The number of phase bins, by default 10.
         plot : bool, optional
@@ -362,33 +373,49 @@ class Analyser:
             The phase binned light curves.
         """
         
-        period = period.to(u.day).value  # convert from given units to days
+        period = period.to_value(u.day)  # convert from given units to days
         
         results = {}
         
         for fltr, lc in self.light_curves.items():
-            phase = (lc.time % period) / period
+            
+            lc_time = np.asarray(lc.time)
+            
+            if t0:
+                t = lc_time - t0
+            else:
+                t = lc_time - lc_time[0]
+            
+            phase = (t % period) / period
             bins = [[] for i in range(n_bins + 1)]
+            bin_errs = [[] for i in range(n_bins + 1)]
             
             for i in range(len(phase)):
                 bin_num = int(phase[i] * (n_bins + 1))
-                bins[bin_num].append(lc.counts[i])
+                bins[bin_num].append(np.asarray(lc.counts)[i])
+                bin_errs[bin_num].append(np.asarray(lc.counts_err)[i])
             
             # remove final bin (it will be the same as the first)
             bins.pop()
+            bin_errs.pop()
             
             fluxes = np.array([np.mean(b) for b in bins])
-            errs = np.array([np.std(b) / np.sqrt(len(b)) for b in bins])
+            flux_errs = np.array(np.sqrt([np.sum(np.asarray(b)**2) for b in bin_errs]) / len(bins[0]))
             
             results[fltr] = {
                 'phase': np.linspace(0, 1, n_bins + 1)[:-1],  # remove final phase value (it will be the same as the first)
                 'flux': fluxes,
-                'flux error': errs
+                'flux error': flux_errs
             }
         
         if plot:
-            fig, axes = plt.subplots(tight_layout=True, nrows=len(self.light_curves), sharex=True,
-                                    figsize=(6.4, (0.5 + 0.5*len(self.light_curves)*4.8)))
+            fig, axes = plt.subplots(
+                tight_layout=True,
+                nrows=len(self.light_curves),
+                sharex=True,
+                figsize=(6.4, (0.5 * len(self.light_curves) * 4.8)),
+                gridspec_kw={'hspace': 0.},
+                )
             
             for i in range(len(self.light_curves)):
                 k = list(self.light_curves.keys())[i]
@@ -396,18 +423,26 @@ class Analyser:
                     np.append(results[k]['phase'], results[k]['phase'] + 1),
                     np.append(results[k]['flux'], results[k]['flux']),
                     np.append(results[k]['flux error'], results[k]['flux error']),
-                    marker='none', linestyle='none', color=colours[k], ecolor='grey', elinewidth=1)
+                    marker='none', linestyle='none', color=colors[k], ecolor='grey', elinewidth=1)
                 axes[i].step(
                     np.append(results[k]['phase'], results[k]['phase'] + 1),
                     np.append(results[k]['flux'], results[k]['flux']),
                     where='mid',
-                    color=colours[k],
+                    color=colors[k],
                     lw=1,
                 )
-                axes[i].set_title(k)
+                axes[i].text(
+                    .95,
+                    .9,
+                    k,
+                    fontsize='large',
+                    va='top',
+                    ha='right',
+                    transform=axes[i].transAxes,
+                )
             
             axes[-1].set_xlabel('Phase')
-            axes[len(self.light_curves)//2].set_ylabel('Relative flux')
+            axes[len(self.light_curves)//2].set_ylabel('Normalised flux')
             
             for ax in axes.flatten():
                 ax.minorticks_on()
@@ -420,6 +455,7 @@ class Analyser:
 
     def compute_power_spectra(
         self,
+        norm: Literal['frac', 'abs'] = 'frac',
         scale: Literal['linear', 'log', 'loglog'] = 'linear',
         ) -> Dict[str, Powerspectrum]:
         """
@@ -428,6 +464,9 @@ class Analyser:
         
         Parameters
         ----------
+        norm : Literal['frac', 'abs'], optional
+            The normalisation to use for the power spectrum, by default 'frac'. If 'frac', the power spectrum is
+            normalised to fractional rms. If 'abs', the power spectrum is normalised to absolute power.
         scale : Literal['linear', 'log', 'loglog'], optional
             The scale to use for the plot, by default 'linear'. If 'linear', all axes are linear. If 'log', the
             frequency axis is logarithmic. If 'loglog', both the frequency and power axes are logarithmic.
@@ -447,7 +486,7 @@ class Analyser:
             
             ps = Powerspectrum.from_lightcurve(
                 lc,
-                norm='abs',
+                norm=norm,
                 silent=True,
                 )
             
@@ -464,6 +503,7 @@ class Analyser:
         self,
         segment_size: Quantity,
         rebin_factor: float | None = None,
+        norm: Literal['frac', 'abs'] = 'frac',
         scale: Literal['linear', 'log', 'loglog'] = 'linear',
         ) -> Dict[str, AveragedPowerspectrum]:
         """
@@ -480,6 +520,9 @@ class Analyser:
             The factor by which to rebin the power spectrum in frequency. If 'None', no rebinning will be performed.
             If a float, the power spectrum will be geometrically/logarithmically rebinned with each bin being a factor
             `1 + rebin_factor` larger than the previous one.
+        norm : Literal['frac', 'abs'], optional
+            The normalisation to use for the power spectrum, by default 'frac'. If 'frac', the power spectrum is
+            normalised to the fractional rms. If 'abs', the power spectrum is normalised to the absolute rms.
         scale : Literal['linear', 'log', 'loglog'], optional
             The scale to use for the plot, by default 'linear'. If 'linear', all axes are linear. If 'log', the
             frequency axis is logarithmic. If 'loglog', both the frequency and power axes are logarithmic.
@@ -501,7 +544,7 @@ class Analyser:
             ps = AveragedPowerspectrum.from_lightcurve(
                 lc,
                 segment_size,
-                norm='abs',
+                norm=norm,
                 silent=True,
             )
             
@@ -522,6 +565,7 @@ class Analyser:
 
     def compute_crossspectra(
         self,
+        norm: Literal['frac', 'abs'] = 'frac',
         scale: Literal['linear', 'log', 'loglog'] = 'linear',
         ) -> Dict[str, Crossspectrum]:
         """
@@ -530,6 +574,9 @@ class Analyser:
         
         Parameters
         ----------
+        norm : Literal['frac', 'abs'], optional
+            The normalisation to use for the cross-spectrum, by default 'frac'. If 'frac', the cross-spectrum is
+            normalised to fractional rms. If 'abs', the cross-spectrum is normalised to absolute power.
         scale : Literal['linear', 'log', 'loglog'], optional
             The scale to use for the plot, by default 'linear'. If 'linear', all axes are linear. If 'log', the
             frequency axis is logarithmic. If 'loglog', both the frequency and power axes are logarithmic.
@@ -547,13 +594,17 @@ class Analyser:
             for fltr2, lc2 in self.light_curves.items():
                 if fltr1 == fltr2:
                     continue
+                
+                # convert light curves from days to seconds
+                lc1 = self._convert_lc_time_to_seconds(lc1)
+                lc2 = self._convert_lc_time_to_seconds(lc2)
+                
                 cs = Crossspectrum.from_lightcurve(
                     lc1,
                     lc2,
-                    norm='abs',
+                    norm=norm,
                     silent=True,
                     )
-                cs.freq /= 86400  # convert to Hz
                 results[(fltr1, fltr2)] = cs
         
         if self.show_plots:
@@ -566,6 +617,7 @@ class Analyser:
     def compute_averaged_crossspectra(
         self,
         segment_size: Quantity,
+        norm: Literal['frac', 'abs'] = 'frac',
         scale: Literal['linear', 'log', 'loglog'] = 'linear',
         ) -> Dict[str, AveragedCrossspectrum]:
         """
@@ -577,6 +629,9 @@ class Analyser:
         segment_size : Quantity
             The size of the segments to use for averaging the cross-spectra. This must be an astropy `Quantity` with
             units of time (e.g., `astropy.units.s`) to ensure correct handling of the segment size.
+        norm : Literal['frac', 'abs'], optional
+            The normalisation to use for the cross-spectrum, by default 'frac'. If 'frac', the cross-spectrum is
+            normalised to fractional rms. If 'abs', the cross-spectrum is normalised to absolute power.
         scale : Literal['linear', 'log', 'loglog'], optional
             The scale to use for the plot, by default 'linear'. If 'linear', all axes are linear. If 'log', the
             frequency axis is logarithmic. If 'loglog', both the frequency and power axes are logarithmic.
@@ -596,17 +651,21 @@ class Analyser:
             for fltr2, lc2 in self.light_curves.items():
                 if fltr1 == fltr2:
                     continue
+                
+                # convert light curves from days to seconds
+                lc1 = self._convert_lc_time_to_seconds(lc1)
+                lc2 = self._convert_lc_time_to_seconds(lc2)
+                
                 cs = AveragedCrossspectrum.from_lightcurve(
                     lc1,
                     lc2,
                     segment_size=segment_size,
-                    norm='abs',
+                    norm=norm,
                     silent=True,
                     )
                 
                 print(f'[OPTICAM] {cs.m} {fltr1} x {fltr2} segments averaged.')
                 
-                cs.freq /= 86400  # convert to Hz
                 results[(fltr1, fltr2)] = cs
         
         if self.show_plots:
@@ -619,6 +678,7 @@ class Analyser:
 
     def compute_lomb_scargle_periodograms(
         self,
+        norm: Literal['abs', 'frac'] = 'frac',
         scale: Literal['linear', 'log', 'loglog'] = 'linear',
         ) -> Dict[str, LombScarglePowerspectrum]:
         """
@@ -626,6 +686,9 @@ class Analyser:
         
         Parameters
         ----------
+        norm : Literal['abs', 'frac'], optional
+            The normalisation to use for the Lomb-Scargle periodogram, by default 'frac'. If 'abs', the periodogram is
+            normalised to absolute power. If 'frac', the periodogram is normalised to fractional rms.
         scale : Literal['linear', 'log', 'loglog'], optional
             The scale to use for the inferred frequencies, by default 'linear'. If 'linear', the frequency grid is
             linearly spaced. If 'log', the frequency grid is logarithmically spaced. If 'loglog', both the frequency
@@ -642,13 +705,15 @@ class Analyser:
         results = {}
         
         for k in self.light_curves.keys():
+            
+            lc = self._convert_lc_time_to_seconds(self.light_curves[k])
+            
             # don't use .from_lightcurve() here as it causes an error
             lsp = LombScarglePowerspectrum(
-                self.light_curves[k],
-                norm='abs',
+                lc,
+                norm=norm,
                 power_type='absolute',
             )
-            lsp.freq /= 86400  # convert to Hz
             results[k] = lsp
         
         if self.show_plots:
@@ -663,9 +728,23 @@ class Analyser:
         self,
         mode: Literal['same', 'valid', 'full'] = 'same',
         norm: Literal['none', 'variance'] = 'variance',
+        force_match: bool = True,
         ) -> Dict[str, CrossCorrelation]:
         """
         Compute the cross-correlations for each pair of light curves using `stingray.CrossCorrelation`.
+        
+        Parameters
+        ----------
+        mode : Literal['same', 'valid', 'full'], optional
+            The mode to use for the cross-correlation, by default 'same'. See `stingray.CrossCorrelation` for details on
+            the different modes.
+        norm : Literal['none', 'variance'], optional
+            The normalisation to use for the cross-correlation, by default 'variance'. See `stingray.CrossCorrelation`
+            for details on the different normalisations.
+        force_match : bool, optional
+            Whether to force the light curves to have the same time columns before computing the cross-correlation,
+            by default `True`. If `False`, cross-correlation calculations may fail if the light curves have different
+            time columns.
         
         Returns
         -------
@@ -678,8 +757,14 @@ class Analyser:
         
         for fltr1, lc1 in self.light_curves.items():
             for fltr2, lc2 in self.light_curves.items():
-                if fltr1 == fltr2:
+                # skip if the filters are the same or if the cross-correlation has already been computed
+                if fltr1 == fltr2 or (fltr2, fltr1) in results.keys():
                     continue
+                
+                if force_match:
+                    # force the light curves to have the same time columns
+                    lc1, lc2 = _match_light_curve_times(lc1, lc2)
+                
                 cc = CrossCorrelation(
                     lc1,
                     lc2,
@@ -703,14 +788,14 @@ class Analyser:
 
 
 def _plot(
-    results: Dict[str, 
-                    AveragedPowerspectrum | 
-                    Powerspectrum | 
-                    Crossspectrum | 
-                    AveragedCrossspectrum | 
-                    LombScarglePowerspectrum |
-                    CrossCorrelation
-                    ],
+    results: Dict[str,
+                  AveragedPowerspectrum | 
+                  Powerspectrum | 
+                  Crossspectrum | 
+                  AveragedCrossspectrum | 
+                  LombScarglePowerspectrum |
+                  CrossCorrelation
+                  ],
     scale: Literal['linear', 'log', 'loglog'] = 'linear',
     ) -> Figure:
     """
@@ -873,5 +958,79 @@ def _define_yerr(
     
     return None
 
+
+
+
+def _intersect_gtis(gti1, gti2):
+
+    result = []
+    for start1, stop1 in gti1:
+        for start2, stop2 in gti2:
+            start = max(start1, start2)
+            stop = min(stop1, stop2)
+            if start < stop:
+                result.append([start, stop])
+    
+    return np.array(result)
+
+def _restrict_to_gti(lc, gti):
+    
+    mask = np.zeros_like(lc.time, dtype=bool)
+    for start, stop in gti:
+        mask |= (lc.time >= start) & (lc.time <= stop)
+        
+    return Lightcurve(
+        lc.time[mask],
+        lc.counts[mask],
+        err=lc.counts_err[mask],
+        gti=gti,
+        err_dist=lc.err_dist,
+    )
+
+def _match_light_curve_times(
+    lc1: Lightcurve,
+    lc2: Lightcurve,
+    ) -> Tuple[Lightcurve, Lightcurve]:
+    """
+    Match the time columns of two light curves.
+    
+    Parameters
+    ----------
+    lc1 : Lightcurve
+        The first light curve.
+    lc2 : Lightcurve
+        The second light curve.
+    
+    Returns
+    -------
+    Tuple[Lightcurve, Lightcurve]
+        The two light curves with matched time columns.
+    """
+    
+    # get intersecting GTIs
+    gti = _intersect_gtis(lc1.gti, lc2.gti)
+    lc1_restricted = _restrict_to_gti(lc1, gti)
+    lc2_restricted = _restrict_to_gti(lc2, gti)
+    
+    # interpolate lc2 onto lc1's time grid
+    interp_counts = np.interp(
+        np.asarray(lc1_restricted.time),
+        np.asarray(lc2_restricted.time),
+        np.asarray(lc2_restricted.counts),
+    )
+    interp_err = np.interp(
+        np.asarray(lc1_restricted.time),
+        np.asarray(lc2_restricted.time),
+        np.asarray(lc2_restricted.counts_err),
+    )
+    lc2_interp = Lightcurve(
+        lc1_restricted.time,
+        interp_counts,
+        err=interp_err,
+        gti=gti,
+        err_dist=lc2_restricted.err_dist,
+    )
+    
+    return lc1_restricted, lc2_interp
 
 
