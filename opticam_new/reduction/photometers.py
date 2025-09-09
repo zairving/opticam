@@ -1,11 +1,11 @@
 import numpy as np
-from typing import Callable, Dict, List, Literal, Tuple
+from typing import Callable, Dict, List, Tuple
 from numpy.typing import NDArray
 from abc import ABC, abstractmethod
 from photutils.aperture import aperture_photometry, EllipticalAperture
 
-from opticam_new.local_background import BaseLocalBackground, DefaultLocalBackground
-from opticam_new.helpers import fwhm_scale
+from opticam_new.reduction.local_background import BaseLocalBackground
+from opticam_new.utils.constants import fwhm_scale
 
 
 class BasePhotometer(ABC):
