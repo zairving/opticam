@@ -28,16 +28,18 @@ import logging
 import warnings
 import pandas as pd
 
-from opticam_new.helpers import log_binnings, log_filters, recursive_log
-from opticam_new.helpers import bar_format, pixel_scales
-from opticam_new.background import DefaultBackground
-from opticam_new.finder import DefaultFinder
-from opticam_new.correctors import FlatFieldCorrector
-from opticam_new.photometers import BasePhotometer
-from opticam_new.helpers import camel_to_snake, sort_filters
+
+from opticam_new.utils.helpers import camel_to_snake, log_binnings, log_filters, recursive_log, sort_filters
+from opticam_new.utils.constants import bar_format, pixel_scales
+from opticam_new.reduction.background import DefaultBackground
+from opticam_new.reduction.finder import DefaultFinder
+from opticam_new.reduction.correctors import FlatFieldCorrector
+from opticam_new.reduction.photometers import BasePhotometer
+from opticam_new.utils.time_helpers import apply_barycentric_correction, get_time
+from opticam_new.utils.image_helpers import rebin_image
 
 
-class Catalogue:
+class Catalog:
     """
     Create a catalogue of sources from OPTICAM data.
     """
@@ -181,27 +183,13 @@ class Catalogue:
         ########################################### file paths ###########################################
         
         self.file_paths = []
-        if self.data_directory is not None:
-            file_names = sorted(os.listdir(self.data_directory))
-            for file in file_names:
-                if file.endswith('.fit') or file.endswith('.fits') or file.endswith('.fit.gz') or file.endswith('.fits.gz'):
-                    self.file_paths.append(os.path.join(self.data_directory, file))
-        else:
-            if self.c1_directory is not None:
-                file_names = sorted(os.listdir(self.c1_directory))
-                for file in file_names:
-                    if file.endswith('.fit') or file.endswith('.fits') or file.endswith('.fit.gz') or file.endswith('.fits.gz'):
-                        self.file_paths.append(os.path.join(self.c1_directory, file))
-            if self.c2_directory is not None:
-                file_names = sorted(os.listdir(self.c2_directory))
-                for file in file_names:
-                    if file.endswith('.fit') or file.endswith('.fits') or file.endswith('.fit.gz') or file.endswith('.fits.gz'):
-                        self.file_paths.append(os.path.join(self.c2_directory, file))
-            if self.c3_directory is not None:
-                file_names = sorted(os.listdir(self.c3_directory))
-                for file in file_names:
-                    if file.endswith('.fit') or file.endswith('.fits') or file.endswith('.fit.gz') or file.endswith('.fits.gz'):
-                        self.file_paths.append(os.path.join(self.c3_directory, file))
+        
+        for directory in [data_directory, c1_directory, c2_directory, c3_directory]:
+            if directory is not None:
+                file_names = os.listdir(directory)
+                for file_name in file_names:
+                    if '.fit' in file_name:
+                        self.file_paths.append(os.path.join(directory, file_name))
         
         # list of files to ignore (e.g., if they are corrupted or do not comply with the FITS standard)
         self.ignored_files = []
@@ -378,25 +366,28 @@ class Catalogue:
         
         try:
             with fits.open(file) as hdul:
-                binning = hdul[0].header["BINNING"]
-                gain = hdul[0].header["GAIN"]
                 
-                try:
-                    ra = hdul[0].header["RA"]
-                    dec = hdul[0].header["DEC"]
-                except:
-                    self.logger.info(f"[OPTICAM] Could not find RA and DEC keys in {file} header.")
-                    pass
+                header = hdul[0].header
                 
-                mjd = self._get_time(hdul, file)
-                
-                # separate files by filter
-                fltr = hdul[0].header["FILTER"]
+            binning = header["BINNING"]
+            gain = header["GAIN"]
+            
+            try:
+                ra = header["RA"]
+                dec = header["DEC"]
+            except:
+                self.logger.info(f"[OPTICAM] Could not find RA and DEC keys in {file} header.")
+                pass
+            
+            mjd = get_time(header, file)
+            
+            # separate files by filter
+            fltr = header["FILTER"]
             
             try:
                 # try to compute barycentric dynamical time
                 coords = SkyCoord(ra, dec, unit=(u.hourangle, u.deg))
-                bdt = self._apply_barycentric_correction(mjd, coords)
+                bdt = apply_barycentric_correction(mjd, coords)
             except Exception as e:
                 bdt = mjd
                 self.logger.info(f"[OPTICAM] Could not compute BDT for {file}: {e}. Using MJD instead.")
@@ -465,7 +456,7 @@ class Catalogue:
         
         # check for large differences in time
         for fltr in unique_filters:
-            bdts = np.array([self.bdts[file] for file in self.file_paths if file in filters and filters[file] == fltr])
+            bdts = np.sort(np.array([self.bdts[file] for file in self.file_paths if file in filters and filters[file] == fltr]))
             files = [file for file in self.file_paths if file in filters and filters[file] == fltr]
             t = bdts - np.min(bdts)
             dt = np.diff(t) * 86400
@@ -648,13 +639,13 @@ class Catalogue:
         
         # remove cosmic rays if required
         if self.remove_cosmic_rays:
-            data = cosmicray_lacosmic(data, gain_apply=False)[0]
+            data = np.asarray(cosmicray_lacosmic(data, gain_apply=False)[0])
         
         if self.rebin_factor > 1:
-            data = self._rebin_image(data, self.rebin_factor)
+            data = rebin_image(data, self.rebin_factor)
             
             if return_error:
-                error = self._rebin_image(error, self.rebin_factor)
+                error = rebin_image(error, self.rebin_factor)
         
         if return_error:
             return data, error
@@ -710,7 +701,7 @@ class Catalogue:
         return coords
 
 
-    def initialise(
+    def create_catalogs(
         self,
         max_catalog_sources: int = 30,
         n_alignment_sources: int = 3,
@@ -851,16 +842,9 @@ class Catalogue:
                 overwrite=True,
                 )
             
-            # save stacked image to file
-            np.savez_compressed(
-                os.path.join(
-                    self.out_directory,
-                    f'cat/{fltr}_stacked_image.npz'),
-                stacked_image=stacked_image,
-                )
-            
             self._set_psf_params(fltr)  # set PSF parameters for the filter
         
+        self._save_stacked_images(stacked_images, overwrite)
         self._plot_catalog(stacked_images)
         
         # diagnostic plots
@@ -1270,6 +1254,34 @@ class Catalogue:
                 fig.clear()
                 plt.close(fig)
 
+    def _save_stacked_images(self, stacked_images: Dict[str, NDArray], overwrite: bool) -> None:
+        """
+        Save the stacked images to a compressed FITS file.
+        
+        Parameters
+        ----------
+        stacked_images : Dict[str, NDArray]
+            The stacked images (filter: stacked image).
+        """
+        
+        hdr = fits.Header()
+        hdr['COMMENT'] = 'This FITS file contains the stacked images for each filter.'
+        empty_primary = fits.PrimaryHDU(header=hdr)
+        hdul = fits.HDUList([empty_primary])
+        
+        for fltr, img in stacked_images.items():
+            hdr = fits.Header()
+            hdr['FILTER'] = fltr
+            hdu = fits.ImageHDU(img, hdr)
+            hdul.append(hdu)
+        
+        print(hdul)
+        
+        file_path = os.path.join(self.out_directory, f'cat/stacked_images.fits.gz')
+        
+        if not os.path.isfile(file_path) or overwrite:
+            hdul.writeto(file_path, overwrite=overwrite)
+
 
     def create_gifs(self, keep_frames: bool = True, overwrite: bool = False) -> None:
         """
@@ -1554,56 +1566,6 @@ class Catalogue:
         return results
 
 
-    @staticmethod
-    def _get_time(
-        hdul,
-        file: str,
-        ) -> float:
-        """
-        Parse the time from the header of a FITS file.
-        
-        Parameters
-        ----------
-        hdul
-            The FITS file.
-        file : str
-            The path to the file.
-        
-        Returns
-        -------
-        float
-            The time of the observation in MJD.
-        
-        Raises
-        ------
-        KeyError
-            If neither 'GPSTIME' nor 'UT' keys are found in the header.
-        ValueError
-            If the time cannot be parsed from the header.
-        """
-        
-        # parse file time
-        if "GPSTIME" in hdul[0].header.keys():
-            gpstime = hdul[0].header["GPSTIME"]
-            split_gpstime = gpstime.split(" ")
-            date = split_gpstime[0]  # get date
-            time = split_gpstime[1].split(".")[0]  # get time (ignoring decimal seconds)
-            mjd = Time(date + "T" + time, format="fits").mjd
-        elif "UT" in hdul[0].header.keys():
-            try:
-                mjd = Time(hdul[0].header["UT"].replace(" ", "T"), format="fits").mjd
-            except:
-                try:
-                    date = hdul[0].header['DATE-OBS']
-                    time = hdul[0].header['UT'].split('.')[0]
-                    mjd = Time(date + 'T' + time, format='fits').mjd
-                except:
-                    raise ValueError('Could not parse time from ' + file + ' header.')
-        else:
-            raise KeyError(f"[OPTICAM] Could not find GPSTIME or UT key in {file} header.")
-        
-        return mjd
-
     def identify_gaps(
         self,
         files: List[str],
@@ -1621,7 +1583,7 @@ class Catalogue:
         
         for file in tqdm(files, desc='[OPTICAM] Identifying gaps'):
             with fits.open(file) as hdul:
-                file_times[file] = self._get_time(hdul, file)
+                file_times[file] = get_time(hdul[0].header, file)
         
         sorted_files = dict(sorted(file_times.items(), key=lambda x: x[1]))
         times = np.array(sorted_files.values()).flatten()
@@ -1638,66 +1600,3 @@ class Catalogue:
                     file.write(f"Gap between {list(sorted_files.keys())[gap]} and {list(sorted_files.keys())[gap + 1]}: {diffs[gap]} d\n")
         else:
             print('[OPTICAM] No gaps found in the observation sequence.')
-
-    @staticmethod
-    def _apply_barycentric_correction(
-        original_times: float | NDArray,
-        coords: SkyCoord,
-        ) -> float | NDArray:
-        """
-        Apply barycentric corrections to a time array.
-        
-        Parameters
-        ----------
-        times : float | NDArray
-            The time(s) to correct.
-        coords : SkyCoord
-            The coordinates of the source.
-        
-        Returns
-        -------
-        float | NDArray
-            The corrected time(s).
-        """
-        
-        # OPTICAM location
-        observer_coords = EarthLocation.from_geodetic(lon=-115.463611*u.deg, lat=31.044167*u.deg, height=2790*u.m)
-        
-        # format the times
-        times = Time(original_times, format='mjd', scale='utc', location=observer_coords)
-        
-        # compute light travel time to barycentre
-        ltt_bary = times.light_travel_time(coords)
-        
-        return (times.tdb + ltt_bary).value
-
-    @staticmethod
-    def _rebin_image(
-        image: NDArray,
-        factor: int,
-        ) -> NDArray:
-        """
-        Rebin an image by a given factor in both dimensions.
-        
-        Parameters
-        ----------
-        image : NDArray
-            The image to rebin.
-        factor : int
-            The factor to rebin by.
-        
-        Returns
-        -------
-        NDArray
-            The rebinned image.
-        """
-        
-        if image.shape[0] % factor != 0 or image.shape[1] % factor != 0:
-            raise ValueError(f'[OPTICAM] The dimensions of the input data must be divisible by the rebinning factor. Got shape {image.shape} and factor {factor}.')
-        
-        # reshape the array to efficiently rebin
-        shape = (image.shape[0] // factor, factor, image.shape[1] // factor, factor)
-        reshaped_data = image.reshape(shape)
-        
-        # rebin image by summing over the new axes
-        return reshaped_data.sum(axis=(1, 3))
