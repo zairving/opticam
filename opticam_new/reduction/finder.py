@@ -22,7 +22,7 @@ class DefaultFinder:
         assert type(npixels) is int and npixels > 0, '[OPTICAM] npixels must be a positive integer.'
         
         self.border_width = border_width
-        self.finder = SourceFinder(npixels=npixels, deblend=True, progress_bar=False)
+        self.finder = SourceFinder(npixels=npixels, progress_bar=False)
     
     def __call__(self, data: NDArray, threshold: float) -> SegmentationImage:
         
