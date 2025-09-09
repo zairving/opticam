@@ -35,5 +35,5 @@ docs = [
     "sphinx-rtd-theme >= 3.0",
 ]
 
-[tool.setuptools]
-packages = ["opticam_new"]
+[tool.setuptools.packages.find]
+where =["."]
