@@ -54,9 +54,9 @@ class BaseLocalBackground(ABC):
         error : NDArray
             The error in the image data.
         semimajor_axis : float
-            The semi-major axis of the aperture.
+            The (unscaled) semi-major axis of the aperture.
         semiminor_axis : float
-            The semi-minor axis of the aperture.
+            The (unscaled) semi-minor axis of the aperture.
         theta : float
             The rotation angle of the PSF.
         position : Tuple[float, float]
@@ -97,9 +97,9 @@ class DefaultLocalBackground(BaseLocalBackground):
         position : ArrayLike[float, float]
             The x, y position at which to compute the local background.
         semimajor_axis : float
-            The semimajor axis of the aperture.
+            The (unscaled) semimajor axis of the aperture.
         semiminor_axis : float | None, optional
-            The semiminor axis of the aperture, by default None. If None, it is assumed to be equal to the
+            The (unscaled) semiminor axis of the aperture, by default None. If None, it is assumed to be equal to the
             semimajor axis (i.e., the aperture is circular).
         theta : float, optional
             The rotation angle of the PSF, by default 0.0 (i.e., no rotation).
