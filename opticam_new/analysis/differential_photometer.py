@@ -1,4 +1,4 @@
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 import os
 import pandas as pd
 import numpy as np
@@ -8,9 +8,11 @@ import json
 from stingray import Lightcurve
 import matplotlib.colors as mcolors
 from matplotlib.axes import Axes
+from astropy.io import fits
 
-from opticam_new.analyser import Analyser
-from opticam_new.helpers import plot_catalogue, infer_gtis
+from opticam_new.analysis.analyser import Analyser
+from opticam_new.utils.helpers import plot_catalogue
+from opticam_new.utils.time_helpers import infer_gtis
 
 
 class DifferentialPhotometer:
@@ -78,12 +80,12 @@ class DifferentialPhotometer:
         
         if show_plots:
             stacked_images = {}
-            for fltr in self.filters:
-                path = os.path.join(self.out_directory, f'cat/{fltr}_stacked_image.npz')
-                try:
-                    stacked_images[fltr] = np.load(path)['stacked_image']
-                except:
-                    print(f"[OPTICAM] Could not load {path}, skipping ...")
+            with fits.open(os.path.join(self.out_directory, 'cat/stacked_images.fits.gz')) as hdul:
+                for hdu in hdul:
+                    if 'FILTER' not in hdu.header:
+                        continue
+                    fltr = hdu.header['FILTER']
+                    stacked_images[fltr] = np.asarray(hdu.data)
             
             colours = list(mcolors.TABLEAU_COLORS.keys())
             colours.pop(colours.index("tab:brown"))
