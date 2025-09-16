@@ -177,14 +177,21 @@ def _create_images(
         semiminor_sigma = noisy_image.shape[1] // 256
         orientation = 0
         
+        # (x, y) translations
+        rng = np.random.default_rng(i)
+        dx = rng.normal()
+        dy = rng.normal()
+        x_positions = source_positions[:, 0] + dx
+        y_positions = source_positions[:, 1] + dy
+        
         # put sources in the image
         for j in range(N_sources):
             
             if j == variable_source:
                 noisy_image = _add_two_dimensional_gaussian_to_image(
                     noisy_image,
-                    source_positions[j][0],
-                    source_positions[j][1],
+                    x_positions[j],
+                    y_positions[j],
                     peak_fluxes[j] + _variable_function(i, fltr),  # add variable flux to the source
                     semimajor_sigma,
                     semiminor_sigma,
@@ -193,8 +200,8 @@ def _create_images(
             else:
                 noisy_image = _add_two_dimensional_gaussian_to_image(
                     noisy_image,
-                    source_positions[j][0],
-                    source_positions[j][1],
+                    x_positions[j],
+                    y_positions[j],
                     peak_fluxes[j],
                     semimajor_sigma,
                     semiminor_sigma,
