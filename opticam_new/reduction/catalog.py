@@ -7,19 +7,19 @@ import numpy as np
 from astropy.io import fits
 from astropy.stats import SigmaClip
 from astropy.visualization.mpl_normalize import simple_norm
-from astropy.coordinates import EarthLocation, SkyCoord
+from astropy.coordinates import SkyCoord
 import astropy.units as u
 from astropy.time import Time
 from photutils.segmentation import SourceCatalog, detect_threshold
 from photutils.background import Background2D
-from skimage.transform import estimate_transform, warp, matrix_transform, SimilarityTransform
+from skimage.transform import warp, matrix_transform, SimilarityTransform
 from matplotlib import pyplot as plt
 from matplotlib.patches import Circle
 import matplotlib.colors as mcolors
 from multiprocessing import cpu_count
 from functools import partial
 from PIL import Image
-from typing import List, Dict, Literal, Callable, Tuple
+from typing import List, Dict, Literal, Callable, Tuple, Iterable
 from numpy.typing import ArrayLike, NDArray
 from scipy.spatial.distance import cdist
 from scipy.optimize import linear_sum_assignment
@@ -27,6 +27,13 @@ from ccdproc import cosmicray_lacosmic  # TODO: replace with astroscrappy to red
 import logging
 import warnings
 import pandas as pd
+
+try:
+    from astroalign import find_transform
+    HAS_ASTROALIGN = True
+except ImportError:
+    warnings.warn('[OPTICAM] astroalign could not be imported. As a result, catalog alignments will be limited to "translation".')
+    HAS_ASTROALIGN = False
 
 
 from opticam_new.utils.helpers import camel_to_snake, log_binnings, log_filters, recursive_log, sort_filters
@@ -665,12 +672,13 @@ class Catalog:
         Parameters
         ----------
         image : NDArray
-            The image from which to extract source coordinates.
+            The **non-background-subtracted** image from which to extract source coordinates.
         bkg : Background2D, optional
-            The background of the image, by default None. If None, the background is estimated from the image. Including
-            this parameter can prevent the background from being estimated multiple times.
+            The background of the image, by default None. If None, the background is estimated from the image.
         away_from_edge : bool, optional
             Whether to exclude sources near the edge of the image, by default False.
+        n_sources : int, optional
+            The number of source coordinates to return, by default `None` (all sources will be returned).
         
         Returns
         -------
@@ -690,7 +698,7 @@ class Catalog:
         coords = np.array([tbl["xcentroid"], tbl["ycentroid"]]).T
         
         if away_from_edge:
-            edge = 2 * self.background.box_size
+            edge = self.background.box_size
             for coord in coords:
                 if coord[0] < edge or coord[0] > image.shape[1] - edge or coord[1] < edge or coord[1] > image.shape[0] - edge:
                     coords = np.delete(coords, np.where(np.all(coords == coord, axis=1)), axis=0)
@@ -703,12 +711,12 @@ class Catalog:
 
     def create_catalogs(
         self,
-        max_catalog_sources: int = 30,
+        max_catalog_sources: int = 20,
         n_alignment_sources: int = 3,
-        transform_type: Literal['euclidean', 'similarity', 'translation'] = 'translation',
-        translation_limit: int | None = None,
-        rotation_limit: int | None = None,
-        scaling_limit: int | None = None,
+        transform_type: Literal['affine', 'translation'] = 'translation',
+        rotation_limit: float | None = None,
+        translation_limit: float | Iterable[float] | None = None,
+        scale_limit: float | None = None,
         overwrite: bool = False,
         show_diagnostic_plots: bool = False,
         ) -> None:
@@ -718,42 +726,48 @@ class Catalog:
         Parameters
         ----------
         max_catalog_sources : int, optional
-            The maximum number of sources included in the catalog, by default 15. Only the brightest
+            The maximum number of sources included in the catalog, by default 20. Only the brightest
             max_catalog_sources sources are included in the catalog.
         n_alignment_sources : int, optional
-            The number of sources to use for image alignment, by default 3. Must be >= 3. The brightest
-            n_alignment_sources sources are used for image alignment.
-        transform_type : Literal['euclidean', 'similarity', 'translation'], optional
+            The (maximum) number of sources to use for image alignment, by default 3. If `transform_type='translation'`,
+            `n_alignment_sources` must be >= 1, and the brightest `n_alignment_sources` sources are used for image
+            alignment. If `transform_type='affine'`, `n_alignment_sources` must be >= 3 and represents that *maximum*
+            number of sources that *may* be used for image alignment.
+        transform_type : Literal['affine', 'translation'], optional
             The type of transform to use for image alignment, by default 'translation'. 'translation' performs simple
-            x, y translations, while 'euclidean' includes rotation and 'similarity' includes rotation and scaling.
-        translation_limit : int, optional
-            The maximum translation limit for image alignment, by default infinity.
-        rotation_limit : int, optional
-            The maximum rotation limit (in degrees) for image alignment, by default infinity.
-        scaling_limit : int, optional
-            The maximum scaling limit for image alignment, by default infinity.
+            x, y translations, while 'affine' uses `astroalign.find_transform
+        rotation_limit : float, optional
+            The maximum rotation limit (in degrees) for affine transformations, by default `None` (no limit).
+        scale_limit : float, optional
+            The maximum scale limit for affine transformations, by default `None` (no limit).
+        translation_limit : float | Iterable[float], optional
+            The maximum translation limit for transformations, by default `None` (no limit). Can be a scalar value that
+            applies to both x- and y-translations, or an iterable where the first value defines the x-translation limit
+            and the second value defines the y-translation limit.
         overwrite : bool, optional
-            Whether to overwrite existing catalogues, by default False.
+            Whether to overwrite existing catalogs, by default False.
         show_diagnostic_plots : bool, optional
             Whether to show diagnostic plots, by default False. Diagnostic plots are saved to out_directory, so this
             parameter only affects whether the plots are displayed in the console.
         """
         
+        assert transform_type in ['affine', 'translation'], '[OPTICAM] transform_type must be either "affine" or "translation".'
+        
+        if not HAS_ASTROALIGN and transform_type == 'affine':
+            raise ValueError('[OPTICAM] To use transform_type="affine", ensure astroalign and its dependency sep_pjw are installed. Alternatively, use transform_type="translation".')
+        
+        if translation_limit is not None:
+            # if a scalar translation limit is specified, convert it to a 2D iterable
+            if np.isscalar(translation_limit):
+                translation_limit = [translation_limit, translation_limit]
+        
         # if catalogues already exist, skip
-        if os.path.isfile(os.path.join(self.out_directory, 'cat/catalogues.png')) and not overwrite:
+        if os.path.isfile(os.path.join(self.out_directory, 'cat/catalogs.png')) and not overwrite:
             print('[OPTICAM] Catalogs already exist. To overwrite, set overwrite to True.')
             return
         
         if self.verbose:
-            print('[OPTICAM] Initialising catalogues ...')
-        
-        # set some default transform limits if not provided
-        if translation_limit is None:
-            translation_limit = 128 // (self.binning_scale * self.rebin_factor)
-        if rotation_limit is None:
-            rotation_limit = 360
-        if scaling_limit is None:
-            scaling_limit = 1
+            print('[OPTICAM] Initialising catalogs')
         
         background_median = {}
         background_rms = {}
@@ -775,7 +789,7 @@ class Catalog:
                 continue
             
             if len(reference_coords) < n_alignment_sources:
-                self.logger.info(f'[OPTICAM] Not enough sources detected in {fltr} reference image ({self.camera_files[fltr][self.reference_indices[fltr]]}) for alignment. Reducing threshold and/or n_alignment_sources may help.')
+                self.logger.info(f'[OPTICAM] Found {len(reference_coords)} sources in {fltr} reference image ({self.camera_files[fltr][self.reference_indices[fltr]]}) but n_alignment_sources={n_alignment_sources}. Consider reducing threshold and/or n_alignment_sources.')
                 continue
             
             self.logger.info(f'[OPTICAM] {fltr} alignment source coordinates: {reference_coords}')
@@ -783,13 +797,16 @@ class Catalog:
             # align and stack images in batches
             batches = np.array_split(self.camera_files[fltr], 100)  # split files into 1% batches
             results = process_map(
-                partial(self._align_image,
-                        reference_image=reference_image,
-                        reference_coords=reference_coords,
-                        transform_type=transform_type,
-                        translation_limit=translation_limit,
-                        rotation_limit=rotation_limit,
-                        scaling_limit=scaling_limit),
+                partial(
+                    self._align_image,
+                    reference_image_shape=reference_image.shape,
+                    reference_coords=reference_coords,
+                    transform_type=transform_type,
+                    rotation_limit=rotation_limit,
+                    scale_limit=scale_limit,
+                    translation_limit=translation_limit,
+                    n_alignment_sources=n_alignment_sources,
+                    ),
                 batches,
                 max_workers=self.number_of_processors,
                 disable=not self.verbose,
@@ -866,12 +883,13 @@ class Catalog:
     def _align_image(
         self,
         batch: List[str],
-        reference_image: NDArray,
+        reference_image_shape: Tuple[int],
         reference_coords: NDArray,
-        transform_type: Literal['euclidean', 'similarity', 'translation'],
-        translation_limit: int,
-        rotation_limit: int,
-        scaling_limit: int,
+        transform_type: Literal['affine', 'translation'],
+        rotation_limit: float | None,
+        scale_limit: float | None,
+        translation_limit: Iterable[float] | None,
+        n_alignment_sources: int,
         ) -> Tuple[
             NDArray,
             Dict[str, float],
@@ -889,14 +907,16 @@ class Catalog:
             The reference image.
         reference_coords : NDArray
             The source coordinates in the reference image.
-        transform_type : Literal['euclidean', 'similarity', 'translation']
+        transform_type : Literal['affine', 'translation']
             The type of transform to use for image alignment.
-        translation_limit : int
-            The maximum translation limit for image alignment.
-        rotation_limit : int
+        rotation_limit : float | None
             The maximum rotation limit (in degrees) for image alignment.
-        scaling_limit : int
+        scale_limit : float | None
             The maximum scaling limit for image alignment.
+        translation_limit : Iterable[float] | None
+            The maximum translation limit for image alignment.
+        n_alignment_sources : int
+            The (maximum) number of sources to use for image alignment.
         
         Returns
         -------
@@ -904,7 +924,7 @@ class Catalog:
             The transform parameters, background median, and background RMS.
         """
         
-        stacked_image = np.zeros_like(reference_image)  # create empty stacked image
+        stacked_image = np.zeros(reference_image_shape)  # create empty stacked image
         transforms = {}
         background_medians = {}
         background_rmss = {}
@@ -913,47 +933,111 @@ class Catalog:
             
             data = self._get_data(file)  # get image data
             
-            bkg = self.background(data)  # get background
+            # calculate and subtract background
+            bkg = self.background(data)
             background_median = bkg.background_median
             background_rms = bkg.background_rms_median
             
-            data_clean = data - bkg.background  # remove background from image
-            
+            # identify sources
             try:
-                coords = self._get_source_coords_from_image(data, bkg)  # get source coordinates in descending order of brightness
+                coords = self._get_source_coords_from_image(data, bkg)
             except:
-                self.logger.info('[OPTICAM] No sources detected in ' + file + '. Reducing threshold or npixels in the source finder may help.')
+                self.logger.info(f'[OPTICAM] No sources detected in {file}.')
                 continue
             
-            distance_matrix = cdist(reference_coords, coords)  # compute distance matrix
-            try:
-                reference_indices, indices = linear_sum_assignment(distance_matrix)  # solve assignment problem
-            except:
-                self.logger.info('[OPTICAM] Could not align ' + file + '. Reducing threshold and/or n_alignment_sources may help.')
+            if len(coords) < len(reference_coords):
+                self.logger.info(f'[OPTICAM] n_alignment_sources={len(reference_coords)} but only {len(reference_coords)} sources detected in {file}. Skipping.')
                 continue
             
-            # compute transform
             if transform_type == 'translation':
-                dx = np.mean(coords[indices, 0] - reference_coords[reference_indices, 0])
-                dy = np.mean(coords[indices, 1] - reference_coords[reference_indices, 1])
-                if abs(dx) < translation_limit and abs(dy) < translation_limit:
-                    transform = SimilarityTransform(translation=[dx, dy])
-                else:
-                    self.logger.info(f'[OPTICAM] File {file} exceeded translation limit. Translation limit is {translation_limit:.1f}, but translation was ({dx:.1f}, {dy:.1f}).')
-                    continue
+                distance_matrix = cdist(reference_coords, coords)  # compute distance matrix between sources across images
+                reference_indices, indices = linear_sum_assignment(distance_matrix)  # match sources between images
+                dx = np.mean(reference_coords[reference_indices, 0] - coords[indices, 0])  # x translation
+                dy = np.mean(reference_coords[reference_indices, 1] - coords[indices, 1])  # y translation
+                transform = SimilarityTransform(translation=[dx, dy])
             else:
-                transform = estimate_transform(transform_type, reference_coords[reference_indices], coords[indices])
-                # TODO: implement transform constraints
+                # perform affine alignment using astroalign
+                try:
+                    transform = find_transform(
+                        coords,
+                        reference_coords,
+                        max_control_points=n_alignment_sources,
+                        )[0]
+                except Exception as e:
+                    self.logger.info(f'[OPTICAM] Could not align {file} due to the following exception: {e}. Skipping.')
+                    continue
             
-            transforms[file] = transform.params.tolist()  # save transform parameters
-            background_medians[file] = background_median  # save background median
-            background_rmss[file] = background_rms  # save background RMS
+            # validate transform
+            if not self._valid_transform(
+                file=file,
+                transform=transform,
+                rotation_limit=rotation_limit,
+                scale_limit=scale_limit,
+                translation_limit=translation_limit):
+                continue
+            
+            transforms[file] = transform.params.tolist()
+            background_medians[file] = background_median
+            background_rmss[file] = background_rms
             
             # transform and stack image
-            stacked_image += warp(data_clean, transform.inverse, output_shape=reference_image.shape, order=3,
-                                    mode='constant', cval=np.nanmedian(data), clip=True, preserve_range=True)
+            stacked_image += warp(
+                data - bkg.background,
+                transform.inverse,
+                output_shape=reference_image_shape,
+                order=3,
+                mode='constant',
+                cval=np.nanmedian(data),
+                clip=True,
+                preserve_range=True,
+                )
         
         return stacked_image, transforms, background_medians, background_rmss
+
+    def _valid_transform(
+        self,
+        file: str,
+        transform: SimilarityTransform,
+        rotation_limit: float | None,
+        scale_limit: float | None,
+        translation_limit: Iterable[float] | None,
+        ) -> bool:
+        """
+        Find whether a transform is valid given some transform limits.
+        
+        Parameters
+        ----------
+        file : str
+            The file being transformed.
+        transform : SimilarityTransform
+            The transform.
+        rotation_limit : float | None
+            The rotation limit.
+        scale_limit : float | None
+            The scale limit.
+        translation_limit : Iterable[float] | None
+            The translation limit.
+        
+        Returns
+        -------
+        bool
+            Whether the transform is valid.
+        """
+        
+        if rotation_limit:
+            if abs(transform.rotation) > rotation_limit:
+                self.logger.info(f'[OPTICAM] File {file} transform exceeded rotation limit. Rotation limit is {rotation_limit}, but rotation was {transform.rotation}.')
+                return False
+        if scale_limit:
+            if transform.scale > scale_limit:
+                self.logger.info(f'[OPTICAM] File {file} transform exceeded scale limit. Scale limit is {scale_limit}, but scale was {transform.scale}.')
+                return False
+        if translation_limit:
+            if abs(transform.translation[0]) > translation_limit[0] or abs(transform.translation[1]) > translation_limit[1]:
+                self.logger.info(f'[OPTICAM] File {file} transform exceeded translation limit. Translation limit is {translation_limit}, but translation was {transform.translation}.')
+                return False
+        
+        return True
 
     def _parse_alignment_results(self, results, fltr: str, reference_image) -> Tuple[NDArray, Dict[str, float],
                                                                                      Dict[str, float]]:
