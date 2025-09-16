@@ -522,22 +522,23 @@ class OptimalPhotometer(SimplePhotometer):
         # convert orientation from degrees to radians
         theta = psf_params['orientation'] * np.pi / 180
         
-        # offset coordinates to the position of the source and align them with the orientation of the PSF
+        # offset coordinates to the position of the source and align axes with the orientation of the PSF
         x0, y0 = position
         x_rot = (x - x0) * np.cos(theta) + (y - y0) * np.sin(theta)
         y_rot = -(x - x0) * np.sin(theta) + (y - y0) * np.cos(theta)
         
         # compute the weights for each pixel using a 2D Gaussian
         weights = np.exp(- .5 * ((x_rot / psf_params['semimajor_sigma'])**2 + (y_rot / psf_params['semiminor_sigma'])**2))
-        weights /= np.sum(weights)
+        weights /= np.sum(weights)  # normalise weights
         
+        # compute optimal flux and its error
         flux = np.sum(image * weights)
         flux_error = np.sqrt(np.sum((error * weights)**2))
         
         if self.local_background_estimator is None:
             return flux, flux_error
         else:
-            # estimate local background in the annulus
+            # estimate local background using annulus
             local_background_per_pixel, local_background_error_per_pixel = self.local_background_estimator(
                 image,
                 error,
