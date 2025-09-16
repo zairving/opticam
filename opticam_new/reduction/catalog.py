@@ -817,7 +817,6 @@ class Catalog:
             stacked_image, background_medians, background_rmss = self._parse_alignment_results(
                 results,
                 fltr,
-                reference_image,
                 )
             
             background_median[fltr] = background_medians
@@ -950,8 +949,8 @@ class Catalog:
                 continue
             
             if transform_type == 'translation':
-                distance_matrix = cdist(reference_coords, coords)  # compute distance matrix between sources across images
-                reference_indices, indices = linear_sum_assignment(distance_matrix)  # match sources between images
+                distance_matrix = cdist(reference_coords, coords)  # compute distances between sources across images
+                reference_indices, indices = linear_sum_assignment(distance_matrix)  # match sources across images
                 dx = np.mean(reference_coords[reference_indices, 0] - coords[indices, 0])  # x translation
                 dy = np.mean(reference_coords[reference_indices, 1] - coords[indices, 1])  # y translation
                 transform = SimilarityTransform(translation=[dx, dy])
@@ -1039,22 +1038,25 @@ class Catalog:
         
         return True
 
-    def _parse_alignment_results(self, results, fltr: str, reference_image) -> Tuple[NDArray, Dict[str, float],
-                                                                                     Dict[str, float]]:
+    def _parse_alignment_results(
+        self,
+        results: Tuple,
+        fltr: str,
+        ) -> Tuple[NDArray, Dict[str, float], Dict[str, float]]:
         """
         Parse the results of image alignment.
         
         Parameters
         ----------
-        results :
+        results : Tuple
             The results.
         fltr : str
             The filter.
         
         Returns
         -------
-        Tuple[Dict[str, float], Dict[str, float]]
-            The background medians, and background RMSs.
+        Tuple[NDArray, Dict[str, float], Dict[str, float]]:
+            The stacked image, background medians, and background RMSs.
         """
         
         transforms = {}
@@ -1358,8 +1360,6 @@ class Catalog:
             hdr['FILTER'] = fltr
             hdu = fits.ImageHDU(img, hdr)
             hdul.append(hdu)
-        
-        print(hdul)
         
         file_path = os.path.join(self.out_directory, f'cat/stacked_images.fits.gz')
         
