@@ -6,5 +6,5 @@ from opticam_new.analysis.differential_photometer import DifferentialPhotometer
 from opticam_new.reduction.photometers import SimplePhotometer, OptimalPhotometer
 from opticam_new.reduction.local_background import DefaultLocalBackground
 from opticam_new.reduction.correctors import FlatFieldCorrector
-from opticam_new.analysis.analyser import Analyser
+from opticam_new.analysis.analyzer import Analyzer
 from opticam_new.utils.generate import generate_flats, generate_observations, generate_gappy_observations
