@@ -2,6 +2,7 @@ from typing import List, Tuple
 import os
 import pandas as pd
 import numpy as np
+from numpy.typing import NDArray
 import matplotlib.pyplot as plt
 from astropy.table import QTable
 import json
@@ -9,6 +10,7 @@ from stingray import Lightcurve
 import matplotlib.colors as mcolors
 from matplotlib.axes import Axes
 from astropy.io import fits
+from astroalign import find_transform
 
 from opticam_new.analysis.analyser import Analyser
 from opticam_new.utils.helpers import plot_catalogue
@@ -109,6 +111,7 @@ class DifferentialPhotometer:
         comparisons: int | List[int],
         phot_label: str,
         prefix: str | None = None,
+        match_other_cameras: bool = False,
         show_diagnostics: bool = True,
         ) -> Analyser:
         """
@@ -130,6 +133,9 @@ class DifferentialPhotometer:
             The photometry label, used for file reading and labelling.
         prefix : str, optional
             The prefix to use when saving the relative light curve (e.g., the target star's name), by default None.
+        match_other_cameras : bool, optional
+            Whether to match the target and comparison(s) IDs to the remaining catalog filters, by default `False`. If
+            `True`, astroalign must be installed.
         show_diagnostics : bool, optional
             Whether to show diagnostic plots, by default True.
         
@@ -152,18 +158,64 @@ class DifferentialPhotometer:
         
         relative_light_curves = {}
         
-        # compute and plot relative light curve for single filter
-        relative_light_curves[fltr] = self._compute_relative_light_curve(
-            fltr,
-            target,
-            comparisons,
-            prefix,
-            phot_label,
-            show_diagnostics,
-            )
-        
-        if relative_light_curves[fltr] is None:
-            raise ValueError(f"[OPTICAM] Could not compute relative light curve for filter {fltr}, target {target}, comparisons {comparisons}.")
+        if not match_other_cameras:
+            # compute and plot relative light curve for single filter
+            relative_light_curves[fltr] = self._compute_relative_light_curve(
+                fltr,
+                target,
+                comparisons,
+                prefix,
+                phot_label,
+                show_diagnostics,
+                )
+        else:
+            # catalog of reference filter
+            ref_cat = QTable.read(
+                os.path.join(self.out_directory, f"cat/{fltr}_catalogue.ecsv"),
+                format="ascii.ecsv",
+                )
+            
+            # source coords in reference filter catalog
+            ref_coords = np.asarray([ref_cat["xcentroid"].value, ref_cat["ycentroid"].value]).T
+            # subtract 1 to account for zero-indexing
+            ref_target_coords = ref_coords[target - 1]
+            ref_comparison_coords = [ref_coords[comp - 1] for comp in comparisons]
+            
+            for new_fltr in self.filters:
+                if new_fltr == fltr:
+                    # no matching necessary
+                    relative_light_curves[fltr] = self._compute_relative_light_curve(
+                        fltr,
+                        target,
+                        comparisons,
+                        prefix,
+                        phot_label,
+                        show_diagnostics,
+                        )
+                else:
+                    try:
+                        new_target, new_comparisons = transform_IDs(
+                            self.out_directory,
+                            ref_coords,
+                            ref_target_coords,
+                            ref_comparison_coords,
+                            new_fltr,
+                            )
+                        
+                        print(f'[OPTICAM] {fltr} target ID {target} was matched to {new_fltr} target ID {new_target}')
+                        for i in range(len(comparisons)):
+                            print(f'[OPTICAM] {fltr} comparison ID {comparisons[i]} was matched to {new_fltr} comparison ID {new_comparisons[i]}')
+                    except:
+                        print(f'[OPTICAM] Could not match {new_fltr} sources to {fltr} sources. This can happen if many stars are not identified across all catalogs. Sometimes simply trying again can help (RNG is involved), but often increasing max_catalog_sources in Catalog.create_catalogs() will more reliably solve the issue.')
+                    
+                    relative_light_curves[new_fltr] = self._compute_relative_light_curve(
+                        new_fltr,
+                        new_target,
+                        new_comparisons,
+                        prefix,
+                        phot_label,
+                        show_diagnostics,
+                        )
         
         return Analyser(
             self.out_directory,
@@ -234,10 +286,7 @@ class DifferentialPhotometer:
             comp_dfs.append(comparison_df)
         
         # ensure all DataFrames have the same time column
-        filtered_target_df, filtered_comp_dfs = self._filter_dataframes_to_common_time_column(
-            target_df,
-            comp_dfs,
-            )
+        filtered_target_df, filtered_comp_dfs = filter_dataframes_to_common_time_column(target_df, comp_dfs)
         
         # plot diagnostic light curves for target and comparison source(s)
         for i, df in enumerate(filtered_comp_dfs):
@@ -313,48 +362,6 @@ class DifferentialPhotometer:
         )
         
         return lc
-    
-    def _filter_dataframes_to_common_time_column(
-        self,
-        target_df: pd.DataFrame,
-        comp_dfs: List[pd.DataFrame],
-        ) -> Tuple[pd.DataFrame, List[pd.DataFrame]]:
-        """
-        Get the matching times between a target data frame (light curve) and a list of comparison data frames (light 
-        curves).
-        
-        Parameters
-        ----------
-        target_df : pd.DataFrame
-            The data frame of the target source.
-        comp_dfs : List[pd.DataFrame]
-            The list of data frames of the comparison sources.
-        
-        Returns
-        -------
-        Tuple[pd.DataFrame, List[pd.DataFrame]]
-            The filtered target data frame and the list of filtered comparison data frames.
-        """
-        
-        # get time columns from all data frames
-        time_columns = [target_df['TDB'].values]
-        time_columns.extend([df['TDB'].values for df in comp_dfs])
-        
-        # get matching times between all data frames
-        common_times = set(time_columns[0])
-        for time_col in time_columns[1:]:
-            common_times.intersection_update(time_col)
-        common_times = sorted(common_times)
-        
-        # get matching times for target
-        filtered_target_df = target_df[target_df['TDB'].isin(common_times)]
-        filtered_target_df.reset_index(drop=True, inplace=True)
-        
-        # get matching times for comparisons
-        filtered_comp_dfs = [df[df['TDB'].isin(common_times)] for df in comp_dfs]
-        filtered_comp_dfs = [df.reset_index(drop=True) for df in filtered_comp_dfs]
-        
-        return filtered_target_df, filtered_comp_dfs
     
     def _plot_relative_light_curve(
         self,
@@ -571,3 +578,75 @@ class DifferentialPhotometer:
         if not show:
             fig.clear()
             plt.close(fig)
+
+
+def filter_dataframes_to_common_time_column(
+    target_df: pd.DataFrame,
+    comp_dfs: List[pd.DataFrame],
+    ) -> Tuple[pd.DataFrame, List[pd.DataFrame]]:
+    """
+    Get the matching times between a target data frame (light curve) and a list of comparison data frames (light 
+    curves).
+    
+    Parameters
+    ----------
+    target_df : pd.DataFrame
+        The data frame of the target source.
+    comp_dfs : List[pd.DataFrame]
+        The list of data frames of the comparison sources.
+    
+    Returns
+    -------
+    Tuple[pd.DataFrame, List[pd.DataFrame]]
+        The filtered target data frame and the list of filtered comparison data frames.
+    """
+    
+    # get time columns from all data frames
+    time_columns = [target_df['TDB'].values]
+    time_columns.extend([df['TDB'].values for df in comp_dfs])
+    
+    # get matching times between all data frames
+    common_times = set(time_columns[0])
+    for time_col in time_columns[1:]:
+        common_times.intersection_update(time_col)
+    common_times = sorted(common_times)
+    
+    # get matching times for target
+    filtered_target_df = target_df[target_df['TDB'].isin(common_times)]
+    filtered_target_df.reset_index(drop=True, inplace=True)
+    
+    # get matching times for comparisons
+    filtered_comp_dfs = [df[df['TDB'].isin(common_times)] for df in comp_dfs]
+    filtered_comp_dfs = [df.reset_index(drop=True) for df in filtered_comp_dfs]
+    
+    return filtered_target_df, filtered_comp_dfs
+
+
+def transform_IDs(out_directory: str, ref_coords: NDArray, ref_target_coords: NDArray,
+                  ref_comparison_coords: List[NDArray], fltr: str) -> Tuple[int, List[int]]:
+    
+    # get source positions in new filter
+    cat = QTable.read(
+        os.path.join(out_directory, f"cat/{fltr}_catalogue.ecsv"),
+        format="ascii.ecsv",
+        )
+    coords = np.asarray([cat["xcentroid"].value, cat["ycentroid"].value]).T
+    
+    # get star-to-star correspondence
+    source_arr, ref_arr = find_transform(coords, ref_coords)[1]
+    
+    # get transformed coordinates for target and comparison(s)
+    target_coords = source_arr[np.where(ref_arr == ref_target_coords)]
+    comparison_coords = [source_arr[np.where(ref_arr == comp_coords)] for comp_coords in ref_comparison_coords]
+    
+    # get transformed IDs for target and comparison(s)
+    new_target = int(np.where(coords == target_coords)[0][0]) + 1
+    new_comparisons = [int(np.where(coords == comp_coords)[0][0]) + 1 for comp_coords in comparison_coords]
+    
+    return new_target, new_comparisons
+
+
+
+
+
+
