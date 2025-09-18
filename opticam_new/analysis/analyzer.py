@@ -14,13 +14,15 @@ from stingray.lombscargle import LombScarglePowerspectrum
 from stingray import CrossCorrelation
 from pandas import DataFrame
 
+
 from opticam_new.utils.helpers import sort_filters
 from opticam_new.utils.time_helpers import infer_gtis
 from opticam_new.utils.constants import colors
 
-class Analyser:
+
+class Analyzer:
     """
-    Helper class for analysing OPTICAM light curves.
+    Helper class for analyzing OPTICAM light curves.
     """
 
     def __init__(
@@ -32,7 +34,7 @@ class Analyser:
         show_plots: bool = True,
         ) -> None:
         """
-        Helper class for analysing OPTICAM light curves.
+        Helper class for analyzing OPTICAM light curves.
         
         Parameters
         ----------
@@ -40,9 +42,9 @@ class Analyser:
             The directory to save the output files (i.e., the same directory as `out_directory` used by
             `opticam_new.Photometer` when creating the light curves).
         light_curves : Dict[str, Lightcurve | DataFrame] | None, optional
-            The light curves to analyse, where the keys are the filter names and the values are either Lightcurve
-            objects or DataFrames containing 'TDB', 'rel_flux', and 'rel_flux_err' columns. Leave as `None` to create an
-            empty analyser that can be populated later using the `join()` method.
+            The light curves to analyze, where the keys are the filter names and the values are either Lightcurve
+            objects or DataFrames containing 'BMJD', 'rel_flux', and 'rel_flux_err' columns. Leave as `None` to create an
+            empty analyzer that can be populated later using the `join()` method.
         prefix : str | None, optional
             The prefix to use for the output files (e.g., the name of the target source).
         phot_label : str, optional
@@ -82,7 +84,7 @@ class Analyser:
         ----------
         light_curves : Dict[str, Lightcurve | DataFrame] | None
             The light curves to validate, where the keys are the filter names and the values are either Lightcurve
-            objects or DataFrames containing 'TDB', 'rel_flux', and 'rel_flux_err' columns. If `None`, an empty
+            objects or DataFrames containing 'BMJD', 'rel_flux', and 'rel_flux_err' columns. If `None`, an empty
             dictionary will be returned.
         
         Returns
@@ -97,7 +99,7 @@ class Analyser:
         if light_curves:
             for fltr in light_curves.keys():
                 if isinstance(light_curves[fltr], DataFrame):
-                    time = np.asarray(light_curves[fltr]['TDB'].values)
+                    time = np.asarray(light_curves[fltr]['BMJD'].values)
                     counts = np.asarray(light_curves[fltr]['rel_flux'].values)
                     counts_err = np.asarray(light_curves[fltr]['rel_flux_err'].values)
                     
@@ -130,37 +132,37 @@ class Analyser:
 
     def join(
         self,
-        analyser: 'Analyser',
-        ) -> 'Analyser':
+        analyzer: 'Analyzer',
+        ) -> 'Analyzer':
         """
-        Combine another `Analyser` instance with the current one. If the new `Analyser` has light curves with filters
-        that are not present in the current `Analyser`, those filters will be added. If the new `Analyser` has light
-        curves with filters that are already present in the current `Analyser`, those light curves will be merged.
+        Combine another `Analyzer` instance with the current one. If the new `Analyzer` has light curves with filters
+        that are not present in the current `Analyzer`, those filters will be added. If the new `Analyzer` has light
+        curves with filters that are already present in the current `Analyzer`, those light curves will be merged.
         
         Parameters
         ----------
-        analyser : Analyser
-            The analyser instance being combined with the current one.
+        analyzer : Analyzer
+            The analyzer instance being combined with the current one.
         
         Returns
         -------
-        Analyser
-            A new `Analyser` instance with the combined light curves.
+        Analyzer
+            A new `Analyzer` instance with the combined light curves.
         """
         
-        assert analyser.light_curves, f'[OPTICAM] cannot join an empty analyser.'
+        assert analyzer.light_curves, f'[OPTICAM] cannot join an empty analyzer.'
         
         new_light_curves = copy.copy(self.light_curves)
         
-        for fltr in analyser.light_curves.keys():
+        for fltr in analyzer.light_curves.keys():
             if fltr not in self.light_curves.keys():
                 # if a new filter is being added, copy the light curve
-                new_light_curves[fltr] = copy.copy(analyser.light_curves[fltr])
+                new_light_curves[fltr] = copy.copy(analyzer.light_curves[fltr])
             else:
                 # if an existing filter is being added, merge the light curves
-                new_light_curves[fltr] = self.light_curves[fltr].join(analyser.light_curves[fltr])
+                new_light_curves[fltr] = self.light_curves[fltr].join(analyzer.light_curves[fltr])
         
-        return Analyser(
+        return Analyzer(
             out_directory=self.out_directory,
             light_curves=new_light_curves,
             prefix=self.prefix,
@@ -806,7 +808,7 @@ def _plot(
     ----------
     results : Dict[str, AveragedPowerspectrum  |  Powerspectrum  |  Crossspectrum  |  AveragedCrossspectrum  |  
     LombScarglePowerspectrum | CrossCorrelation]
-        The timming analysis results, where the keys are the filter names and the values are the results.
+        The timing analysis results, where the keys are the filter names and the values are the results.
     scale : Literal['linear', 'log', 'loglog'], optional
         The scale to use for the plot, by default 'linear'. If 'linear', all axes are linear. If 'log', the
         x-axis is logarithmic. If 'loglog', both the x- and y-axes are logarithmic.
