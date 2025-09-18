@@ -7,13 +7,12 @@ import matplotlib.pyplot as plt
 from astropy.table import QTable
 import json
 from stingray import Lightcurve
-import matplotlib.colors as mcolors
 from matplotlib.axes import Axes
 from astropy.io import fits
 from astroalign import find_transform
 
-from opticam_new.analysis.analyser import Analyser
-from opticam_new.utils.helpers import plot_catalogue
+from opticam_new.analysis.analyzer import Analyzer
+from opticam_new.utils.helpers import plot_catalog
 from opticam_new.utils.time_helpers import infer_gtis
 
 
@@ -61,24 +60,24 @@ class DifferentialPhotometer:
         # output filters
         print('[OPTICAM] Filters: ' + ', '.join(list(self.filters)))
         
-        ########################################### read catalogues ###########################################
+        ########################################### read catalogs ###########################################
         
-        self.catalogues = {}
+        self.catalogs = {}
         for fltr in self.filters:
             try:
-                self.catalogues.update(
+                self.catalogs.update(
                     {
                         fltr: QTable.read(
-                            os.path.join(self.out_directory, f'cat/{fltr}_catalogue.ecsv'),
+                            os.path.join(self.out_directory, f'cat/{fltr}_catalog.ecsv'),
                             format='ascii.ecsv'),
                         },
                     )
             except:
-                print(f'[OPTICAM] Could not load {os.path.join(self.out_directory, f'cat/{fltr}_catalogue.ecsv')}, skipping ...')
+                print(f'[OPTICAM] Could not load {os.path.join(self.out_directory, f'cat/{fltr}_catalog.ecsv')}, skipping ...')
                 self.filters.remove(fltr)
                 continue
         
-        ########################################### plot catalogues ###########################################
+        ########################################### plot catalogs ###########################################
         
         if show_plots:
             stacked_images = {}
@@ -89,17 +88,10 @@ class DifferentialPhotometer:
                     fltr = hdu.header['FILTER']
                     stacked_images[fltr] = np.asarray(hdu.data)
             
-            colours = list(mcolors.TABLEAU_COLORS.keys())
-            colours.pop(colours.index("tab:brown"))
-            colours.pop(colours.index("tab:gray"))
-            colours.pop(colours.index("tab:purple"))
-            colours.pop(colours.index("tab:blue"))
-            
-            fig, ax = plot_catalogue(
+            fig, ax = plot_catalog(
                 self.filters,
                 stacked_images,
-                self.catalogues,
-                colours,
+                self.catalogs,
                 )
             
             plt.show()
@@ -113,7 +105,7 @@ class DifferentialPhotometer:
         prefix: str | None = None,
         match_other_cameras: bool = False,
         show_diagnostics: bool = True,
-        ) -> Analyser:
+        ) -> Analyzer:
         """
         Compute the relative light curve for a target source with respect to one or more comparison sources. By default,
         the relative light curve is computed for a single filter. The relative light curve is saved to
@@ -126,9 +118,9 @@ class DifferentialPhotometer:
         fltr : str
             The filter to compute the relative light curve for.
         target : int
-            The catalogue ID of the target source.
+            The catalog ID of the target source.
         comparisons : int | List[int]
-            The catalogue ID(s) of the comparison source(s).
+            The catalog ID(s) of the comparison source(s).
         phot_label : str
             The photometry label, used for file reading and labelling.
         prefix : str, optional
@@ -141,8 +133,8 @@ class DifferentialPhotometer:
         
         Returns
         -------
-        Analyser
-            An Analyser object containing the relative light curve(s).
+        Analyzer
+            An Analyzer object containing the relative light curve(s).
         """
         
         if not os.path.isdir(os.path.join(self.out_directory, 'relative_light_curves')):
@@ -171,7 +163,7 @@ class DifferentialPhotometer:
         else:
             # catalog of reference filter
             ref_cat = QTable.read(
-                os.path.join(self.out_directory, f"cat/{fltr}_catalogue.ecsv"),
+                os.path.join(self.out_directory, f"cat/{fltr}_catalog.ecsv"),
                 format="ascii.ecsv",
                 )
             
@@ -217,7 +209,7 @@ class DifferentialPhotometer:
                         show_diagnostics,
                         )
         
-        return Analyser(
+        return Analyzer(
             self.out_directory,
             light_curves=relative_light_curves,
             prefix=prefix,
@@ -242,9 +234,9 @@ class DifferentialPhotometer:
         fltr : str
             The filter to compute the relative light curve for.
         target : int
-            The catalogue ID of the target source.
+            The catalog ID of the target source.
         comparisons : List[int]
-            The catalogue ID(s) of the comparison source(s).
+            The catalog ID(s) of the comparison source(s).
         prefix : str | None
             The prefix to use when saving the relative light curve (e.g., the target star's name), by default None.
         phot_label : str
@@ -315,7 +307,7 @@ class DifferentialPhotometer:
                             show_diagnostics,
                             )
         
-        time = filtered_target_df["TDB"].values
+        time = filtered_target_df["BMJD"].values
         
         # get total flux and error of comparison sources
         comp_fluxes = np.sum([df["flux"].values for df in filtered_comp_dfs], axis=0)
@@ -336,7 +328,7 @@ class DifferentialPhotometer:
         
         # save relative light curve to CSV
         df = pd.DataFrame({
-            'TDB': time,
+            'BMJD': time,
             'rel_flux': relative_flux,
             'rel_flux_err': relative_flux_error,
         })
@@ -382,9 +374,9 @@ class DifferentialPhotometer:
         relative_light_curve : Lightcurve
             The relative light curve to plot.
         target : int
-            The catalogue ID of the target source.
+            The catalog ID of the target source.
         comparisons : List[int]
-            The catalogue ID(s) of the comparison source(s).
+            The catalog ID(s) of the comparison source(s).
         prefix : str | None
             The prefix to use when saving the relative light curve (e.g., the target star's name), by default None.
         fltr : str
@@ -474,7 +466,7 @@ class DifferentialPhotometer:
         """
         
         # convert time to seconds from t_ref
-        time = (comparison1_df["TDB"].values - self.t_ref) * 86400
+        time = (comparison1_df["BMJD"].values - self.t_ref) * 86400
         
         fig, axes = plt.subplots(
             nrows=3,
@@ -602,8 +594,8 @@ def filter_dataframes_to_common_time_column(
     """
     
     # get time columns from all data frames
-    time_columns = [target_df['TDB'].values]
-    time_columns.extend([df['TDB'].values for df in comp_dfs])
+    time_columns = [target_df['BMJD'].values]
+    time_columns.extend([df['BMJD'].values for df in comp_dfs])
     
     # get matching times between all data frames
     common_times = set(time_columns[0])
@@ -612,11 +604,11 @@ def filter_dataframes_to_common_time_column(
     common_times = sorted(common_times)
     
     # get matching times for target
-    filtered_target_df = target_df[target_df['TDB'].isin(common_times)]
+    filtered_target_df = target_df[target_df['BMJD'].isin(common_times)]
     filtered_target_df.reset_index(drop=True, inplace=True)
     
     # get matching times for comparisons
-    filtered_comp_dfs = [df[df['TDB'].isin(common_times)] for df in comp_dfs]
+    filtered_comp_dfs = [df[df['BMJD'].isin(common_times)] for df in comp_dfs]
     filtered_comp_dfs = [df.reset_index(drop=True) for df in filtered_comp_dfs]
     
     return filtered_target_df, filtered_comp_dfs
@@ -627,7 +619,7 @@ def transform_IDs(out_directory: str, ref_coords: NDArray, ref_target_coords: ND
     
     # get source positions in new filter
     cat = QTable.read(
-        os.path.join(out_directory, f"cat/{fltr}_catalogue.ecsv"),
+        os.path.join(out_directory, f"cat/{fltr}_catalog.ecsv"),
         format="ascii.ecsv",
         )
     coords = np.asarray([cat["xcentroid"].value, cat["ycentroid"].value]).T
