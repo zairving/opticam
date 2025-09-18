@@ -27,13 +27,7 @@ from ccdproc import cosmicray_lacosmic  # TODO: replace with astroscrappy to red
 import logging
 import warnings
 import pandas as pd
-
-try:
-    from astroalign import find_transform
-    HAS_ASTROALIGN = True
-except ImportError:
-    warnings.warn('[OPTICAM] astroalign could not be imported. As a result, catalog alignments will be limited to "translation".')
-    HAS_ASTROALIGN = False
+from astroalign import find_transform
 
 
 from opticam_new.utils.helpers import camel_to_snake, log_binnings, log_filters, recursive_log, sort_filters
@@ -48,7 +42,7 @@ from opticam_new.utils.image_helpers import rebin_image
 
 class Catalog:
     """
-    Create a catalogue of sources from OPTICAM data.
+    Create a catalog of sources from OPTICAM data.
     """
     
     def __init__(
@@ -205,9 +199,9 @@ class Catalog:
         
         self._scan_data_directory()  # scan data directory
         
-        ########################################### catalogue colours ###########################################
+        ########################################### catalog colours ###########################################
         
-        # define colours for circling sources in catalogues
+        # define colours for circling sources in catalogs
         self.colours = list(mcolors.TABLEAU_COLORS.keys())
         self.colours.pop(self.colours.index("tab:brown"))
         self.colours.pop(self.colours.index("tab:gray"))
@@ -254,7 +248,7 @@ class Catalog:
         
         self.transforms = {}  # define transforms as empty dictionary
         self.unaligned_files = []  # define unaligned files as empty list
-        self.catalogues = {}  # define catalogues as empty dictionary
+        self.catalogs = {}  # define catalogs as empty dictionary
         self.psf_params = {}  # define PSF parameters as empty dictionary
         
         ########################################### read transforms ###########################################
@@ -265,21 +259,21 @@ class Catalog:
             if self.verbose:
                 self.logger.info("[OPTICAM] Read transforms from file.")
         
-        ########################################### read catalogues ###########################################
+        ########################################### read catalogs ###########################################
         
         for fltr in list(self.camera_files.keys()):
-            if os.path.isfile(os.path.join(self.out_directory, f"cat/{fltr}_catalogue.ecsv")):
-                self.catalogues.update(
+            if os.path.isfile(os.path.join(self.out_directory, f"cat/{fltr}_catalog.ecsv")):
+                self.catalogs.update(
                     {
                         fltr: QTable.read(
-                            os.path.join(self.out_directory, f"cat/{fltr}_catalogue.ecsv"),
+                            os.path.join(self.out_directory, f"cat/{fltr}_catalog.ecsv"),
                             format="ascii.ecsv",
                             )
                         }
                     )
                 self._set_psf_params(fltr)
                 if self.verbose:
-                    print(f"[OPTICAM] Read {fltr} catalogue from file.")
+                    print(f"[OPTICAM] Read {fltr} catalog from file.")
 
     def _scan_data_directory(self) -> None:
         """
@@ -505,7 +499,7 @@ class Catalog:
             pass
         
         try:
-            params.pop('catalogues')  # redundant
+            params.pop('catalogs')  # redundant
         except KeyError:
             pass
         
@@ -592,7 +586,7 @@ class Catalog:
 
     def _set_psf_params(self, fltr: str) -> None:
         """
-        Set the PSF parameters for a given filter based on the catalogue data.
+        Set the PSF parameters for a given filter based on the catalog data.
         
         Parameters
         ----------
@@ -601,9 +595,9 @@ class Catalog:
         """
         
         self.psf_params[fltr] = {
-            'semimajor_sigma': self.aperture_selector(self.catalogues[fltr]['semimajor_sigma'].value),
-            'semiminor_sigma': self.aperture_selector(self.catalogues[fltr]['semiminor_sigma'].value),
-            'orientation': self.aperture_selector(self.catalogues[fltr]['orientation'].value)
+            'semimajor_sigma': self.aperture_selector(self.catalogs[fltr]['semimajor_sigma'].value),
+            'semiminor_sigma': self.aperture_selector(self.catalogs[fltr]['semiminor_sigma'].value),
+            'orientation': self.aperture_selector(self.catalogs[fltr]['orientation'].value)
         }
         
         self.logger.info(f'[OPTICAM] {fltr} PSF parameters:')
@@ -692,8 +686,8 @@ class Catalog:
         image_clean = image - bkg.background  # remove background from image
         
         cat = self.finder(image_clean, self.threshold*bkg.background_rms)  # find sources in background-subtracted image
-        tbl = SourceCatalog(image_clean, cat, background=bkg.background).to_table()  # create catalogue of sources
-        tbl.sort('segment_flux', reverse=True)  # sort catalogue by flux in descending order
+        tbl = SourceCatalog(image_clean, cat, background=bkg.background).to_table()  # create catalog of sources
+        tbl.sort('segment_flux', reverse=True)  # sort catalog by flux in descending order
         
         coords = np.array([tbl["xcentroid"], tbl["ycentroid"]]).T
         
@@ -711,7 +705,7 @@ class Catalog:
 
     def create_catalogs(
         self,
-        max_catalog_sources: int = 20,
+        max_catalog_sources: int = 50,
         n_alignment_sources: int = 3,
         transform_type: Literal['affine', 'translation'] = 'translation',
         rotation_limit: float | None = None,
@@ -721,13 +715,13 @@ class Catalog:
         show_diagnostic_plots: bool = False,
         ) -> None:
         """
-        Initialise the source catalogues for each camera. Some aspects of this method are parallelised for speed.
+        Initialise the source catalogs for each camera. Some aspects of this method are parallelised for speed.
         
         Parameters
         ----------
         max_catalog_sources : int, optional
-            The maximum number of sources included in the catalog, by default 20. Only the brightest
-            max_catalog_sources sources are included in the catalog.
+            The maximum number of sources above the specified threshold that will be included in the catalog, by default
+            50. Only the brightest max_catalog_sources sources are included in the catalog.
         n_alignment_sources : int, optional
             The (maximum) number of sources to use for image alignment, by default 3. If `transform_type='translation'`,
             `n_alignment_sources` must be >= 1, and the brightest `n_alignment_sources` sources are used for image
@@ -735,7 +729,7 @@ class Catalog:
             number of sources that *may* be used for image alignment.
         transform_type : Literal['affine', 'translation'], optional
             The type of transform to use for image alignment, by default 'translation'. 'translation' performs simple
-            x, y translations, while 'affine' uses `astroalign.find_transform
+            x, y translations, while 'affine' uses `astroalign.find_transform()`.
         rotation_limit : float, optional
             The maximum rotation limit (in degrees) for affine transformations, by default `None` (no limit).
         scale_limit : float, optional
@@ -753,15 +747,12 @@ class Catalog:
         
         assert transform_type in ['affine', 'translation'], '[OPTICAM] transform_type must be either "affine" or "translation".'
         
-        if not HAS_ASTROALIGN and transform_type == 'affine':
-            raise ValueError('[OPTICAM] To use transform_type="affine", ensure astroalign and its dependency sep_pjw are installed. Alternatively, use transform_type="translation".')
-        
         if translation_limit is not None:
             # if a scalar translation limit is specified, convert it to a 2D iterable
             if np.isscalar(translation_limit):
                 translation_limit = [translation_limit, translation_limit]
         
-        # if catalogues already exist, skip
+        # if catalogs already exist, skip
         if os.path.isfile(os.path.join(self.out_directory, 'cat/catalogs.png')) and not overwrite:
             print('[OPTICAM] Catalogs already exist. To overwrite, set overwrite to True.')
             return
@@ -846,14 +837,14 @@ class Catalog:
             # save stacked image and its background
             stacked_images[fltr] = stacked_image
             
-            tbl = SourceCatalog(stacked_image, segment_map).to_table()  # create catalogue of sources
+            tbl = SourceCatalog(stacked_image, segment_map).to_table()  # create catalog of sources
             tbl.sort('segment_flux', reverse=True)
-            tbl = tbl[:max_catalog_sources]  # limit catalogue to brightest max_catalog_sources sources
+            tbl = tbl[:max_catalog_sources]  # limit catalog to brightest max_catalog_sources sources
             
-            # create catalogue of sources in stacked image and write to file
-            self.catalogues.update({fltr: tbl})
-            self.catalogues[fltr].write(
-                os.path.join(self.out_directory, f"cat/{fltr}_catalogue.ecsv"),
+            # create catalog of sources in stacked image and write to file
+            self.catalogs.update({fltr: tbl})
+            self.catalogs[fltr].write(
+                os.path.join(self.out_directory, f"cat/{fltr}_catalog.ecsv"),
                 format="ascii.ecsv",
                 overwrite=True,
                 )
@@ -949,13 +940,13 @@ class Catalog:
                 continue
             
             if transform_type == 'translation':
-                distance_matrix = cdist(reference_coords, coords)  # compute distances between sources across images
+                distance_matrix = cdist(reference_coords, coords)
                 reference_indices, indices = linear_sum_assignment(distance_matrix)  # match sources across images
-                dx = np.mean(reference_coords[reference_indices, 0] - coords[indices, 0])  # x translation
-                dy = np.mean(reference_coords[reference_indices, 1] - coords[indices, 1])  # y translation
+                dx = np.mean(reference_coords[reference_indices, 0] - coords[indices, 0])
+                dy = np.mean(reference_coords[reference_indices, 1] - coords[indices, 1])
                 transform = SimilarityTransform(translation=[dx, dy])
             else:
-                # perform affine alignment using astroalign
+                # compute affine transform using astroalign
                 try:
                     transform = find_transform(
                         coords,
@@ -1092,7 +1083,7 @@ class Catalog:
 
     def _plot_catalog(self, stacked_images: Dict[str, NDArray]) -> None:
         """
-        Plot the source catalogues on top of the stacked images
+        Plot the source catalogs on top of the stacked images
         
         Parameters
         ----------
@@ -1100,12 +1091,12 @@ class Catalog:
             The stacked images for each camera.
         """
         
-        fig, ax = plt.subplots(ncols=len(self.catalogues), tight_layout=True, figsize=(len(stacked_images) * 5, 5))
+        fig, ax = plt.subplots(ncols=len(self.catalogs), tight_layout=True, figsize=(len(stacked_images) * 5, 5))
         
-        if len(self.catalogues) == 1:
+        if len(self.catalogs) == 1:
             ax = [ax]
         
-        for i, fltr in enumerate(list(self.catalogues.keys())):
+        for i, fltr in enumerate(list(self.catalogs.keys())):
             
             plot_image = np.clip(stacked_images[fltr], 0, None)  # clip negative values to zero for better visualisation
             
@@ -1114,16 +1105,16 @@ class Catalog:
                             norm=simple_norm(plot_image, stretch="log"))
             
             # get aperture radius
-            radius = 5 * self.aperture_selector(self.catalogues[fltr]["semimajor_sigma"].value)
+            radius = 5 * self.aperture_selector(self.catalogs[fltr]["semimajor_sigma"].value)
             
-            for j in range(len(self.catalogues[fltr])):
+            for j in range(len(self.catalogs[fltr])):
                 # label sources
-                ax[i].add_patch(Circle(xy=(self.catalogues[fltr]["xcentroid"][j],
-                                            self.catalogues[fltr]["ycentroid"][j]),
+                ax[i].add_patch(Circle(xy=(self.catalogs[fltr]["xcentroid"][j],
+                                            self.catalogs[fltr]["ycentroid"][j]),
                                         radius=radius, edgecolor=self.colours[j % len(self.colours)], 
                                         facecolor="none", lw=1))
-                ax[i].text(self.catalogues[fltr]["xcentroid"][j] + 1.05*radius,
-                            self.catalogues[fltr]["ycentroid"][j] + 1.05*radius, j + 1, 
+                ax[i].text(self.catalogs[fltr]["xcentroid"][j] + 1.05*radius,
+                            self.catalogs[fltr]["ycentroid"][j] + 1.05*radius, j + 1, 
                             color=self.colours[j % len(self.colours)])
                 
                 # label plot
@@ -1131,7 +1122,7 @@ class Catalog:
                 ax[i].set_xlabel("X")
                 ax[i].set_ylabel("Y")
 
-        fig.savefig(os.path.join(self.out_directory, "cat/catalogues.png"))
+        fig.savefig(os.path.join(self.out_directory, "cat/catalogs.png"))
 
         if self.show_plots:
             plt.show(fig)
@@ -1141,7 +1132,7 @@ class Catalog:
 
     def _plot_background_meshes(self, stacked_images: Dict[str, NDArray], show: bool) -> None:
         """
-        Plot the background meshes on top of the catalogue images.
+        Plot the background meshes on top of the catalog images.
         
         Parameters
         ----------
@@ -1151,9 +1142,9 @@ class Catalog:
             Whether to display the plot.
         """
         
-        fig, ax = plt.subplots(ncols=len(self.catalogues), tight_layout=True, figsize=(len(self.catalogues) * 5, 5))
+        fig, ax = plt.subplots(ncols=len(self.catalogs), tight_layout=True, figsize=(len(self.catalogs) * 5, 5))
         
-        for i, fltr in enumerate(list(self.catalogues.keys())):
+        for i, fltr in enumerate(list(self.catalogs.keys())):
             
             plot_image = np.clip(stacked_images[fltr], 0, None)
             bkg = self.background(stacked_images[fltr])
@@ -1206,10 +1197,10 @@ class Catalog:
             Whether to display the plot.
         """
         
-        fig, axs = plt.subplots(nrows=2, ncols=len(self.catalogues), tight_layout=True, figsize=((2 * len(self.catalogues) / 3) * 6.4, 2 * 4.8), sharex='col')
+        fig, axs = plt.subplots(nrows=2, ncols=len(self.catalogs), tight_layout=True, figsize=((2 * len(self.catalogs) / 3) * 6.4, 2 * 4.8), sharex='col')
         
         # for each camera
-        for fltr in list(self.catalogues.keys()):
+        for fltr in list(self.catalogs.keys()):
             
             files = self.camera_files[fltr]  # get files for camera
             
@@ -1225,7 +1216,7 @@ class Catalog:
             bdts = np.array([self.bdts[file] for file in files if file in background_median[fltr]])
             plot_times = (bdts - self.t_ref) * 86400  # convert time to seconds from first observation
             
-            if len(self.catalogues) == 1:
+            if len(self.catalogs) == 1:
                 axs[0].set_title(fltr)
                 axs[0].plot(plot_times, backgrounds, "k.", ms=2)
                 axs[1].plot(plot_times, rmss, "k.", ms=2)
@@ -1235,11 +1226,11 @@ class Catalog:
                 axs[1].set_ylabel("Median background")
             else:
                 # plot background
-                axs[0, list(self.catalogues.keys()).index(fltr)].set_title(fltr)
-                axs[0, list(self.catalogues.keys()).index(fltr)].plot(plot_times, backgrounds, "k.", ms=2)
-                axs[1, list(self.catalogues.keys()).index(fltr)].plot(plot_times, rmss, "k.", ms=2)
+                axs[0, list(self.catalogs.keys()).index(fltr)].set_title(fltr)
+                axs[0, list(self.catalogs.keys()).index(fltr)].plot(plot_times, backgrounds, "k.", ms=2)
+                axs[1, list(self.catalogs.keys()).index(fltr)].plot(plot_times, rmss, "k.", ms=2)
                 
-                for col in range(len(self.catalogues)):
+                for col in range(len(self.catalogs)):
                     axs[1, col].set_xlabel(f"Time from TDB {bdts.min():.4f} [s]")
                 
                 axs[0, 0].set_ylabel("Median background")
@@ -1382,7 +1373,7 @@ class Catalog:
         """
         
         # for each camera
-        for fltr in list(self.catalogues.keys()):
+        for fltr in list(self.catalogs.keys()):
             
             # skip cameras with no images
             if len(self.camera_files[fltr]) == 0:
@@ -1431,9 +1422,9 @@ class Catalog:
                 norm=simple_norm(plot_image, stretch="log"))
         
         # for each source
-        for i in range(len(self.catalogues[fltr])):
+        for i in range(len(self.catalogs[fltr])):
             
-            source_position = (self.catalogues[fltr]["xcentroid"][i], self.catalogues[fltr]["ycentroid"][i])
+            source_position = (self.catalogs[fltr]["xcentroid"][i], self.catalogs[fltr]["ycentroid"][i])
             
             if file == self.reference_files[fltr]:
                 aperture_position = source_position
@@ -1449,7 +1440,7 @@ class Catalog:
                     title = f"{file_name} (unaligned)"
                     colour = "red"
             
-            radius = 5 * self.aperture_selector(self.catalogues[fltr]["semimajor_sigma"].value)
+            radius = 5 * self.aperture_selector(self.catalogs[fltr]["semimajor_sigma"].value)
             
             ax.add_patch(Circle(xy=(aperture_position), radius=radius,
                                     edgecolor=self.colours[i % len(self.colours)], facecolor="none", lw=1))
@@ -1514,7 +1505,7 @@ class Catalog:
         photometer: BasePhotometer,
         ) -> None:
         """
-        Perform photometry on the catalogues using the provided photometer.
+        Perform photometry on the catalogs using the provided photometer.
         
         Parameters
         ----------
@@ -1539,10 +1530,10 @@ class Catalog:
             os.makedirs(save_dir)
         
         # for each filter
-        for fltr in self.catalogues.keys():
+        for fltr in self.catalogs.keys():
             
-            source_coords = np.array([self.catalogues[fltr]["xcentroid"].value,
-                                      self.catalogues[fltr]["ycentroid"].value]).T
+            source_coords = np.array([self.catalogs[fltr]["xcentroid"].value,
+                                      self.catalogs[fltr]["ycentroid"].value]).T
             
             chunk_size = max(1, len(self.camera_files[fltr]) // 100)
             results = process_map(
@@ -1569,12 +1560,8 @@ class Catalog:
                         photometry_results[key] = []
                     photometry_results[key].append(value)
             
-            # for each source in the catalogue
-            for i in tqdm(
-                range(len(self.catalogues[fltr])),
-                disable=not self.verbose,
-                desc=f"[OPTICAM] Saving {fltr} photometry results",
-                ):
+            # for each source in the catalog
+            for i in range(len(self.catalogs[fltr])):
                 
                 # unpack results for ith source
                 source_results = {}
