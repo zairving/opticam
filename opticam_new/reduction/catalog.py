@@ -30,7 +30,7 @@ import pandas as pd
 from astroalign import find_transform
 
 
-from opticam_new.utils.helpers import camel_to_snake, log_binnings, log_filters, recursive_log, sort_filters
+from opticam_new.utils.helpers import camel_to_snake, log_binnings, log_filters, recursive_log, sort_filters, plot_catalog
 from opticam_new.utils.constants import bar_format, pixel_scales
 from opticam_new.reduction.background import DefaultBackground
 from opticam_new.reduction.finder import DefaultFinder
@@ -321,9 +321,9 @@ class Catalog:
         
         # sort files by time
         for key in list(self.camera_files.keys()):
-            self.camera_files[key].sort(key=lambda x: self.bdts[x])
+            self.camera_files[key].sort(key=lambda x: self.bmjds[x])
         
-        self.t_ref = min(list(self.bdts.values()))  # get reference BDT
+        self.t_ref = min(list(self.bmjds.values()))  # get reference BMJD
         
         # define middle image as reference image for each filter
         self.reference_indices = {}
@@ -357,7 +357,7 @@ class Catalog:
         Returns
         -------
         Tuple[float, str, str, float]
-            The BDT, filter, binning, and gain dictionaries.
+            The BMJD, filter, binning, and gain dictionaries.
         
         Raises
         ------
@@ -388,15 +388,15 @@ class Catalog:
             try:
                 # try to compute barycentric dynamical time
                 coords = SkyCoord(ra, dec, unit=(u.hourangle, u.deg))
-                bdt = apply_barycentric_correction(mjd, coords)
+                bmjd = apply_barycentric_correction(mjd, coords)
             except Exception as e:
-                bdt = mjd
-                self.logger.info(f"[OPTICAM] Could not compute BDT for {file}: {e}. Using MJD instead.")
+                bmjd = mjd
+                self.logger.info(f"[OPTICAM] Could not compute BMJD for {file}: {e}. Using MJD instead.")
         except Exception as e:
             self.logger.info(f'[OPTICAM] Skipping file {file} because it could not be read: {e}')
             return None, None, None, None
         
-        return bdt, fltr, binning, gain
+        return bmjd, fltr, binning, gain
 
     def _parse_header_results(self, results: Tuple[float, float, str, str, float]) -> Dict[str, str]:
         """
@@ -420,18 +420,18 @@ class Catalog:
             If the binning is not consistent.
         """
         
-        self.bdts = {}
+        self.bmjds = {}
         filters = {}
         binnings = {}
         self.gains = {}
         
         # unpack results
-        raw_bdts, raw_filters, raw_binnings, raw_gains = zip(*results)
+        raw_bmjds, raw_filters, raw_binnings, raw_gains = zip(*results)
         
         # consolidate results
-        for i in range(len(raw_bdts)):
-            if raw_bdts[i] is not None:
-                self.bdts.update({self.file_paths[i]: raw_bdts[i]})
+        for i in range(len(raw_bmjds)):
+            if raw_bmjds[i] is not None:
+                self.bmjds.update({self.file_paths[i]: raw_bmjds[i]})
                 filters.update({self.file_paths[i]: raw_filters[i]})
                 binnings.update({self.file_paths[i]: raw_binnings[i]})
                 self.gains.update({self.file_paths[i]: raw_gains[i]})
@@ -457,9 +457,9 @@ class Catalog:
         
         # check for large differences in time
         for fltr in unique_filters:
-            bdts = np.sort(np.array([self.bdts[file] for file in self.file_paths if file in filters and filters[file] == fltr]))
+            bmjds = np.sort(np.array([self.bmjds[file] for file in self.file_paths if file in filters and filters[file] == fltr]))
             files = [file for file in self.file_paths if file in filters and filters[file] == fltr]
-            t = bdts - np.min(bdts)
+            t = bmjds - np.min(bmjds)
             dt = np.diff(t) * 86400
             if np.any(dt > 10 * np.median(dt)):
                 indices = np.where(dt > 10 * np.median(dt))[0]
@@ -482,7 +482,7 @@ class Catalog:
         
         # remove some parameters that are either already saved elsewhere or are not relevant
         params.pop('logger')  # redundant
-        params.pop('bdts')  # redundant
+        params.pop('bmjds')  # redundant
         params.pop('gains')  # irrelevant
         params.pop('camera_files')  # redundant
         params.pop('colours')  # irrelevant
@@ -524,7 +524,7 @@ class Catalog:
                                  figsize=((2 * len(self.camera_files) / 3) * 6.4, 2 * 4.8), sharey='row')
         
         for fltr in list(self.camera_files.keys()):
-            times = np.array([self.bdts[file] for file in self.camera_files[fltr]])
+            times = np.array([self.bmjds[file] for file in self.camera_files[fltr]])
             times -= times.min()
             times *= 86400  # convert to seconds from first observation
             dt = np.diff(times)  # get time between files
@@ -851,12 +851,33 @@ class Catalog:
             
             self._set_psf_params(fltr)  # set PSF parameters for the filter
         
-        self._save_stacked_images(stacked_images, overwrite)
-        self._plot_catalog(stacked_images)
+        save_stacked_images(
+            stacked_images=stacked_images,
+            out_directory=self.out_directory,
+            overwrite=overwrite,
+            )
+        
+        save_catalog(
+            filters=list(self.camera_files.keys()),
+            stacked_images=stacked_images,
+            catalogs=self.catalogs,
+            out_directory=self.out_directory,
+            show=self.show_plots,
+        )
+        
+        save_backgrounds(
+            camera_files=self.camera_files,
+            background_median=background_median,
+            background_rms=background_rms,
+            bmjds=self.bmjds,
+            t_ref=self.t_ref,
+            out_directory=self.out_directory,
+            show=show_diagnostic_plots,
+        )
         
         # diagnostic plots
-        self._plot_backgrounds(background_median, background_rms, show_diagnostic_plots)  # plot background medians and RMSs
-        self._plot_background_meshes(stacked_images, show_diagnostic_plots)  # plot background meshes
+        # self._plot_background_meshes(stacked_images, show_diagnostic_plots)  # plot background meshes TODO: make dedicated routine for pre-reduction sanity checking?
+        # TODO: make below dedicated routines for post-reduction analysis?
         # for (fltr, stacked_image) in stacked_images.items():
         #     self._visualise_psfs(stacked_image, fltr, show_diagnostic_plots)
         
@@ -1081,55 +1102,6 @@ class Catalog:
         
         return stacked_image, background_medians, background_rmss
 
-    def _plot_catalog(self, stacked_images: Dict[str, NDArray]) -> None:
-        """
-        Plot the source catalogs on top of the stacked images
-        
-        Parameters
-        ----------
-        stacked_images : Dict[str, NDArray]
-            The stacked images for each camera.
-        """
-        
-        fig, ax = plt.subplots(ncols=len(self.catalogs), tight_layout=True, figsize=(len(stacked_images) * 5, 5))
-        
-        if len(self.catalogs) == 1:
-            ax = [ax]
-        
-        for i, fltr in enumerate(list(self.catalogs.keys())):
-            
-            plot_image = np.clip(stacked_images[fltr], 0, None)  # clip negative values to zero for better visualisation
-            
-            # plot stacked image
-            ax[i].imshow(plot_image, origin="lower", cmap="Greys_r", interpolation="nearest",
-                            norm=simple_norm(plot_image, stretch="log"))
-            
-            # get aperture radius
-            radius = 5 * self.aperture_selector(self.catalogs[fltr]["semimajor_sigma"].value)
-            
-            for j in range(len(self.catalogs[fltr])):
-                # label sources
-                ax[i].add_patch(Circle(xy=(self.catalogs[fltr]["xcentroid"][j],
-                                            self.catalogs[fltr]["ycentroid"][j]),
-                                        radius=radius, edgecolor=self.colours[j % len(self.colours)], 
-                                        facecolor="none", lw=1))
-                ax[i].text(self.catalogs[fltr]["xcentroid"][j] + 1.05*radius,
-                            self.catalogs[fltr]["ycentroid"][j] + 1.05*radius, j + 1, 
-                            color=self.colours[j % len(self.colours)])
-                
-                # label plot
-                ax[i].set_title(fltr)
-                ax[i].set_xlabel("X")
-                ax[i].set_ylabel("Y")
-
-        fig.savefig(os.path.join(self.out_directory, "cat/catalogs.png"))
-
-        if self.show_plots:
-            plt.show(fig)
-        else:
-            fig.clear()
-            plt.close(fig)
-
     def _plot_background_meshes(self, stacked_images: Dict[str, NDArray], show: bool) -> None:
         """
         Plot the background meshes on top of the catalog images.
@@ -1174,85 +1146,6 @@ class Catalog:
 
         if show and self.show_plots:
             plt.show(fig)
-        else:
-            fig.clear()
-            plt.close(fig)
-
-    def _plot_backgrounds(
-        self,
-        background_median: Dict[str, Dict[str, NDArray]],
-        background_rms: Dict[str, Dict[str, NDArray]],
-        show: bool,
-        ) -> None:
-        """
-        Plot the time-varying background for each camera.
-        
-        Parameters
-        ----------
-        background_median : Dict[str, List]
-            The median background for each camera.
-        background_rms : Dict[str, List]
-            The background RMS for each camera.
-        show: bool
-            Whether to display the plot.
-        """
-        
-        fig, axs = plt.subplots(nrows=2, ncols=len(self.catalogs), tight_layout=True, figsize=((2 * len(self.catalogs) / 3) * 6.4, 2 * 4.8), sharex='col')
-        
-        # for each camera
-        for fltr in list(self.catalogs.keys()):
-            
-            files = self.camera_files[fltr]  # get files for camera
-            
-            # skip cameras with no images
-            if len(files) == 0:
-                continue
-            
-            # get values from background_median and background_rms dicts
-            backgrounds = list(background_median[fltr].values())
-            rmss = list(background_rms[fltr].values())
-            
-            # match times to background_median and background_rms keys
-            bdts = np.array([self.bdts[file] for file in files if file in background_median[fltr]])
-            plot_times = (bdts - self.t_ref) * 86400  # convert time to seconds from first observation
-            
-            if len(self.catalogs) == 1:
-                axs[0].set_title(fltr)
-                axs[0].plot(plot_times, backgrounds, "k.", ms=2)
-                axs[1].plot(plot_times, rmss, "k.", ms=2)
-                
-                axs[1].set_xlabel(f"Time from TDB {bdts.min():.4f} [s]")
-                axs[0].set_ylabel("Median background RMS")
-                axs[1].set_ylabel("Median background")
-            else:
-                # plot background
-                axs[0, list(self.catalogs.keys()).index(fltr)].set_title(fltr)
-                axs[0, list(self.catalogs.keys()).index(fltr)].plot(plot_times, backgrounds, "k.", ms=2)
-                axs[1, list(self.catalogs.keys()).index(fltr)].plot(plot_times, rmss, "k.", ms=2)
-                
-                for col in range(len(self.catalogs)):
-                    axs[1, col].set_xlabel(f"Time from TDB {bdts.min():.4f} [s]")
-                
-                axs[0, 0].set_ylabel("Median background")
-                axs[1, 0].set_ylabel("Median background RMS")
-            
-            # write background to file
-            pd.DataFrame({
-                'TDB': bdts,
-                'RMS': backgrounds,
-                'median': rmss
-            }).to_csv(os.path.join(self.out_directory, f'diag/{fltr}_background.csv'), index=False)
-
-        for ax in axs.flatten():
-            ax.minorticks_on()
-            ax.tick_params(which="both", direction="in", top=True, right=True)
-        
-        # save plot
-        fig.savefig(os.path.join(self.out_directory, "diag/background.png"))
-        
-        # either show or close plot
-        if show and self.show_plots:
-            plt.show()
         else:
             fig.clear()
             plt.close(fig)
@@ -1330,32 +1223,6 @@ class Catalog:
             else:
                 fig.clear()
                 plt.close(fig)
-
-    def _save_stacked_images(self, stacked_images: Dict[str, NDArray], overwrite: bool) -> None:
-        """
-        Save the stacked images to a compressed FITS file.
-        
-        Parameters
-        ----------
-        stacked_images : Dict[str, NDArray]
-            The stacked images (filter: stacked image).
-        """
-        
-        hdr = fits.Header()
-        hdr['COMMENT'] = 'This FITS file contains the stacked images for each filter.'
-        empty_primary = fits.PrimaryHDU(header=hdr)
-        hdul = fits.HDUList([empty_primary])
-        
-        for fltr, img in stacked_images.items():
-            hdr = fits.Header()
-            hdr['FILTER'] = fltr
-            hdu = fits.ImageHDU(img, hdr)
-            hdul.append(hdu)
-        
-        file_path = os.path.join(self.out_directory, f'cat/stacked_images.fits.gz')
-        
-        if not os.path.isfile(file_path) or overwrite:
-            hdul.writeto(file_path, overwrite=overwrite)
 
 
     def create_gifs(self, keep_frames: bool = True, overwrite: bool = False) -> None:
@@ -1568,7 +1435,7 @@ class Catalog:
                 for key, values in photometry_results.items():
                     
                     # time is a special case since it is already a single column
-                    if key == 'TDB':
+                    if key == 'BMJD':
                         source_results[key] = np.asarray(values)
                     # for other keys, the ith column needs to be extracted
                     else:
@@ -1632,7 +1499,7 @@ class Catalog:
                     self.logger.warning(f"[OPTICAM] {key} could not be determined for source {i + 1} in {fltr} (got value {value}).")
         
         # add time stamp
-        results['TDB'] = self.bdts[file]  # add time of observation
+        results['BMJD'] = self.bmjds[file]  # add time of observation
         
         return results
 
@@ -1671,3 +1538,166 @@ class Catalog:
                     file.write(f"Gap between {list(sorted_files.keys())[gap]} and {list(sorted_files.keys())[gap + 1]}: {diffs[gap]} d\n")
         else:
             print('[OPTICAM] No gaps found in the observation sequence.')
+
+
+
+
+def save_catalog(
+    filters: List[str],
+    stacked_images: Dict[str, NDArray],
+    catalogs: Dict[str, QTable],
+    out_directory: str,
+    show: bool,
+    ) -> None:
+    
+    fig = plot_catalog(
+        filters,
+        stacked_images,
+        catalogs,
+        )[0]
+    
+    fig.savefig(os.path.join(out_directory, "cat/catalogs.png"))
+    
+    if show:
+        plt.show(fig)
+    else:
+        fig.clear()
+        plt.close(fig)
+
+
+def save_stacked_images(
+    stacked_images: Dict[str, NDArray],
+    out_directory: str,
+    overwrite: bool,
+    ) -> None:
+    """
+    Save the stacked images to a compressed FITS file.
+    
+    Parameters
+    ----------
+    stacked_images : Dict[str, NDArray]
+        The stacked images (filter: stacked image).
+    """
+    
+    hdr = fits.Header()
+    hdr['COMMENT'] = 'This FITS file contains the stacked images for each filter.'
+    empty_primary = fits.PrimaryHDU(header=hdr)
+    hdul = fits.HDUList([empty_primary])
+    
+    for fltr, img in stacked_images.items():
+        hdr = fits.Header()
+        hdr['FILTER'] = fltr
+        hdu = fits.ImageHDU(img, hdr)
+        hdul.append(hdu)
+    
+    file_path = os.path.join(out_directory, f'cat/stacked_images.fits.gz')
+    
+    if not os.path.isfile(file_path) or overwrite:
+        hdul.writeto(file_path, overwrite=overwrite)
+
+
+def save_backgrounds(
+    camera_files: Dict[str, str],
+    background_median: Dict[str, Dict[str, NDArray]],
+    background_rms: Dict[str, Dict[str, NDArray]],
+    bmjds: Dict[str, float],
+    t_ref: float,
+    out_directory: str,
+    show: bool,
+    ) -> None:
+    """
+    Plot the time-varying background for each camera.
+    
+    Parameters
+    ----------
+    camera_files : Dict[str, str]
+        The files for each camera {fltr: file}.
+    background_median : Dict[str, List]
+        The median background for each camera.
+    background_rms : Dict[str, List]
+        The background RMS for each camera.
+    bmjds : Dict[str, float]
+        The Barycentric MJD dates for each image {file: BMJD}.
+    t_ref : float
+        The reference BMJD.
+    out_directory : str
+        The directory to which the resulting files will be saved.
+    show: bool
+        Whether to display the plot.
+    """
+    
+    fig, axs = plt.subplots(
+        nrows=2,
+        ncols=len(camera_files),
+        tight_layout=True,
+        figsize=((2 * len(camera_files) / 3) * 6.4, 2 * 4.8),
+        sharex='col',
+        )
+    
+    # for each camera
+    for fltr in list(camera_files.keys()):
+        
+        files = camera_files[fltr]  # get files for camera
+        
+        # skip cameras with no images
+        if len(files) == 0:
+            continue
+        
+        # get values from background_median and background_rms dicts
+        backgrounds = list(background_median[fltr].values())
+        rmss = list(background_rms[fltr].values())
+        
+        # match times to background_median and background_rms keys
+        t = np.array([bmjds[file] for file in files if file in background_median[fltr]])
+        plot_times = (t - t_ref) * 86400  # convert time to seconds from first observation
+        
+        if len(camera_files) == 1:
+            axs[0].set_title(fltr)
+            axs[0].plot(plot_times, backgrounds, "k.", ms=2)
+            axs[1].plot(plot_times, rmss, "k.", ms=2)
+            
+            axs[1].set_xlabel(f"Time from BMJD {t_ref:.4f} [s]")
+            axs[0].set_ylabel("Median background RMS")
+            axs[1].set_ylabel("Median background")
+        else:
+            # plot background
+            axs[0, list(camera_files.keys()).index(fltr)].set_title(fltr)
+            axs[0, list(camera_files.keys()).index(fltr)].plot(plot_times, backgrounds, "k.", ms=2)
+            axs[1, list(camera_files.keys()).index(fltr)].plot(plot_times, rmss, "k.", ms=2)
+            
+            for col in range(len(camera_files)):
+                axs[1, col].set_xlabel(f"Time from BMJD {t_ref:.4f} [s]")
+            
+            axs[0, 0].set_ylabel("Median background")
+            axs[1, 0].set_ylabel("Median background RMS")
+        
+        # write background to file
+        pd.DataFrame({
+            'BMJD': t,
+            'RMS': backgrounds,
+            'median': rmss
+        }).to_csv(os.path.join(out_directory, f'diag/{fltr}_background.csv'), index=False)
+    
+    for ax in axs.flatten():
+        ax.minorticks_on()
+        ax.tick_params(which="both", direction="in", top=True, right=True)
+    
+    # save plot
+    fig.savefig(os.path.join(out_directory, "diag/background.png"))
+    
+    if show:
+        plt.show()
+    else:
+        fig.clear()
+        plt.close(fig)
+
+
+
+
+
+
+
+
+
+
+
