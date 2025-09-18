@@ -12,6 +12,8 @@ from astropy.visualization import simple_norm
 from matplotlib.figure import Figure
 from matplotlib.axes import Axes
 from astropy.table import QTable
+import matplotlib.colors as mcolors
+
 
 
 def camel_to_snake(
@@ -168,12 +170,17 @@ def recursive_log(param: Any, depth: int = 0, max_depth: int = 5) -> Any:
     return str(param)
 
 
-def plot_catalogue(
+def plot_catalog(
     filters: List[str],
     stacked_images: Dict[str, NDArray],
-    catalogues: Dict[str, QTable],
-    colours: List[str],
+    catalogs: Dict[str, QTable],
     ) -> Tuple[Figure, List[Axes]]:
+    
+    colours = list(mcolors.TABLEAU_COLORS.keys())
+    colours.pop(colours.index("tab:brown"))
+    colours.pop(colours.index("tab:gray"))
+    colours.pop(colours.index("tab:purple"))
+    colours.pop(colours.index("tab:blue"))
     
     fig, axes = plt.subplots(
         ncols=len(filters),
@@ -204,15 +211,15 @@ def plot_catalogue(
             )
         
         # get aperture radius
-        radius = 5 * np.median(catalogues[fltr]["semimajor_sigma"].value)
+        radius = 5 * np.median(catalogs[fltr]["semimajor_sigma"].value)
         
-        for j in range(len(catalogues[fltr])):
+        for j in range(len(catalogs[fltr])):
             # label sources
             axes[i].add_patch(
                 Circle(
                     xy=(
-                        catalogues[fltr]["xcentroid"][j],
-                        catalogues[fltr]["ycentroid"][j],
+                        catalogs[fltr]["xcentroid"][j],
+                        catalogs[fltr]["ycentroid"][j],
                         ),
                     radius=radius,
                     edgecolor=colours[j % len(colours)],
@@ -221,8 +228,8 @@ def plot_catalogue(
                     ),
                 )
             axes[i].text(
-                catalogues[fltr]["xcentroid"][j] + 1.05 * radius,
-                catalogues[fltr]["ycentroid"][j] + 1.05 * radius,
+                catalogs[fltr]["xcentroid"][j] + 1.05 * radius,
+                catalogs[fltr]["ycentroid"][j] + 1.05 * radius,
                 j + 1,  # source number
                 color=colours[j % len(colours)],
                 )
