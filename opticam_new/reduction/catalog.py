@@ -19,11 +19,12 @@ import matplotlib.colors as mcolors
 from multiprocessing import cpu_count
 from functools import partial
 from PIL import Image
-from typing import List, Dict, Literal, Callable, Tuple, Iterable
+from typing import Any, List, Dict, Literal, Callable, Tuple, Iterable
 from numpy.typing import ArrayLike, NDArray
 from scipy.spatial.distance import cdist
 from scipy.optimize import linear_sum_assignment
 from ccdproc import cosmicray_lacosmic  # TODO: replace with astroscrappy to reduce dependencies?
+
 import logging
 import warnings
 import pandas as pd
@@ -222,7 +223,7 @@ class Catalog:
         elif callable(background):
             # use custom background estimator
             self.background = background
-            self.logger.info(f'[OPTICAM] Using custom background estimator {background.__name__} with parameters {background.__dict__}.')
+            self.logger.info(f'[OPTICAM] Using custom background estimator {background.__class__.__name__} with parameters {background.__dict__}.')
         else:
             raise ValueError('[OPTICAM] background must be a callable or None. If None, the default background estimator is used.')
         
@@ -236,7 +237,7 @@ class Catalog:
             self.logger.info(f'[OPTICAM] Using default source finder with npixels={npixels} and border_width={border_width}.')
         elif callable(finder):
             self.finder = finder
-            self.logger.info(f'[OPTICAM] Using custom source finder {finder.__name__} with parameters {finder.__dict__}.')
+            self.logger.info(f'[OPTICAM] Using custom source finder {finder.__class__.__name__} with parameters {finder.__dict__}.')
         else:
             raise ValueError('[OPTICAM] finder must be a callable or None. If None, the default source finder is used.')
         
@@ -786,10 +787,10 @@ class Catalog:
             self.logger.info(f'[OPTICAM] {fltr} alignment source coordinates: {reference_coords}')
             
             # align and stack images in batches
-            batches = np.array_split(self.camera_files[fltr], 100)  # split files into 1% batches
+            batches = get_batches(self.camera_files[fltr])
             results = process_map(
                 partial(
-                    self._align_image,
+                    self._align_images,
                     reference_image_shape=reference_image.shape,
                     reference_coords=reference_coords,
                     transform_type=transform_type,
@@ -891,7 +892,7 @@ class Catalog:
                 for file in self.unaligned_files:
                     unaligned_file.write(file + "\n")
 
-    def _align_image(
+    def _align_images(
         self,
         batch: List[str],
         reference_image_shape: Tuple[int],
@@ -1402,7 +1403,7 @@ class Catalog:
             source_coords = np.array([self.catalogs[fltr]["xcentroid"].value,
                                       self.catalogs[fltr]["ycentroid"].value]).T
             
-            chunk_size = max(1, len(self.camera_files[fltr]) // 100)
+            batch_size = get_batch_size(len(self.camera_files[fltr]))
             results = process_map(
                 partial(
                     self._photometry,
@@ -1414,7 +1415,7 @@ class Catalog:
                 max_workers=self.number_of_processors,
                 disable=not self.verbose,
                 desc=f"[OPTICAM] Performing photometry on {fltr} images",
-                chunksize=chunk_size,
+                chunksize=batch_size,
                 bar_format=bar_format,
                 tqdm_class=tqdm,
             )
@@ -1692,10 +1693,36 @@ def save_backgrounds(
         plt.close(fig)
 
 
+def get_batches(input: List[Any]) -> List[List[Any]]:
+    
+    L = len(input)
+    
+    batch_size = get_batch_size(L)
+    
+    batches = []
+    
+    for i in range(0, L, batch_size):
+        batches.append(input[i:i+batch_size])
+    
+    return batches
 
 
-
-
+def get_batch_size(L: int) -> int:
+    """
+    Compute the batch size for a given input length.
+    
+    Parameters
+    ----------
+    L : int
+        The length of the input.
+    
+    Returns
+    -------
+    int
+        The batch size.
+    """
+    
+    return max(1, L // 100)
 
 
 
