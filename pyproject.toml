@@ -13,6 +13,7 @@ authors = [
 
 requires-python = ">=3.12.7"
 dependencies = [
+    "astroalign == 2.6.0",
     "astropy == 6.1.4",
     "ccdproc == 2.4.2",
     "matplotlib == 3.9.2",
@@ -22,6 +23,7 @@ dependencies = [
     "photutils == 2.0.2",
     "scikit-image == 0.24.0",
     "scipy == 1.14.1",
+    "stingray == 2.2.6",
     "tqdm == 4.66.6",
 ]
 
@@ -34,5 +36,5 @@ docs = [
     "sphinx-rtd-theme >= 3.0",
 ]
 
-[tool.setuptools]
-packages = ["opticam_new"]
+[tool.setuptools.packages.find]
+where =["."]

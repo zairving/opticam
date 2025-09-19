@@ -4,15 +4,21 @@ import numpy as np
 from numpy.typing import NDArray
 from typing import Dict, List
 
-from opticam_new.helpers import log_binnings, log_filters
+from opticam_new.utils.helpers import log_binnings, log_filters
 
 class FlatFieldCorrector:
     """
     Helper class for performing flat-field corrections on OPTICAM images.
     """
     
-    def __init__(self, out_dir: str, flats_dir: str = None, c1_flats_dir: str = None, c2_flats_dir: str = None,
-                 c3_flats_dir: str = None) -> None:
+    def __init__(
+        self,
+        out_dir: str,
+        flats_dir: str | None = None,
+        c1_flats_dir: str | None = None,
+        c2_flats_dir: str | None = None,
+        c3_flats_dir: str | None = None,
+        ) -> None:
         """
         Helper class for performing flat-field corrections on OPTICAM images.
         
@@ -39,56 +45,46 @@ class FlatFieldCorrector:
         
         self.out_dir = out_dir
         
-        if not self.out_dir.endswith("/"):
-            self.out_dir += "/"
-        
         if not os.path.exists(out_dir):
             try:
                 os.makedirs(out_dir)
             except:
-                raise Exception(f"Could not create output directory {out_dir}")
+                raise Exception(f"[OPTICAM] could not create output directory {out_dir}")
         
         flat_paths = []
         
         if flats_dir is not None:
-            if not flats_dir.endswith("/"):
-                flats_dir += "/"
-            
             if not os.path.exists(flats_dir):
-                raise Exception(f"Flat-field images directory {flats_dir} does not exist")
-            
-            flat_paths += [flats_dir + flat for flat in sorted(os.listdir(flats_dir))]
+                raise Exception(f"[OPTICAM]] directory {flats_dir} does not exist")
+            flat_paths += [os.path.join(flats_dir, flat) for flat in sorted(os.listdir(flats_dir))]
         else:
             if c1_flats_dir is not None:
-                if not c1_flats_dir.endswith("/"):
-                    c1_flats_dir += "/"
-                
                 if not os.path.exists(c1_flats_dir):
-                    raise Exception(f"Flat-field images directory {c1_flats_dir} does not exist")
-                
-                flat_paths += [c1_flats_dir + flat for flat in sorted(os.listdir(c1_flats_dir))]
+                    raise Exception(f"[OPTICAM] directory {c1_flats_dir} does not exist")
+                flat_paths += [os.path.join(c1_flats_dir, flat) for flat in sorted(os.listdir(c1_flats_dir))]
             
             if c2_flats_dir is not None:
-                if not c2_flats_dir.endswith("/"):
-                    c2_flats_dir += "/"
-                
                 if not os.path.exists(c2_flats_dir):
-                    raise Exception(f"Flat-field images directory {c2_flats_dir} does not exist")
-                
-                flat_paths += [c2_flats_dir + flat for flat in sorted(os.listdir(c2_flats_dir))]
+                    raise Exception(f"[OPTICAM] directory {c2_flats_dir} does not exist")
+                flat_paths += [os.path.join(c2_flats_dir, flat) for flat in sorted(os.listdir(c2_flats_dir))]
             
             if c3_flats_dir is not None:
-                if not c3_flats_dir.endswith("/"):
-                    c3_flats_dir += "/"
-                
                 if not os.path.exists(c3_flats_dir):
                     raise Exception(f"Flat-field images directory {c3_flats_dir} does not exist")
-                
-                flat_paths += [c3_flats_dir + flat for flat in sorted(os.listdir(c3_flats_dir))]
+                flat_paths += [os.path.join(c3_flats_dir, flat) for flat in sorted(os.listdir(c3_flats_dir))]
         
         # get flats for each filter
         self.flat_paths = self._validate_flat_files(sorted(flat_paths))
-    
+        
+        # load master flats if they already exist
+        self.master_flats = {}
+        for fltr in self.flat_paths.keys():
+            master_flat_path = os.path.join(self.out_dir, f'master_flats/{fltr}_master_flat.fit.gz')
+            if os.path.exists(master_flat_path):
+                with fits.open(master_flat_path) as hdul:
+                    self.master_flats[fltr] = np.array(hdul[0].data)
+            else:
+                self.master_flats[fltr] = None
     
     def _validate_flat_files(self, flat_paths: List[str]) -> Dict[str, List[str]]:
         """
@@ -129,9 +125,12 @@ class FlatFieldCorrector:
         flats = {}
         for fltr in unique_filters:
             flats[fltr + '-band'] = []
-            for (k, v) in filters.items():
+            for k, v in filters.items():
                 if v == fltr:
                     flats[fltr + '-band'].append(k)
+        
+        for k, v in flats.items():
+            print(f'[OPTICAM] {len(v)} {k} flat-field images.')
         
         return flats
     
@@ -147,14 +146,14 @@ class FlatFieldCorrector:
         
         for fltr in self.flat_paths.keys():
             # skip if master flat-field image already exists and overwrite is False
-            if os.path.exists(self.out_dir + f"master_flats/{fltr}_master_flat.fit.gz") and not overwrite:
-                return
+            if os.path.exists(os.path.join(self.out_dir, f'master_flats/{fltr}_master_flat.fit.gz')) and not overwrite:
+                continue
             
-            if not os.path.isdir(self.out_dir + "master_flats/"):
+            if not os.path.isdir(os.path.join(self.out_dir, 'master_flats')):
                 try:
-                    os.makedirs(self.out_dir + "master_flats/", exist_ok=True)
+                    os.makedirs(os.path.join(self.out_dir, 'master_flats'))
                 except:
-                    raise Exception(f"[OPTICAM] Could not create master_flats directory in {self.out_dir}")
+                    raise Exception(f'[OPTICAM] Could not create master_flats directory in {self.out_dir}')
             
             if len(self.flat_paths[fltr]) == 1:
                 raise Exception(f"[OPTICAM] Only one {fltr} flat found. Master flats cannot be created from a single image.")
@@ -169,9 +168,12 @@ class FlatFieldCorrector:
             # create master flat
             master_flat = np.median(flats, axis=0)
             
+            # hold master flat in memory (faster than having to read it from disk every time correct() is called)
+            self.master_flats[fltr] = master_flat
+            
             # save master flat to file
             hdu = fits.PrimaryHDU(master_flat)
-            hdu.writeto(self.out_dir + f"master_flats/{fltr}_master_flat.fit.gz", overwrite=overwrite)
+            hdu.writeto(os.path.join(self.out_dir, f'master_flats/{fltr}_master_flat.fit.gz'), overwrite=overwrite)
     
     def correct(self, image: NDArray, fltr: str) -> NDArray:
         """
@@ -193,20 +195,16 @@ class FlatFieldCorrector:
         if fltr not in self.flat_paths.keys():
             raise ValueError(f"[OPTICAM] No flat-field images found for {fltr} filter.")
         
-        if not os.path.exists(self.out_dir + f"master_flats/{fltr}_master_flat.fit.gz") and fltr in self.flat_paths.keys():
-            print(f"[OPTICAM] {fltr} master flat-field image not found. Attempting to create...")
+        if fltr not in self.master_flats.keys() or self.master_flats[fltr] is None:
+            print(f'[OPTICAM] {fltr} master flat-field image not found. Attempting to create...')
             try:
                 self.create_master_flats()
-                print("[OPTICAM] Master flat-field image created.")
-            except:
-                raise Exception("[OPTICAM] Could not create master flat-field image(s).")
-        
-        # load master flat
-        with fits.open(self.out_dir + f"master_flats/{fltr}_master_flat.fit.gz") as hdul:
-            master_flat = np.array(hdul[0].data)
+                print('[OPTICAM] Master flat-field image created.')
+            except Exception as e:
+                raise Exception(f"[OPTICAM] Could not create master flat-field image(s): {e}")
         
         # correct image for flat-fielding
-        return image / master_flat
+        return image / self.master_flats[fltr]
 
 
 
