@@ -33,8 +33,8 @@ from opticam_new.reduction.transforms import find_translation
 from opticam_new.utils.batching import get_batches, get_batch_size
 from opticam_new.utils.constants import bar_format, pixel_scales
 from opticam_new.utils.data_checks import check_data
-from opticam_new.utils.helpers import camel_to_snake, recursive_log, plot_catalog
-from opticam_new.utils.io import get_data, get_time
+from opticam_new.utils.helpers import camel_to_snake, plot_catalog
+from opticam_new.utils.io import get_data, get_time, recursive_log
 
 
 class Catalog:
