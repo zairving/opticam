@@ -1,5 +1,7 @@
+import json
 from logging import Logger
-from typing import Dict, Tuple
+from typing import Any, Dict, List, Tuple
+from types import FunctionType
 
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
@@ -19,7 +21,7 @@ def get_header_info(
     logger: Logger | None,
     ) -> Tuple[ArrayLike | None, str | None, str | None, float | None]:
     """
-    Get the MJD, filter, binning, and gain from a file header.
+    Get the BMJD, filter, binning, and gain from a file header.
     
     Parameters
     ----------
@@ -29,19 +31,13 @@ def get_header_info(
     Returns
     -------
     Tuple[float, str, str, float]
-        The Barycentered MJD, filter, binning, and gain dictionaries.
-    
-    Raises
-    ------
-    KeyError
-        If the file header does not contain the required keys.
+        The BMJD, filter, binning, and gain dictionaries.
     """
     
     try:
         with fits.open(file) as hdul:
-            
             header = hdul[0].header
-            
+        
         binning = header["BINNING"]
         gain = header["GAIN"]
         
@@ -54,8 +50,6 @@ def get_header_info(
             pass
         
         mjd = get_time(header, file)
-        
-        # separate files by filter
         fltr = header["FILTER"]
         
         try:
@@ -68,7 +62,7 @@ def get_header_info(
             return None, None, None, None
     except Exception as e:
         if logger:
-            logger.info(f'[OPTICAM] Skipping file {file} because it could not be read: {e}')
+            logger.info(f'[OPTICAM] Could not read {file}: {e}. Skipping.')
         return None, None, None, None
     
     return bmjd, fltr, binning, gain
@@ -131,6 +125,34 @@ def get_data(
     return_error: bool,
     remove_cosmic_rays: bool,
     ) -> NDArray | Tuple[NDArray, NDArray]:
+    """
+    Get the image data from a FITS file.
+    
+    Parameters
+    ----------
+    file : str
+        The file.
+    gain : float
+        The file gain.
+    flat_corrector : FlatFieldCorrector | None
+        The `FlatFieldCorrector` instance (if specified).
+    rebin_factor : int
+        The rebin factor.
+    return_error : bool
+        Whether to compute and return the error image.
+    remove_cosmic_rays : bool
+        Whether to remove cosmic rays from the image.
+    
+    Returns
+    -------
+    NDArray | Tuple[NDArray, NDArray]
+        _description_
+    
+    Raises
+    ------
+    ValueError
+        If `file` could not be opened.
+    """
     
     try:
         with fits.open(file) as hdul:
@@ -163,5 +185,98 @@ def get_data(
     
     return data
 
+
+def log_binnings(
+    file_paths: List[str],
+    out_directory: str,
+    ) -> None:
+    """
+    Log the binning of each file to out_directory/diag/binnings.json.
+    
+    Parameters
+    ----------
+    file_paths : List[str]
+        The paths to the files.
+    out_directory : str
+        The directory to save the log.
+    """
+    
+    file_binnings = {}
+    
+    for file in file_paths:
+        with fits.open(file) as hdul:
+            binning = hdul[0].header["BINNING"]
+            if binning in file_binnings:
+                file_binnings[binning].append(file)
+            else:
+                file_binnings[binning] = [file]
+    
+    with open(out_directory + "diag/binnings.json", "w") as f:
+        json.dump(file_binnings, f, indent=4)
+
+
+def log_filters(
+    file_paths: List[str],
+    out_directory: str,
+    ) -> None:
+    """
+    Logs the filters used in each file to out_directory/diag/filters.json.
+    
+    Parameters
+    ----------
+    file_paths : List[str]
+        The paths to the files.
+    out_directory : str
+        The directory to save the log.
+    """
+    
+    file_filters = {}
+    
+    for file in file_paths:
+        with fits.open(file) as hdul:
+            fltr = hdul[0].header["FILTER"]
+            if fltr in file_filters:
+                file_filters[fltr].append(file)
+            else:
+                file_filters[fltr] = [file]
+    
+    with open(out_directory + "diag/filters.json", "w") as f:
+        json.dump(file_filters, f, indent=4)
+
+
+def recursive_log(param: Any, depth: int = 0, max_depth: int = 5) -> Any:
+    """
+    Recursively log parameters.
+    
+    Parameters
+    ----------
+    param : Any
+        The parameter to log.
+    depth : int, optional
+        The parameter depth, by default 0.
+    max_depth : int, optional
+        The maximum parameter depth, by default 5. This prevents infinite recursion.
+    
+    Returns
+    -------
+    Any
+        The logged parameter.
+    """
+    
+    if depth > max_depth:
+        return f"<Max depth ({max_depth}) reached>"
+    
+    if isinstance(param, FunctionType):
+        # return function name
+        return param.__name__
+    if isinstance(param, (int, float, str, bool, type(None))):
+        return param
+    if isinstance(param, (list, tuple, set)):
+        return type(param)(recursive_log(item, depth + 1, max_depth) for item in param)
+    if isinstance(param, dict):
+        return {key: recursive_log(value, depth + 1, max_depth) for key, value in param.items()}
+    if hasattr(param, '__dict__'):
+        return {key: recursive_log(value, depth + 1, max_depth) for key, value in vars(param).items()}
+    return str(param)
 
 
