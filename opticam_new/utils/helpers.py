@@ -13,6 +13,7 @@ from matplotlib.figure import Figure
 from matplotlib.axes import Axes
 from astropy.table import QTable
 import matplotlib.colors as mcolors
+import os
 
 
 
@@ -34,46 +35,6 @@ def camel_to_snake(
     """
     
     return re.sub(r'(?<!^)(?=[A-Z])', '_', string).lower()
-
-
-def euclidean_distance(
-    p1: Tuple[float, float],
-    p2: Tuple[float, float],
-    ) -> float:
-    """
-    Compute the Euclidean distance between two points.
-    
-    Parameters
-    ----------
-    p1 : Tuple[float, float]
-        The x and y coordinates of the first point.
-    p2 : Tuple[float, float]
-        The x and y coordinates of the second point.
-    
-    Returns
-    -------
-    float
-        The distance.
-    """
-    
-    return np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
-
-
-def find_closest_pair(
-    point: Tuple[float, float],
-    points: List[Tuple[float, float]],
-    threshold: int,
-    ) -> ArrayLike | None:
-    
-    distances = [(euclidean_distance(point, point2), point2) for point2 in points]  # compute distances
-    
-    distances.sort(key=lambda x: x[0])  # sort by distance
-    
-    if distances[0][0] > threshold:
-        return None
-    
-    # return the closest pair
-    return distances[0][1]
 
 
 def log_binnings(
@@ -276,5 +237,52 @@ def sort_filters(
         }
     
     return dict(sorted(d.items(), key=lambda x: key_order[x[0]]))
+
+
+def create_file_paths(
+    data_directory: None | str = None,
+    c1_directory: None | str = None,
+    c2_directory: None | str = None,
+    c3_directory: None | str = None,
+    ) -> List[str]:
+    """
+    Given some directories, get the paths to all available FITS files.
+    
+    Parameters
+    ----------
+    data_directory : None | str, optional
+        The directory containing the FITS files of all three cameras, by default None.
+    c1_directory : None | str, optional
+        The directory containing the FITS files of Camera 1, by default None.
+    c2_directory : None | str, optional
+        The directory containing the FITS files of Camera 2, by default None.
+    c3_directory : None | str, optional
+        The directory containing the FITS files of Camera 3, by default None.
+    
+    Returns
+    -------
+    List[str]
+        The file paths.
+    """
+    
+    file_paths = []
+    
+    for directory in [data_directory, c1_directory, c2_directory, c3_directory]:
+        if directory is not None:
+            file_names = os.listdir(directory)
+            for file_name in file_names:
+                if '.fit' in file_name:
+                    file_paths.append(os.path.join(directory, file_name))
+    
+    return file_paths
+
+
+
+
+
+
+
+
+
 
 
