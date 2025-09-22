@@ -1,44 +1,40 @@
-import os
-from tqdm.contrib.concurrent import process_map
-from tqdm import tqdm
-from astropy.table import QTable
+from functools import partial
 import json
-import numpy as np
+import logging
+from multiprocessing import cpu_count
+import os
+from typing import Callable, Dict, Iterable, List, Literal, Tuple
+import warnings
+
+from astroalign import find_transform
 from astropy.io import fits
 from astropy.stats import SigmaClip
+from astropy.table import QTable
 from astropy.visualization.mpl_normalize import simple_norm
-from astropy.coordinates import SkyCoord
-import astropy.units as u
-from astropy.time import Time
-from photutils.segmentation import SourceCatalog, detect_threshold
-from photutils.background import Background2D
-from skimage.transform import warp, matrix_transform, SimilarityTransform
 from matplotlib import pyplot as plt
-from matplotlib.patches import Circle
 import matplotlib.colors as mcolors
-from multiprocessing import cpu_count
-from functools import partial
-from PIL import Image
-from typing import Any, List, Dict, Literal, Callable, Tuple, Iterable
-from numpy.typing import ArrayLike, NDArray
-from scipy.spatial.distance import cdist
-from scipy.optimize import linear_sum_assignment
-from ccdproc import cosmicray_lacosmic  # TODO: replace with astroscrappy to reduce dependencies?
-
-import logging
-import warnings
+from matplotlib.patches import Circle
+import numpy as np
+from numpy.typing import NDArray
 import pandas as pd
-from astroalign import find_transform
+from photutils.background import Background2D
+from photutils.segmentation import SourceCatalog, detect_threshold
+from PIL import Image
 
+from skimage.transform import warp, matrix_transform, SimilarityTransform
+from tqdm.contrib.concurrent import process_map
+from tqdm import tqdm
 
-from opticam_new.utils.helpers import camel_to_snake, log_binnings, log_filters, recursive_log, sort_filters, plot_catalog
-from opticam_new.utils.constants import bar_format, pixel_scales
 from opticam_new.reduction.background import DefaultBackground
-from opticam_new.reduction.finder import DefaultFinder
 from opticam_new.reduction.correctors import FlatFieldCorrector
+from opticam_new.reduction.finder import DefaultFinder
 from opticam_new.reduction.photometers import BasePhotometer
-from opticam_new.utils.time_helpers import apply_barycentric_correction, get_time
-from opticam_new.utils.image_helpers import rebin_image
+from opticam_new.reduction.transforms import find_translation
+from opticam_new.utils.batching import get_batches, get_batch_size
+from opticam_new.utils.constants import bar_format, pixel_scales
+from opticam_new.utils.data_checks import check_data
+from opticam_new.utils.helpers import camel_to_snake, recursive_log, plot_catalog
+from opticam_new.utils.io import get_data, get_time
 
 
 class Catalog:
@@ -117,6 +113,8 @@ class Catalog:
             Whether to print verbose output, by default `True`.
         """
         
+        warnings.warn(f'[OPTICAM] from version 0.3.0, opticam_new.Catalog() will be renamed to opticam_new.Reducer()')
+        
         self.verbose = verbose
         
         ########################################### out_directory ###########################################
@@ -182,23 +180,28 @@ class Catalog:
         self.number_of_processors = number_of_processors
         self.show_plots = show_plots
         
-        ########################################### file paths ###########################################
+        ########################################### check input data ###########################################
         
-        self.file_paths = []
+        self.camera_files, self.binning_scale, self.bmjds, self.ignored_files, self.gains, self.t_ref = check_data(
+                data_directory=data_directory,
+                c1_directory=c1_directory,
+                c2_directory=c2_directory,
+                c3_directory=c3_directory,
+                out_directory=out_directory,
+                verbose=verbose,
+                return_output=True,
+                logger=self.logger,
+                number_of_processors=number_of_processors,
+                )
         
-        for directory in [data_directory, c1_directory, c2_directory, c3_directory]:
-            if directory is not None:
-                file_names = os.listdir(directory)
-                for file_name in file_names:
-                    if '.fit' in file_name:
-                        self.file_paths.append(os.path.join(directory, file_name))
+        ########################################### define reference images ###########################################
         
-        # list of files to ignore (e.g., if they are corrupted or do not comply with the FITS standard)
-        self.ignored_files = []
-        
-        ########################################### scan data ###########################################
-        
-        self._scan_data_directory()  # scan data directory
+        # define middle image as reference image for each filter
+        reference_indices = {}
+        self.reference_files = {}
+        for key in self.camera_files.keys():
+            reference_indices[key] = len(self.camera_files[key]) // 2
+            self.reference_files[key] = self.camera_files[key][reference_indices[key]]
         
         ########################################### catalog colours ###########################################
         
@@ -276,201 +279,6 @@ class Catalog:
                 if self.verbose:
                     print(f"[OPTICAM] Read {fltr} catalog from file.")
 
-    def _scan_data_directory(self) -> None:
-        """
-        Scan the data directory for files and extract the MJD, filter, binning, and gain from each file header.
-        
-        Raises
-        ------
-        ValueError
-            If more than 3 filters are found.
-        ValueError
-            If the binning is not consistent.
-        """
-        
-        self.camera_files = {}  # filter : [files]
-        
-        # scan files
-        chunksize = max(1, len(self.file_paths) // 100)  # set chunksize to 1% of the number of files
-        results = process_map(
-            self._get_header_info,
-            self.file_paths,
-            max_workers=self.number_of_processors,
-            disable=not self.verbose,
-            desc="[OPTICAM] Scanning data directory",
-            chunksize=chunksize,
-            bar_format=bar_format,
-            tqdm_class=tqdm)
-        
-        # unpack results
-        filters = self._parse_header_results(results)
-        
-        # for each unique filter
-        for fltr in np.unique(list(filters.values())):
-            
-            self.camera_files.update({fltr + '-band': []})  # prepare dictionary entry
-            
-            # for each file
-            for file in self.file_paths:
-                if file not in self.ignored_files:
-                    # if the file filter matches the current filter
-                    if filters[file] == fltr:
-                        self.camera_files[fltr + '-band'].append(file)  # add file name to dict list
-        
-        # sort camera files so filters match camera order
-        self.camera_files = sort_filters(self.camera_files)
-        
-        # sort files by time
-        for key in list(self.camera_files.keys()):
-            self.camera_files[key].sort(key=lambda x: self.bmjds[x])
-        
-        self.t_ref = min(list(self.bmjds.values()))  # get reference BMJD
-        
-        # define middle image as reference image for each filter
-        self.reference_indices = {}
-        self.reference_files = {}
-        for key in list(self.camera_files.keys()):
-            self.reference_indices[key] = int(len(self.camera_files[key]) / 2)
-            self.reference_files[key] = self.camera_files[key][self.reference_indices[key]]
-        
-        self.logger.info(f'[OPTICAM] Binning: {self.binning}')
-        self.logger.info(f'[OPTICAM] Filters: {", ".join(list(self.camera_files.keys()))}')
-        for fltr in list(self.camera_files.keys()):
-            self.logger.info(f'[OPTICAM] {len(self.camera_files[fltr])} {fltr} images.')
-        
-        if self.verbose:
-            print('[OPTICAM] Binning: ' + self.binning)
-            print('[OPTICAM] Filters: ' + ', '.join(list(self.camera_files.keys())))
-            for fltr in list(self.camera_files.keys()):
-                print(f'[OPTICAM] {len(self.camera_files[fltr])} {fltr} images.')
-        
-        self._plot_time_between_files()
-
-    def _get_header_info(self, file: str) -> Tuple[ArrayLike | None, str | None, str | None, float | None]:
-        """
-        Get the MJD, filter, binning, and gain from a file header.
-        
-        Parameters
-        ----------
-        file : str
-            The file path.
-        
-        Returns
-        -------
-        Tuple[float, str, str, float]
-            The BMJD, filter, binning, and gain dictionaries.
-        
-        Raises
-        ------
-        KeyError
-            If the file header does not contain the required keys.
-        """
-        
-        try:
-            with fits.open(file) as hdul:
-                
-                header = hdul[0].header
-                
-            binning = header["BINNING"]
-            gain = header["GAIN"]
-            
-            try:
-                ra = header["RA"]
-                dec = header["DEC"]
-            except:
-                self.logger.info(f"[OPTICAM] Could not find RA and DEC keys in {file} header.")
-                pass
-            
-            mjd = get_time(header, file)
-            
-            # separate files by filter
-            fltr = header["FILTER"]
-            
-            try:
-                # try to compute barycentric dynamical time
-                coords = SkyCoord(ra, dec, unit=(u.hourangle, u.deg))
-                bmjd = apply_barycentric_correction(mjd, coords)
-            except Exception as e:
-                bmjd = mjd
-                self.logger.info(f"[OPTICAM] Could not compute BMJD for {file}: {e}. Using MJD instead.")
-        except Exception as e:
-            self.logger.info(f'[OPTICAM] Skipping file {file} because it could not be read: {e}')
-            return None, None, None, None
-        
-        return bmjd, fltr, binning, gain
-
-    def _parse_header_results(self, results: Tuple[float, float, str, str, float]) -> Dict[str, str]:
-        """
-        Parse the results returned by self._get_header_info().
-        
-        Parameters
-        ----------
-        results : Tuple
-            The results.  
-        
-        Returns
-        -------
-        Tuple[str, str]
-            The filter dictionary (file : filter).
-        
-        Raises
-        ------
-        ValueError
-            If more than 3 filters are found.
-        ValueError
-            If the binning is not consistent.
-        """
-        
-        self.bmjds = {}
-        filters = {}
-        binnings = {}
-        self.gains = {}
-        
-        # unpack results
-        raw_bmjds, raw_filters, raw_binnings, raw_gains = zip(*results)
-        
-        # consolidate results
-        for i in range(len(raw_bmjds)):
-            if raw_bmjds[i] is not None:
-                self.bmjds.update({self.file_paths[i]: raw_bmjds[i]})
-                filters.update({self.file_paths[i]: raw_filters[i]})
-                binnings.update({self.file_paths[i]: raw_binnings[i]})
-                self.gains.update({self.file_paths[i]: raw_gains[i]})
-            else:
-                self.ignored_files.append(self.file_paths[i])
-        
-        # ensure there are no more than three filters
-        unique_filters = np.unique(list(filters.values()))
-        if unique_filters.size > 3:
-            log_filters([file_path for file_path in self.file_paths if file_path not in self.ignored_files],
-                        self.out_directory)
-            raise ValueError(f"[OPTICAM] More than three filters found. Image filters have been logged to {os.path.join(self.out_directory, 'diag/filters.json')}.")
-        
-        # ensure there is at most one type of binning
-        unique_binning = np.unique(list(binnings.values()))
-        if len(unique_binning) > 1:
-            log_binnings([file_path for file_path in self.file_paths if file_path not in self.ignored_files],
-                         self.out_directory)
-            raise ValueError(f"[OPTICAM] Inconsistent binning detected. All images must have the same binning. Image binnings have been logged to {os.path.join(self.out_directory, 'diag/binnings.json')}.")
-        else:
-            self.binning = unique_binning[0]
-            self.binning_scale = int(self.binning[0])
-        
-        # check for large differences in time
-        for fltr in unique_filters:
-            bmjds = np.sort(np.array([self.bmjds[file] for file in self.file_paths if file in filters and filters[file] == fltr]))
-            files = [file for file in self.file_paths if file in filters and filters[file] == fltr]
-            t = bmjds - np.min(bmjds)
-            dt = np.diff(t) * 86400
-            if np.any(dt > 10 * np.median(dt)):
-                indices = np.where(dt > 10 * np.median(dt))[0]
-                for index in indices:
-                    string = f"[OPTICAM] Large time gap detected between {files[index].split('/')[-1]} and {files[index + 1].split('/')[-1]} ({dt[index]:.3f} s compared to the median time difference of {np.median(dt):.3f} s). This may cause alignment issues. If so, consider moving all files after this gap to a separate directory."
-                    self.logger.info(string)
-                    warnings.warn(string)
-        
-        return filters
-
     def _log_parameters(self):
         """
         Log any and all object parameters to a JSON file.
@@ -487,7 +295,6 @@ class Catalog:
         params.pop('gains')  # irrelevant
         params.pop('camera_files')  # redundant
         params.pop('colours')  # irrelevant
-        params.pop('file_paths')  # redundant
         
         try:
             params.pop('transforms')  # redundant
@@ -605,54 +412,6 @@ class Catalog:
         self.logger.info(f'[OPTICAM]    semimajor_sigma: {self.psf_params[fltr]["semimajor_sigma"]} binned pixels ({self.psf_params[fltr]["semimajor_sigma"] * self.binning_scale * self.rebin_factor * pixel_scales[fltr]} arcsec)')
         self.logger.info(f'[OPTICAM]    semiminor_sigma: {self.psf_params[fltr]["semiminor_sigma"]} binned pixels ({self.psf_params[fltr]["semiminor_sigma"] * self.binning_scale * self.rebin_factor * pixel_scales[fltr]} arcsec)')
         self.logger.info(f'[OPTICAM]    orientation: {self.psf_params[fltr]["orientation"]} degrees')
-
-    def _get_data(self, file: str, return_error: bool = False) -> NDArray | Tuple[NDArray, NDArray]:
-        """
-        Get data from a file.
-        
-        Parameters
-        ----------
-        file : str
-            Directory path to file.
-        return_error : bool, optional
-            Whether to return the error array, by default False.
-        
-        Returns
-        -------
-        NDArray | Tuple[NDArray, NDArray]
-            The data array or the data and error arrays.
-        """
-        
-        try:
-            with fits.open(file) as hdul:
-                data = np.array(hdul[0].data, dtype=np.float64)
-                fltr = hdul[0].header["FILTER"] + '-band'
-        except:
-            raise ValueError(f"[OPTICAM] Could not open file {file}.")
-        
-        if return_error:
-            error = np.sqrt(data * self.gains[file])
-        
-        if self.flat_corrector is not None:
-            data = self.flat_corrector.correct(data, fltr)
-            
-            if return_error:
-                error = self.flat_corrector.correct(error, fltr)
-        
-        # remove cosmic rays if required
-        if self.remove_cosmic_rays:
-            data = np.asarray(cosmicray_lacosmic(data, gain_apply=False)[0])
-        
-        if self.rebin_factor > 1:
-            data = rebin_image(data, self.rebin_factor)
-            
-            if return_error:
-                error = rebin_image(error, self.rebin_factor)
-        
-        if return_error:
-            return data, error
-        
-        return data
 
     def _get_source_coords_from_image(
         self,
@@ -772,16 +531,24 @@ class Catalog:
             if len(self.camera_files[fltr]) == 0:
                 continue
             
-            reference_image = self._get_data(self.camera_files[fltr][self.reference_indices[fltr]])  # get reference image
+            # get reference image
+            reference_image = get_data(
+                file=self.reference_files[fltr],
+                gain=self.gains[self.reference_files[fltr]],
+                flat_corrector=self.flat_corrector,
+                rebin_factor=self.rebin_factor,
+                return_error=False,
+                remove_cosmic_rays=self.remove_cosmic_rays,
+                )
             
             try:
                 reference_coords = self._get_source_coords_from_image(reference_image, away_from_edge=True, n_sources=n_alignment_sources)  # get source coordinates in descending order of brightness
             except:
-                self.logger.info(f'[OPTICAM] No sources detected in {fltr} reference image ({self.camera_files[fltr][self.reference_indices[fltr]]}). Reducing threshold or npixels in the source finder may help.')
+                self.logger.info(f'[OPTICAM] No sources detected in {fltr} reference image ({self.reference_files[fltr]}). Reducing threshold or npixels in the source finder may help.')
                 continue
             
             if len(reference_coords) < n_alignment_sources:
-                self.logger.info(f'[OPTICAM] Found {len(reference_coords)} sources in {fltr} reference image ({self.camera_files[fltr][self.reference_indices[fltr]]}) but n_alignment_sources={n_alignment_sources}. Consider reducing threshold and/or n_alignment_sources.')
+                self.logger.info(f'[OPTICAM] Found {len(reference_coords)} sources in {fltr} reference image ({self.reference_files[fltr]}) but n_alignment_sources={n_alignment_sources}. Consider reducing threshold and/or n_alignment_sources.')
                 continue
             
             self.logger.info(f'[OPTICAM] {fltr} alignment source coordinates: {reference_coords}')
@@ -943,7 +710,13 @@ class Catalog:
         
         for file in batch:
             
-            data = self._get_data(file)  # get image data
+            data = get_data(
+                file,
+                self.gains[file],
+                flat_corrector=self.flat_corrector,
+                rebin_factor=self.rebin_factor,
+                return_error=False,
+                remove_cosmic_rays=self.remove_cosmic_rays)
             
             # calculate and subtract background
             bkg = self.background(data)
@@ -962,13 +735,13 @@ class Catalog:
                 continue
             
             if transform_type == 'translation':
-                distance_matrix = cdist(reference_coords, coords)
-                reference_indices, indices = linear_sum_assignment(distance_matrix)  # match sources across images
-                dx = np.mean(reference_coords[reference_indices, 0] - coords[indices, 0])
-                dy = np.mean(reference_coords[reference_indices, 1] - coords[indices, 1])
-                transform = SimilarityTransform(translation=[dx, dy])
+                # find translation
+                transform = find_translation(
+                    coords,
+                    reference_coords,
+                    )
             else:
-                # compute affine transform using astroalign
+                # find affine transformation using astroalign
                 try:
                     transform = find_transform(
                         coords,
@@ -1274,7 +1047,14 @@ class Catalog:
             The filter.
         """
         
-        data = self._get_data(file)
+        data = get_data(
+            file=file,
+            gain=self.gains[file],
+            flat_corrector=self.flat_corrector,
+            rebin_factor=self.rebin_factor,
+            return_error=False,
+            remove_cosmic_rays=self.remove_cosmic_rays,
+            )
         
         file_name = file.split('/')[-1].split(".")[0]
         
@@ -1467,7 +1247,14 @@ class Catalog:
         file: str,
         ) -> Dict[str, List]:
         
-        image, error = self._get_data(file, return_error=True)  # get image data and error
+        image, error = get_data(
+            file=file,
+            gain=self.gains[file],
+            flat_corrector=self.flat_corrector,
+            rebin_factor=self.rebin_factor,
+            return_error=True,
+            remove_cosmic_rays=self.remove_cosmic_rays,
+            )
         
         if photometer.local_background_estimator is None:
             bkg = self.background(image)  # get 2D background
@@ -1693,36 +1480,10 @@ def save_backgrounds(
         plt.close(fig)
 
 
-def get_batches(input: List[Any]) -> List[List[Any]]:
-    
-    L = len(input)
-    
-    batch_size = get_batch_size(L)
-    
-    batches = []
-    
-    for i in range(0, L, batch_size):
-        batches.append(input[i:i+batch_size])
-    
-    return batches
 
 
-def get_batch_size(L: int) -> int:
-    """
-    Compute the batch size for a given input length.
-    
-    Parameters
-    ----------
-    L : int
-        The length of the input.
-    
-    Returns
-    -------
-    int
-        The batch size.
-    """
-    
-    return max(1, L // 100)
+
+
 
 
 
