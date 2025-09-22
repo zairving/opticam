@@ -10,8 +10,8 @@ from tqdm.contrib.concurrent import process_map
 from tqdm import tqdm
 
 from opticam_new.utils.constants import bar_format
-from opticam_new.utils.helpers import create_file_paths, log_binnings, log_filters, sort_filters
-from opticam_new.utils.io import get_header_info
+from opticam_new.utils.helpers import create_file_paths, sort_filters
+from opticam_new.utils.io import get_header_info, log_binnings, log_filters
 
 
 def check_data(
@@ -25,6 +25,36 @@ def check_data(
     logger: Logger | None = None,
     number_of_processors = cpu_count() // 2,
     ) -> None | Tuple[Dict[str, str], int, Dict[str, float], List[str], Dict[str, float], float]:
+    """
+    Check that the data are self-consistent.
+    
+    Parameters
+    ----------
+    out_directory : str
+        The directory path to which any output files will be saved.
+    data_directory : None | str, optional
+        The directory path to the data for all three cameras, by default None.
+    c1_directory : None | str, optional
+        The directory path to the data for Camera 1, by default None.
+    c2_directory : None | str, optional
+        The directory path to the data for Camera 2, by default None
+    c3_directory : None | str, optional
+        The directory path to the data for Camera 3, by default None
+    verbose : bool, optional
+        Whether to print any output info, by default True.
+    return_output : bool, optional
+        Whether to return any output, by default False.
+    logger : Logger | None, optional
+        The logger, by default None.
+    number_of_processors : _type_, optional
+        The number of processors to use, by default `cpu_count() // 2`.
+    
+    Returns
+    -------
+    None | Tuple[Dict[str, str], int, Dict[str, float], List[str], Dict[str, float], float]
+        If `return_output=True`, the file paths, binning scale, Barycentric MJD dates, ignored files, file gains, and
+        the reference date are returned. Otherwise, nothing is returned.
+    """
     
     file_paths = create_file_paths(
         data_directory=data_directory,
@@ -94,6 +124,32 @@ def parse_header_results(
     out_directory: str,
     logger: Logger | None,
     ) -> Tuple[int, Dict[str, float], Dict[str, str], Dict[str, float], List[str]]:
+    """
+    Parse the header info results.
+    
+    Parameters
+    ----------
+    results : Tuple[float, float, str, str, float]
+        The header info results.
+    file_paths : List[str]
+        The file paths.
+    out_directory : str
+        The directory path to which any output files will be saved.
+    logger : Logger | None
+        The logger.
+    
+    Returns
+    -------
+    Tuple[int, Dict[str, float], Dict[str, str], Dict[str, float], List[str]]
+        The binning scale, BMJD dates, filters, gains, and ignored files.
+    
+    Raises
+    ------
+    ValueError
+        If more than three filters are detected.
+    ValueError
+        If more than one binning mode is detected.
+    """
     
     bmjds = {}
     filters = {}
