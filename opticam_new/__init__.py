@@ -8,3 +8,4 @@ from opticam_new.reduction.local_background import DefaultLocalBackground
 from opticam_new.reduction.correctors import FlatFieldCorrector
 from opticam_new.analysis.analyzer import Analyzer
 from opticam_new.utils.generate import generate_flats, generate_observations, generate_gappy_observations
+from opticam_new.utils.data_checks import check_data
