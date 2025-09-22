@@ -3,7 +3,6 @@ from astropy.coordinates import EarthLocation, SkyCoord
 from astropy import units as u
 import numpy as np
 from numpy.typing import NDArray
-from typing import Dict
 
 
 def apply_barycentric_correction(
@@ -36,55 +35,6 @@ def apply_barycentric_correction(
     ltt_bary = times.light_travel_time(coords)
     
     return (times.tdb + ltt_bary).value
-
-
-def get_time(
-    header: Dict,
-    file: str,
-    ) -> float:
-    """
-    Parse the time from the header of a FITS file.
-    
-    Parameters
-    ----------
-    header
-        The FITS file header.
-    file : str
-        The path to the file.
-    
-    Returns
-    -------
-    float
-        The time of the observation in MJD.
-    
-    Raises
-    ------
-    ValueError
-        If the time cannot be parsed from the header.
-    KeyError
-        If neither 'GPSTIME' nor 'UT' keys are found in the header.
-    """
-    
-    if "GPSTIME" in header.keys():
-        gpstime = header["GPSTIME"]
-        split_gpstime = gpstime.split(" ")
-        date = split_gpstime[0]  # get date
-        time = split_gpstime[1].split(".")[0]  # get time (ignoring decimal seconds)
-        mjd = Time(date + "T" + time, format="fits").mjd
-    elif "UT" in header.keys():
-        try:
-            mjd = Time(header["UT"].replace(" ", "T"), format="fits").mjd
-        except:
-            try:
-                date = header['DATE-OBS']
-                time = header['UT'].split('.')[0]
-                mjd = Time(date + 'T' + time, format='fits').mjd
-            except:
-                raise ValueError('Could not parse time from ' + file + ' header.')
-    else:
-        raise KeyError(f"[OPTICAM] Could not find GPSTIME or UT key in {file} header.")
-    
-    return mjd
 
 
 def infer_gtis(time: NDArray, threshold: float = 1.5) -> NDArray:
