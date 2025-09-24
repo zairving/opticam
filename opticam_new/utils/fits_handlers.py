@@ -1,7 +1,5 @@
-import json
 from logging import Logger
-from typing import Any, Dict, List, Tuple
-from types import FunctionType
+from typing import Dict, Tuple
 
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
@@ -10,6 +8,7 @@ from astropy import units as u
 from ccdproc import cosmicray_lacosmic  # TODO: replace with astroscrappy to reduce dependencies?
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
+import os.path
 
 from opticam_new.reduction.correctors import FlatFieldCorrector
 from opticam_new.utils.time_helpers import apply_barycentric_correction
@@ -186,97 +185,32 @@ def get_data(
     return data
 
 
-def log_binnings(
-    file_paths: List[str],
+def save_stacked_images(
+    stacked_images: Dict[str, NDArray],
     out_directory: str,
+    overwrite: bool,
     ) -> None:
     """
-    Log the binning of each file to out_directory/diag/binnings.json.
+    Save the stacked images to a compressed FITS file.
     
     Parameters
     ----------
-    file_paths : List[str]
-        The paths to the files.
-    out_directory : str
-        The directory to save the log.
+    stacked_images : Dict[str, NDArray]
+        The stacked images (filter: stacked image).
     """
     
-    file_binnings = {}
+    hdr = fits.Header()
+    hdr['COMMENT'] = 'This FITS file contains the stacked images for each filter.'
+    empty_primary = fits.PrimaryHDU(header=hdr)
+    hdul = fits.HDUList([empty_primary])
     
-    for file in file_paths:
-        with fits.open(file) as hdul:
-            binning = hdul[0].header["BINNING"]
-            if binning in file_binnings:
-                file_binnings[binning].append(file)
-            else:
-                file_binnings[binning] = [file]
+    for fltr, img in stacked_images.items():
+        hdr = fits.Header()
+        hdr['FILTER'] = fltr
+        hdu = fits.ImageHDU(img, hdr)
+        hdul.append(hdu)
     
-    with open(out_directory + "diag/binnings.json", "w") as f:
-        json.dump(file_binnings, f, indent=4)
-
-
-def log_filters(
-    file_paths: List[str],
-    out_directory: str,
-    ) -> None:
-    """
-    Logs the filters used in each file to out_directory/diag/filters.json.
+    file_path = os.path.join(out_directory, f'cat/stacked_images.fits.gz')
     
-    Parameters
-    ----------
-    file_paths : List[str]
-        The paths to the files.
-    out_directory : str
-        The directory to save the log.
-    """
-    
-    file_filters = {}
-    
-    for file in file_paths:
-        with fits.open(file) as hdul:
-            fltr = hdul[0].header["FILTER"]
-            if fltr in file_filters:
-                file_filters[fltr].append(file)
-            else:
-                file_filters[fltr] = [file]
-    
-    with open(out_directory + "diag/filters.json", "w") as f:
-        json.dump(file_filters, f, indent=4)
-
-
-def recursive_log(param: Any, depth: int = 0, max_depth: int = 5) -> Any:
-    """
-    Recursively log parameters.
-    
-    Parameters
-    ----------
-    param : Any
-        The parameter to log.
-    depth : int, optional
-        The parameter depth, by default 0.
-    max_depth : int, optional
-        The maximum parameter depth, by default 5. This prevents infinite recursion.
-    
-    Returns
-    -------
-    Any
-        The logged parameter.
-    """
-    
-    if depth > max_depth:
-        return f"<Max depth ({max_depth}) reached>"
-    
-    if isinstance(param, FunctionType):
-        # return function name
-        return param.__name__
-    if isinstance(param, (int, float, str, bool, type(None))):
-        return param
-    if isinstance(param, (list, tuple, set)):
-        return type(param)(recursive_log(item, depth + 1, max_depth) for item in param)
-    if isinstance(param, dict):
-        return {key: recursive_log(value, depth + 1, max_depth) for key, value in param.items()}
-    if hasattr(param, '__dict__'):
-        return {key: recursive_log(value, depth + 1, max_depth) for key, value in vars(param).items()}
-    return str(param)
-
-
+    if not os.path.isfile(file_path) or overwrite:
+        hdul.writeto(file_path, overwrite=overwrite)
