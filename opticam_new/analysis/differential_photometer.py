@@ -12,7 +12,7 @@ from astropy.io import fits
 from astroalign import find_transform
 
 from opticam_new.analysis.analyzer import Analyzer
-from opticam_new.utils.helpers import plot_catalog
+from opticam_new.utils.plots import plot_catalogs
 from opticam_new.utils.time_helpers import infer_gtis
 
 
@@ -52,7 +52,7 @@ class DifferentialPhotometer:
         
         ########################################### attributes ###########################################
         
-        with open(os.path.join(self.out_directory, 'misc/input_parameters.json'), 'r') as file:
+        with open(os.path.join(self.out_directory, 'misc/reduction_parameters.json'), 'r') as file:
             input_parameters = json.load(file)
         self.filters = input_parameters['filters']
         self.t_ref = input_parameters['t_ref']
@@ -88,10 +88,13 @@ class DifferentialPhotometer:
                     fltr = hdu.header['FILTER']
                     stacked_images[fltr] = np.asarray(hdu.data)
             
-            fig, ax = plot_catalog(
-                self.filters,
-                stacked_images,
-                self.catalogs,
+            plot_catalogs(
+                out_directory=self.out_directory,
+                filters=self.filters,
+                stacked_images=stacked_images,
+                catalogs=self.catalogs,
+                show=show_plots,
+                save=False,
                 )
             
             plt.show()
