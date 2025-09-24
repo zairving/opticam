@@ -39,7 +39,7 @@ def apply_barycentric_correction(
 
 def infer_gtis(time: NDArray, threshold: float = 1.5) -> NDArray:
     """
-    Infer GTIs from a light curve.
+    Infer the Good Time Intervals from a light curve.
     
     Parameters
     ----------
