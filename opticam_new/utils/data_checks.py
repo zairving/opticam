@@ -10,8 +10,9 @@ from tqdm.contrib.concurrent import process_map
 from tqdm import tqdm
 
 from opticam_new.utils.constants import bar_format
+from opticam_new.utils.fits_handlers import get_header_info
 from opticam_new.utils.helpers import create_file_paths, sort_filters
-from opticam_new.utils.io import get_header_info, log_binnings, log_filters
+from opticam_new.utils.logging import log_binnings, log_filters
 
 
 def check_data(
@@ -24,7 +25,7 @@ def check_data(
     return_output: bool = False,
     logger: Logger | None = None,
     number_of_processors = cpu_count() // 2,
-    ) -> None | Tuple[Dict[str, str], int, Dict[str, float], List[str], Dict[str, float], float]:
+    ) -> None | Tuple[Dict[str, List[str]], int, Dict[str, float], List[str], Dict[str, float], float]:
     """
     Check that the data are self-consistent.
     
