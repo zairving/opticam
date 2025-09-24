@@ -7,7 +7,6 @@ from typing import Callable, Dict, Iterable, List, Literal, Tuple
 import warnings
 
 from astroalign import find_transform
-from astropy.io import fits
 from astropy.stats import SigmaClip
 from astropy.table import QTable
 from astropy.visualization.mpl_normalize import simple_norm
@@ -20,12 +19,11 @@ import pandas as pd
 from photutils.background import Background2D
 from photutils.segmentation import SourceCatalog, detect_threshold
 from PIL import Image
-
 from skimage.transform import warp, matrix_transform, SimilarityTransform
 from tqdm.contrib.concurrent import process_map
 from tqdm import tqdm
 
-from opticam_new.reduction.background import DefaultBackground
+from opticam_new.reduction.background import BaseBackground, DefaultBackground
 from opticam_new.reduction.correctors import FlatFieldCorrector
 from opticam_new.reduction.finder import DefaultFinder
 from opticam_new.reduction.photometers import BasePhotometer
@@ -33,8 +31,10 @@ from opticam_new.reduction.transforms import find_translation
 from opticam_new.utils.batching import get_batches, get_batch_size
 from opticam_new.utils.constants import bar_format, pixel_scales
 from opticam_new.utils.data_checks import check_data
-from opticam_new.utils.helpers import camel_to_snake, plot_catalog
-from opticam_new.utils.io import get_data, get_time, recursive_log
+from opticam_new.utils.helpers import camel_to_snake
+from opticam_new.utils.fits_handlers import get_data, save_stacked_images
+from opticam_new.utils.logging import recursive_log
+from opticam_new.utils.plots import plot_backgrounds, plot_catalogs, plot_time_between_files
 
 
 class Catalog:
@@ -51,7 +51,7 @@ class Catalog:
         c3_directory: None | str = None,
         rebin_factor: int = 1,
         flat_corrector: None | FlatFieldCorrector = None,
-        background: None | Callable = None,
+        background: BaseBackground | None = None,
         finder: None | Callable = None,
         threshold: float = 5,
         aperture_selector: Callable = np.median,
@@ -89,7 +89,7 @@ class Catalog:
         threshold: float, optional
             The signal-to-noise ratio threshold for source finding, by default 5. Reduce this value to identify fainter
             sources, though this may lead to the identification of spurious sources.
-        background: Callable, optional
+        background: BaseBackground | None, optional
             The background calculator, by default `None`. If `None`, the default background calculator is used. If a
             callable is provided, it should take an image (`NDArray`) as input and return a `Background2D` object.
         finder: Callable, optional
@@ -192,7 +192,17 @@ class Catalog:
                 return_output=True,
                 logger=self.logger,
                 number_of_processors=number_of_processors,
-                )
+                )  # type: ignore
+        
+        ########################################### plot time between files ###########################################
+        
+        plot_time_between_files(
+            out_directory=self.out_directory,
+            camera_files=self.camera_files,
+            bmjds=self.bmjds,
+            show=self.show_plots,
+            save=True,
+            )
         
         ########################################### define reference images ###########################################
         
@@ -202,15 +212,6 @@ class Catalog:
         for key in self.camera_files.keys():
             reference_indices[key] = len(self.camera_files[key]) // 2
             self.reference_files[key] = self.camera_files[key][reference_indices[key]]
-        
-        ########################################### catalog colours ###########################################
-        
-        # define colours for circling sources in catalogs
-        self.colours = list(mcolors.TABLEAU_COLORS.keys())
-        self.colours.pop(self.colours.index("tab:brown"))
-        self.colours.pop(self.colours.index("tab:gray"))
-        self.colours.pop(self.colours.index("tab:purple"))
-        self.colours.pop(self.colours.index("tab:blue"))
         
         ########################################### aperture selector ###########################################
         
@@ -246,7 +247,7 @@ class Catalog:
         
         ########################################### log input params ###########################################
         
-        self._log_parameters()
+        log_reducer_params(self)
         
         ########################################### misc attributes ###########################################
         
@@ -278,119 +279,6 @@ class Catalog:
                 self._set_psf_params(fltr)
                 if self.verbose:
                     print(f"[OPTICAM] Read {fltr} catalog from file.")
-
-    def _log_parameters(self):
-        """
-        Log any and all object parameters to a JSON file.
-        """
-        
-        # get parameters
-        params = dict(recursive_log(self, max_depth=5))
-        
-        params.update({'filters': list(self.camera_files.keys())})
-        
-        # remove some parameters that are either already saved elsewhere or are not relevant
-        params.pop('logger')  # redundant
-        params.pop('bmjds')  # redundant
-        params.pop('gains')  # irrelevant
-        params.pop('camera_files')  # redundant
-        params.pop('colours')  # irrelevant
-        
-        try:
-            params.pop('transforms')  # redundant
-        except KeyError:
-            pass
-        
-        try:
-            params.pop('unaligned_files')  # redundant
-        except KeyError:
-            pass
-        
-        try:
-            params.pop('catalogs')  # redundant
-        except KeyError:
-            pass
-        
-        # sort parameters
-        params = dict(sorted(params.items()))
-        
-        # write parameters to file
-        with open(os.path.join(self.out_directory, "misc/input_parameters.json"), "w") as file:
-            json.dump(params, file, indent=4)
-
-    def _plot_time_between_files(self) -> None:
-        """
-        Plot the times between each file for each camera.
-        
-        Parameters
-        ----------
-        show : bool
-            Whether to display the plot.
-        """
-        
-        fig, axes = plt.subplots(nrows=3, ncols=len(self.camera_files), tight_layout=True,
-                                 figsize=((2 * len(self.camera_files) / 3) * 6.4, 2 * 4.8), sharey='row')
-        
-        for fltr in list(self.camera_files.keys()):
-            times = np.array([self.bmjds[file] for file in self.camera_files[fltr]])
-            times -= times.min()
-            times *= 86400  # convert to seconds from first observation
-            dt = np.diff(times)  # get time between files
-            file_numbers = np.arange(2, len(times) + 1, 1)  # start from 2 because we are plotting the time between files
-            
-            bin_edges = np.arange(int(dt.min()), np.ceil(dt.max() + .2), .1)  # define bins with width 0.1 s
-            
-            if len(self.camera_files) == 1:
-                axes[0].set_title(fltr)
-                
-                # cumulative plot of time between files
-                axes[0].plot(file_numbers, np.cumsum(dt), "k-", lw=1)
-                
-                # time between each file
-                axes[1].plot(file_numbers, dt, "k-", lw=1)
-                
-                axes[2].hist(dt, bins=bin_edges, histtype="step", color="black", lw=1)
-                axes[2].set_yscale("log")
-                
-                axes[0].set_ylabel("Cumulative time between files [s]")
-                axes[0].set_xlabel("File number")
-                
-                axes[1].set_ylabel("Time between files [s]")
-                axes[1].set_xlabel("File number")
-                
-                axes[2].set_xlabel("Time between files [s]")
-            else:
-                axes[0, list(self.camera_files.keys()).index(fltr)].set_title(fltr)
-                
-                # cumulative plot of time between files
-                axes[0, list(self.camera_files.keys()).index(fltr)].plot(file_numbers, np.cumsum(dt), "k-", lw=1)
-                
-                # time between each file
-                axes[1, list(self.camera_files.keys()).index(fltr)].plot(file_numbers, dt, "k-", lw=1)
-                
-                # histogram of time between files
-                axes[2, list(self.camera_files.keys()).index(fltr)].hist(dt, bins=bin_edges, histtype="step", color="black", lw=1)
-                axes[2, list(self.camera_files.keys()).index(fltr)].set_yscale("log")
-                
-                axes[0, 0].set_ylabel("Cumulative time between files [s]")
-                axes[1, 0].set_ylabel("Time between files [s]")
-                
-                for col in range(len(self.camera_files)):
-                    axes[0, col].set_xlabel("File number")
-                    axes[1, col].set_xlabel("File number")
-                    axes[2, col].set_xlabel("Time between files [s]")
-        
-        for ax in axes.flatten():
-            ax.minorticks_on()
-            ax.tick_params(which="both", direction="in", top=True, right=True)
-
-        fig.savefig(os.path.join(self.out_directory, "diag/header_times.png"))
-
-        if self.show_plots:
-            plt.show(fig)
-        else:
-            fig.clear()
-            plt.close(fig)
 
     def _set_psf_params(self, fltr: str) -> None:
         """
@@ -469,7 +357,7 @@ class Catalog:
         n_alignment_sources: int = 3,
         transform_type: Literal['affine', 'translation'] = 'translation',
         rotation_limit: float | None = None,
-        translation_limit: float | Iterable[float] | None = None,
+        translation_limit: float | int | List[float | int] | None = None,
         scale_limit: float | None = None,
         overwrite: bool = False,
         show_diagnostic_plots: bool = False,
@@ -494,7 +382,7 @@ class Catalog:
             The maximum rotation limit (in degrees) for affine transformations, by default `None` (no limit).
         scale_limit : float, optional
             The maximum scale limit for affine transformations, by default `None` (no limit).
-        translation_limit : float | Iterable[float], optional
+        translation_limit : float | int | List[float | int] | None, optional
             The maximum translation limit for transformations, by default `None` (no limit). Can be a scalar value that
             applies to both x- and y-translations, or an iterable where the first value defines the x-translation limit
             and the second value defines the y-translation limit.
@@ -507,9 +395,12 @@ class Catalog:
         
         assert transform_type in ['affine', 'translation'], '[OPTICAM] transform_type must be either "affine" or "translation".'
         
+        if transform_type=='translation':
+            warnings.warn(f'[OPTICAM] transform_type="translation" will be deprecated in version 0.3.0, and the default will be transform_type="affine".')
+        
         if translation_limit is not None:
-            # if a scalar translation limit is specified, convert it to a 2D iterable
-            if np.isscalar(translation_limit):
+            # if a scalar translation limit is specified, convert it to a list
+            if isinstance(translation_limit, float) or isinstance(translation_limit, int):
                 translation_limit = [translation_limit, translation_limit]
         
         # if catalogs already exist, skip
@@ -532,13 +423,16 @@ class Catalog:
                 continue
             
             # get reference image
-            reference_image = get_data(
-                file=self.reference_files[fltr],
-                gain=self.gains[self.reference_files[fltr]],
-                flat_corrector=self.flat_corrector,
-                rebin_factor=self.rebin_factor,
-                return_error=False,
-                remove_cosmic_rays=self.remove_cosmic_rays,
+            # np.asarray() to fix type error
+            reference_image = np.asarray(
+                get_data(
+                    file=self.reference_files[fltr],
+                    gain=self.gains[self.reference_files[fltr]],
+                    flat_corrector=self.flat_corrector,
+                    rebin_factor=self.rebin_factor,
+                    return_error=False,
+                    remove_cosmic_rays=self.remove_cosmic_rays,
+                    )
                 )
             
             try:
@@ -625,22 +519,24 @@ class Catalog:
             overwrite=overwrite,
             )
         
-        save_catalog(
+        plot_catalogs(
+            out_directory=self.out_directory,
             filters=list(self.camera_files.keys()),
             stacked_images=stacked_images,
             catalogs=self.catalogs,
-            out_directory=self.out_directory,
             show=self.show_plots,
+            save=True,
         )
         
-        save_backgrounds(
+        plot_backgrounds(
+            out_directory=self.out_directory,
             camera_files=self.camera_files,
             background_median=background_median,
             background_rms=background_rms,
             bmjds=self.bmjds,
             t_ref=self.t_ref,
-            out_directory=self.out_directory,
             show=show_diagnostic_plots,
+            save=True,
         )
         
         # diagnostic plots
@@ -667,7 +563,7 @@ class Catalog:
         transform_type: Literal['affine', 'translation'],
         rotation_limit: float | None,
         scale_limit: float | None,
-        translation_limit: Iterable[float] | None,
+        translation_limit: List[float] | None,
         n_alignment_sources: int,
         ) -> Tuple[
             NDArray,
@@ -692,7 +588,7 @@ class Catalog:
             The maximum rotation limit (in degrees) for image alignment.
         scale_limit : float | None
             The maximum scaling limit for image alignment.
-        translation_limit : Iterable[float] | None
+        translation_limit : List[float] | None
             The maximum translation limit for image alignment.
         n_alignment_sources : int
             The (maximum) number of sources to use for image alignment.
@@ -710,13 +606,15 @@ class Catalog:
         
         for file in batch:
             
-            data = get_data(
-                file,
-                self.gains[file],
-                flat_corrector=self.flat_corrector,
-                rebin_factor=self.rebin_factor,
-                return_error=False,
-                remove_cosmic_rays=self.remove_cosmic_rays)
+            data = np.asarray(
+                get_data(
+                    file,
+                    self.gains[file],
+                    flat_corrector=self.flat_corrector,
+                    rebin_factor=self.rebin_factor,
+                    return_error=False,
+                    remove_cosmic_rays=self.remove_cosmic_rays),
+                )
             
             # calculate and subtract background
             bkg = self.background(data)
@@ -761,7 +659,7 @@ class Catalog:
                 translation_limit=translation_limit):
                 continue
             
-            transforms[file] = transform.params.tolist()
+            transforms[file] = transform.params.tolist()  # type: ignore
             background_medians[file] = background_median
             background_rmss[file] = background_rms
             
@@ -772,7 +670,7 @@ class Catalog:
                 output_shape=reference_image_shape,
                 order=3,
                 mode='constant',
-                cval=np.nanmedian(data),
+                cval=float(np.nanmedian(data)),
                 clip=True,
                 preserve_range=True,
                 )
@@ -785,7 +683,7 @@ class Catalog:
         transform: SimilarityTransform,
         rotation_limit: float | None,
         scale_limit: float | None,
-        translation_limit: Iterable[float] | None,
+        translation_limit: List[float] | None,
         ) -> bool:
         """
         Find whether a transform is valid given some transform limits.
@@ -800,7 +698,7 @@ class Catalog:
             The rotation limit.
         scale_limit : float | None
             The scale limit.
-        translation_limit : Iterable[float] | None
+        translation_limit : List[float] | None
             The translation limit.
         
         Returns
@@ -875,6 +773,7 @@ class Catalog:
             print(f'[OPTICAM] {len(unaligned_files)} image(s) could not be aligned.')
         
         return stacked_image, background_medians, background_rmss
+
 
     def _plot_background_meshes(self, stacked_images: Dict[str, NDArray], show: bool) -> None:
         """
@@ -1292,193 +1191,45 @@ class Catalog:
         return results
 
 
-    def identify_gaps(
-        self,
-        files: List[str],
-        ) -> None:
-        """
-        Identify gaps in the observation sequence and logs them to log_dir/diag/gaps.txt.
-        
-        Parameters
-        ----------
-        files : List[str]
-            The list of files for a single filter.
-        """
-        
-        file_times = {}
-        
-        for file in tqdm(files, desc='[OPTICAM] Identifying gaps'):
-            with fits.open(file) as hdul:
-                file_times[file] = get_time(hdul[0].header, file)
-        
-        sorted_files = dict(sorted(file_times.items(), key=lambda x: x[1]))
-        times = np.array(sorted_files.values()).flatten()
-        diffs = np.diff(times)
-        median_exposure_time = np.median(diffs)
-        
-        gaps = np.where(diffs > 2 * median_exposure_time)[0]
-        
-        if len(gaps) > 0:
-            print(f'[OPTICAM] Found {len(gaps)} gaps in the observation sequence.')
-            with open(os.path.join(self.out_directory, 'diag/gaps.txt'), 'w') as file:
-                file.write(f"Median exposure time: {median_exposure_time} d\n")
-                for gap in gaps:
-                    file.write(f"Gap between {list(sorted_files.keys())[gap]} and {list(sorted_files.keys())[gap + 1]}: {diffs[gap]} d\n")
-        else:
-            print('[OPTICAM] No gaps found in the observation sequence.')
 
 
 
-
-def save_catalog(
-    filters: List[str],
-    stacked_images: Dict[str, NDArray],
-    catalogs: Dict[str, QTable],
-    out_directory: str,
-    show: bool,
+def log_reducer_params(
+    reducer: Catalog,
     ) -> None:
     
-    fig = plot_catalog(
-        filters,
-        stacked_images,
-        catalogs,
-        )[0]
+    # get parameters
+    params = dict(recursive_log(reducer, max_depth=5))
     
-    fig.savefig(os.path.join(out_directory, "cat/catalogs.png"))
+    params.update({'filters': list(reducer.camera_files.keys())})
     
-    if show:
-        plt.show(fig)
-    else:
-        fig.clear()
-        plt.close(fig)
-
-
-def save_stacked_images(
-    stacked_images: Dict[str, NDArray],
-    out_directory: str,
-    overwrite: bool,
-    ) -> None:
-    """
-    Save the stacked images to a compressed FITS file.
+    # remove some parameters that are either already saved elsewhere or are not relevant
+    params.pop('logger')
+    params.pop('bmjds')
+    params.pop('gains')
+    params.pop('camera_files')
     
-    Parameters
-    ----------
-    stacked_images : Dict[str, NDArray]
-        The stacked images (filter: stacked image).
-    """
+    try:
+        params.pop('transforms')
+    except KeyError:
+        pass
     
-    hdr = fits.Header()
-    hdr['COMMENT'] = 'This FITS file contains the stacked images for each filter.'
-    empty_primary = fits.PrimaryHDU(header=hdr)
-    hdul = fits.HDUList([empty_primary])
+    try:
+        params.pop('unaligned_files')
+    except KeyError:
+        pass
     
-    for fltr, img in stacked_images.items():
-        hdr = fits.Header()
-        hdr['FILTER'] = fltr
-        hdu = fits.ImageHDU(img, hdr)
-        hdul.append(hdu)
+    try:
+        params.pop('catalogs')
+    except KeyError:
+        pass
     
-    file_path = os.path.join(out_directory, f'cat/stacked_images.fits.gz')
+    # sort parameters
+    params = dict(sorted(params.items()))
     
-    if not os.path.isfile(file_path) or overwrite:
-        hdul.writeto(file_path, overwrite=overwrite)
-
-
-def save_backgrounds(
-    camera_files: Dict[str, str],
-    background_median: Dict[str, Dict[str, NDArray]],
-    background_rms: Dict[str, Dict[str, NDArray]],
-    bmjds: Dict[str, float],
-    t_ref: float,
-    out_directory: str,
-    show: bool,
-    ) -> None:
-    """
-    Plot the time-varying background for each camera.
-    
-    Parameters
-    ----------
-    camera_files : Dict[str, str]
-        The files for each camera {fltr: file}.
-    background_median : Dict[str, List]
-        The median background for each camera.
-    background_rms : Dict[str, List]
-        The background RMS for each camera.
-    bmjds : Dict[str, float]
-        The Barycentric MJD dates for each image {file: BMJD}.
-    t_ref : float
-        The reference BMJD.
-    out_directory : str
-        The directory to which the resulting files will be saved.
-    show: bool
-        Whether to display the plot.
-    """
-    
-    fig, axs = plt.subplots(
-        nrows=2,
-        ncols=len(camera_files),
-        tight_layout=True,
-        figsize=((2 * len(camera_files) / 3) * 6.4, 2 * 4.8),
-        sharex='col',
-        )
-    
-    # for each camera
-    for fltr in list(camera_files.keys()):
-        
-        files = camera_files[fltr]  # get files for camera
-        
-        # skip cameras with no images
-        if len(files) == 0:
-            continue
-        
-        # get values from background_median and background_rms dicts
-        backgrounds = list(background_median[fltr].values())
-        rmss = list(background_rms[fltr].values())
-        
-        # match times to background_median and background_rms keys
-        t = np.array([bmjds[file] for file in files if file in background_median[fltr]])
-        plot_times = (t - t_ref) * 86400  # convert time to seconds from first observation
-        
-        if len(camera_files) == 1:
-            axs[0].set_title(fltr)
-            axs[0].plot(plot_times, backgrounds, "k.", ms=2)
-            axs[1].plot(plot_times, rmss, "k.", ms=2)
-            
-            axs[1].set_xlabel(f"Time from BMJD {t_ref:.4f} [s]")
-            axs[0].set_ylabel("Median background RMS")
-            axs[1].set_ylabel("Median background")
-        else:
-            # plot background
-            axs[0, list(camera_files.keys()).index(fltr)].set_title(fltr)
-            axs[0, list(camera_files.keys()).index(fltr)].plot(plot_times, backgrounds, "k.", ms=2)
-            axs[1, list(camera_files.keys()).index(fltr)].plot(plot_times, rmss, "k.", ms=2)
-            
-            for col in range(len(camera_files)):
-                axs[1, col].set_xlabel(f"Time from BMJD {t_ref:.4f} [s]")
-            
-            axs[0, 0].set_ylabel("Median background")
-            axs[1, 0].set_ylabel("Median background RMS")
-        
-        # write background to file
-        pd.DataFrame({
-            'BMJD': t,
-            'RMS': backgrounds,
-            'median': rmss
-        }).to_csv(os.path.join(out_directory, f'diag/{fltr}_background.csv'), index=False)
-    
-    for ax in axs.flatten():
-        ax.minorticks_on()
-        ax.tick_params(which="both", direction="in", top=True, right=True)
-    
-    # save plot
-    fig.savefig(os.path.join(out_directory, "diag/background.png"))
-    
-    if show:
-        plt.show()
-    else:
-        fig.clear()
-        plt.close(fig)
-
+    # write parameters to file
+    with open(os.path.join(reducer.out_directory, "misc/reduction_parameters.json"), "w") as file:
+        json.dump(params, file, indent=4)
 
 
 
