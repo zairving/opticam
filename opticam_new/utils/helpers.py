@@ -1,16 +1,6 @@
-import numpy as np
-from numpy.typing import NDArray
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 import re
-from matplotlib import pyplot as plt
-from matplotlib.patches import Circle
-from astropy.visualization import simple_norm
-from matplotlib.figure import Figure
-from matplotlib.axes import Axes
-from astropy.table import QTable
-import matplotlib.colors as mcolors
 import os
-
 
 
 def camel_to_snake(
@@ -31,81 +21,6 @@ def camel_to_snake(
     """
     
     return re.sub(r'(?<!^)(?=[A-Z])', '_', string).lower()
-
-
-def plot_catalog(
-    filters: List[str],
-    stacked_images: Dict[str, NDArray],
-    catalogs: Dict[str, QTable],
-    ) -> Tuple[Figure, List[Axes]]:
-    
-    colours = list(mcolors.TABLEAU_COLORS.keys())
-    colours.pop(colours.index("tab:brown"))
-    colours.pop(colours.index("tab:gray"))
-    colours.pop(colours.index("tab:purple"))
-    colours.pop(colours.index("tab:blue"))
-    
-    fig, axes = plt.subplots(
-        ncols=len(filters),
-        tight_layout=True,
-        figsize=(
-            len(stacked_images) * 5,
-            5,
-            ),
-        )
-    
-    if len(filters) == 1:
-        axes = [axes]
-    
-    for i, fltr in enumerate(filters):
-        
-        plot_image = np.clip(stacked_images[fltr], 0, None)  # clip negative values to zero for better visualisation
-        
-        # plot stacked image
-        axes[i].imshow(
-            plot_image,
-            origin="lower",
-            cmap="Greys_r",
-            interpolation="nearest",
-            norm=simple_norm(
-                plot_image,
-                stretch="log",
-                ),
-            )
-        
-        # get aperture radius
-        radius = 5 * np.median(catalogs[fltr]["semimajor_sigma"].value)
-        
-        for j in range(len(catalogs[fltr])):
-            # label sources
-            axes[i].add_patch(
-                Circle(
-                    xy=(
-                        catalogs[fltr]["xcentroid"][j],
-                        catalogs[fltr]["ycentroid"][j],
-                        ),
-                    radius=radius,
-                    edgecolor=colours[j % len(colours)],
-                    facecolor="none",
-                    lw=1,
-                    ),
-                )
-            axes[i].text(
-                catalogs[fltr]["xcentroid"][j] + 1.05 * radius,
-                catalogs[fltr]["ycentroid"][j] + 1.05 * radius,
-                j + 1,  # source number
-                color=colours[j % len(colours)],
-                )
-            
-            # label plot
-            axes[i].set_title(fltr)
-            axes[i].set_xlabel("X")
-            
-            if i > 0:
-                axes[i].set_ylabel("Y")
-    
-    return fig, axes
-
 
 
 def sort_filters(
