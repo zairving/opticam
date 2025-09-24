@@ -9,3 +9,6 @@ from opticam_new.reduction.correctors import FlatFieldCorrector
 from opticam_new.analysis.analyzer import Analyzer
 from opticam_new.utils.generate import generate_flats, generate_observations, generate_gappy_observations
 from opticam_new.utils.data_checks import check_data
+
+import warnings
+warnings.warn('[OPTICAM] from version 0.3.0, `opticam_new` will be renamed to `opticam`.')
