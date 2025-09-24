@@ -4,7 +4,7 @@ import numpy as np
 from numpy.typing import NDArray
 from typing import Dict, List
 
-from opticam_new.utils.helpers import log_binnings, log_filters
+from opticam_new.utils.logging import log_binnings, log_filters
 
 class FlatFieldCorrector:
     """
