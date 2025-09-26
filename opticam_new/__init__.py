@@ -1,11 +1,11 @@
 
-from opticam_new.reduction.background import DefaultBackground
-from opticam_new.reduction.finder import DefaultFinder
-from opticam_new.reduction.catalog import Catalog
+from opticam_new.background.global_background import BaseBackground, DefaultBackground
+from opticam_new.background.local_background import BaseLocalBackground, DefaultLocalBackground
+from opticam_new.finders import DefaultFinder
+from opticam_new.catalog import Catalog
 from opticam_new.analysis.differential_photometer import DifferentialPhotometer
-from opticam_new.reduction.photometers import SimplePhotometer, OptimalPhotometer
-from opticam_new.reduction.local_background import DefaultLocalBackground
-from opticam_new.reduction.correctors import FlatFieldCorrector
+from opticam_new.photometers import SimplePhotometer, OptimalPhotometer
+from opticam_new.correctors.flat_field_corrector import FlatFieldCorrector
 from opticam_new.analysis.analyzer import Analyzer
 from opticam_new.utils.generate import generate_flats, generate_observations, generate_gappy_observations
 from opticam_new.utils.data_checks import check_data

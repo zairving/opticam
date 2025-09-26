@@ -10,7 +10,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 import os.path
 
-from opticam_new.reduction.correctors import FlatFieldCorrector
+from opticam_new.correctors.flat_field_corrector import FlatFieldCorrector
 from opticam_new.utils.time_helpers import apply_barycentric_correction
 from opticam_new.utils.image_helpers import rebin_image
 
@@ -214,3 +214,31 @@ def save_stacked_images(
     
     if not os.path.isfile(file_path) or overwrite:
         hdul.writeto(file_path, overwrite=overwrite)
+
+
+def get_stacked_images(
+    out_directory: str,
+    ) -> Dict[str, NDArray]:
+    """
+    Unpacked the stacked catalog images from out_directory/cat.
+    
+    Parameters
+    ----------
+    out_directory : str
+        The directory path to the reduction output.
+    
+    Returns
+    -------
+    Dict[str, NDArray]
+        The stacked images {filter: image}.
+    """
+    
+    stacked_images = {}
+    with fits.open(os.path.join(out_directory, 'cat/stacked_images.fits.gz')) as hdul:
+        for hdu in hdul:
+            if 'FILTER' not in hdu.header:
+                continue
+            fltr = hdu.header['FILTER']
+            stacked_images[fltr] = np.asarray(hdu.data)
+    
+    return stacked_images
