@@ -1,0 +1,102 @@
+import numpy as np
+from numpy.typing import NDArray
+from photutils.background import Background2D
+from photutils.segmentation import SourceCatalog, SourceFinder, SegmentationImage
+
+from opticam_new.background.global_background import BaseBackground
+
+
+class DefaultFinder:
+    """
+    Default source finder. Combines image segmentation with source deblending.
+    """
+    
+    def __init__(
+        self,
+        npixels: int,
+        border_width: int = 0,
+        ):
+        """
+        Default source finder. Combines image segmentation with source deblending.
+        
+        Parameters
+        ----------
+        npixels : int
+            The minimum number of connected source pixels.
+        border_width : int, optional
+            Sources within this many pixels of the border will be ignored, by default 0 (no sources are ignored).
+        """
+        
+        assert type(npixels) is int and npixels > 0, '[OPTICAM] npixels must be a positive integer.'
+        
+        self.border_width = border_width
+        self.finder = SourceFinder(npixels=npixels, progress_bar=False)
+    
+    def __call__(
+        self,
+        data: NDArray,
+        threshold: float | NDArray,
+        ) -> SegmentationImage:
+        
+        segment_map = self.finder(data, threshold)
+        
+        if self.border_width > 0:
+            segment_map.remove_border_labels(border_width=self.border_width, relabel=True)
+        
+        return segment_map
+
+
+def get_source_coords_from_image(
+    image: NDArray,
+    finder: DefaultFinder,
+    threshold: float | int,
+    bkg: Background2D | None = None,
+    away_from_edge: bool | None = False,
+    n_sources: int | None = None,
+    background: BaseBackground | None = None,
+    ) -> NDArray:
+    """
+    Get an array of source coordinates from an image in descending order of source brightness.
+    
+    Parameters
+    ----------
+    image : NDArray
+        The **non-background-subtracted** image from which to extract source coordinates.
+    bkg : Background2D, optional
+        The background of the image, by default None. If None, the background is estimated from the image.
+    away_from_edge : bool, optional
+        Whether to exclude sources near the edge of the image, by default False.
+    n_sources : int, optional
+        The number of source coordinates to return, by default `None` (all sources will be returned).
+    
+    Returns
+    -------
+    NDArray
+        The source coordinates in descending order of brightness.
+    """
+    
+    if bkg is None and background is not None:
+        bkg = background(image)  # get background
+    elif bkg is None and background is None:
+        raise ValueError('[OPTICAM] get_source_coords_from_image() requires either bkg or background be specified.')
+    
+    image_clean = image - bkg.background  # remove background from image
+    
+    cat = finder(image_clean, threshold*bkg.background_rms)  # find sources in background-subtracted image
+    tbl = SourceCatalog(image_clean, cat, background=bkg.background).to_table()  # create catalog of sources
+    tbl.sort('segment_flux', reverse=True)  # sort catalog by flux in descending order
+    
+    coords = np.array([tbl["xcentroid"], tbl["ycentroid"]]).T
+    
+    if away_from_edge:
+        edge = background.box_size
+        for coord in coords:
+            if coord[0] < edge or coord[0] > image.shape[1] - edge or coord[1] < edge or coord[1] > image.shape[0] - edge:
+                coords = np.delete(coords, np.where(np.all(coords == coord, axis=1)), axis=0)
+    
+    if n_sources is not None:
+        coords = coords[:n_sources]
+    
+    return coords
+
+

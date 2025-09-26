@@ -1,11 +1,18 @@
-import numpy as np
-from typing import Callable, Dict, List, Tuple
-from numpy.typing import NDArray
 from abc import ABC, abstractmethod
-from photutils.aperture import aperture_photometry, EllipticalAperture
+from logging import Logger
+from typing import Callable, Dict, List, Tuple
 
-from opticam_new.reduction.local_background import BaseLocalBackground
+import numpy as np
+from numpy.typing import NDArray
+from photutils.aperture import aperture_photometry, EllipticalAperture
+from photutils.segmentation import SourceCatalog, detect_threshold
+
+from opticam_new.background.global_background import BaseBackground
+from opticam_new.background.local_background import BaseLocalBackground
+from opticam_new.correctors.flat_field_corrector import FlatFieldCorrector
+from opticam_new.finders import DefaultFinder
 from opticam_new.utils.constants import fwhm_scale
+from opticam_new.utils.fits_handlers import get_data
 
 
 class BasePhotometer(ABC):
@@ -558,3 +565,72 @@ class OptimalPhotometer(SimplePhotometer):
             local_background_errors = total_bkg_error
             
             return flux, flux_error, local_background, local_background_errors
+
+
+
+
+def perform_photometry(
+    file: str,
+    photometer: BasePhotometer,
+    source_coords: NDArray,
+    gains: Dict[str, float],
+    bmjds: Dict[str, float],
+    flat_corrector: FlatFieldCorrector | None,
+    rebin_factor: int,
+    remove_cosmic_rays: bool,
+    background: BaseBackground,
+    threshold: float,
+    finder: DefaultFinder,
+    psf_params: Dict[str, Dict[str, float]],
+    fltr: str,
+    logger: Logger,
+    ) -> Dict[str, List]:
+    
+    image, error = get_data(
+        file=file,
+        gain=gains[file],
+        flat_corrector=flat_corrector,
+        rebin_factor=rebin_factor,
+        return_error=True,
+        remove_cosmic_rays=remove_cosmic_rays,
+        )
+    
+    if photometer.local_background_estimator is None:
+        bkg = background(image)  # get 2D background
+        image = image - bkg.background  # remove background from image
+        error = np.sqrt(error**2 + bkg.background_rms**2)  # propagate error
+        threshold = threshold * bkg.background_rms  # define source detection threshold
+    else:
+        # estimate source detection threshold from noisy image
+        threshold = detect_threshold(image, threshold, error=error)  # type: ignore
+    
+    image_coords = None  # assume no image coordinates by default
+    if photometer.match_sources:
+        try:
+            segm = finder(image, threshold)
+            tbl = SourceCatalog(image, segm).to_table()
+            image_coords = np.array([tbl["xcentroid"].value,
+                                    tbl["ycentroid"].value]).T
+        except Exception as e:
+            logger.warning(f"[OPTICAM] Could not determine source coordinates in {file}: {e}")
+    
+    results = photometer.compute(image, error, source_coords, image_coords, psf_params[fltr])
+    
+    assert 'flux' in results, f"[OPTICAM] Photometer {photometer.__class__.__name__}'s compute method must return a 'flux' key."
+    assert 'flux_err' in results, f"[OPTICAM] Photometer {photometer.__class__.__name__}'s compute method must return a 'flux_err' key."
+    
+    # results check
+    for key, values in results.items():
+        for i, value in enumerate(values):
+            if value is None:
+                logger.warning(f"[OPTICAM] {key} could not be determined for source {i + 1} in {fltr} (got value {value}).")
+    
+    # add time stamp
+    results['BMJD'] = bmjds[file]  # add time of observation
+    
+    return results
+
+
+
+
+

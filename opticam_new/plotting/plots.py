@@ -2,7 +2,6 @@ from typing import Dict, List
 
 from astropy.table import QTable
 from astropy.visualization import simple_norm
-import matplotlib.colors as mcolors
 from matplotlib.patches import Circle
 from matplotlib import pyplot as plt
 import numpy as np
@@ -10,10 +9,12 @@ from numpy.typing import NDArray
 import os.path
 from pandas import DataFrame
 
+from opticam_new.background.global_background import BaseBackground
+from opticam_new.utils.constants import catalog_colors
+
 
 def plot_catalogs(
     out_directory: str,
-    filters: List[str],
     stacked_images: Dict[str, NDArray],
     catalogs: Dict[str, QTable],
     show: bool,
@@ -36,14 +37,8 @@ def plot_catalogs(
         Whether to save the plot.
     """
     
-    colours = list(mcolors.TABLEAU_COLORS.keys())
-    colours.pop(colours.index("tab:brown"))
-    colours.pop(colours.index("tab:gray"))
-    colours.pop(colours.index("tab:purple"))
-    colours.pop(colours.index("tab:blue"))
-    
     fig, axes = plt.subplots(
-        ncols=len(filters),
+        ncols=len(stacked_images),
         tight_layout=True,
         figsize=(
             len(stacked_images) * 5,
@@ -51,10 +46,10 @@ def plot_catalogs(
             ),
         )
     
-    if len(filters) == 1:
+    if len(stacked_images) == 1:
         axes = [axes]
     
-    for i, fltr in enumerate(filters):
+    for i, fltr in enumerate(stacked_images):
         
         plot_image = np.clip(stacked_images[fltr], 0, None)  # clip negative values to zero for better visualisation
         
@@ -82,7 +77,7 @@ def plot_catalogs(
                         catalogs[fltr]["ycentroid"][j],
                         ),
                     radius=radius,
-                    edgecolor=colours[j % len(colours)],
+                    edgecolor=catalog_colors[j % len(catalog_colors)],
                     facecolor="none",
                     lw=1,
                     ),
@@ -91,7 +86,7 @@ def plot_catalogs(
                 catalogs[fltr]["xcentroid"][j] + 1.05 * radius,
                 catalogs[fltr]["ycentroid"][j] + 1.05 * radius,
                 j + 1,  # source number
-                color=colours[j % len(colours)],
+                color=catalog_colors[j % len(catalog_colors)],
                 )
             
             # label plot
@@ -294,6 +289,57 @@ def plot_backgrounds(
     
     if show:
         plt.show()
+    else:
+        fig.clear()
+        plt.close(fig)
+
+
+def plot_background_meshes(
+    out_directory: str,
+    filters: List[str],
+    stacked_images: Dict[str, NDArray],
+    background: BaseBackground,
+    show: bool,
+    save: bool,
+    ) -> None:
+    """
+    Plot the background meshes on top of the catalog images.
+    
+    Parameters
+    ----------
+    stacked_images : Dict[str, NDArray]
+        The stacked images for each camera.
+    show : bool
+        Whether to display the plot.
+    """
+    
+    ncols = len(filters)
+    fig, axes = plt.subplots(ncols=ncols, tight_layout=True, figsize=(ncols * 5, 5))
+    
+    if ncols == 1:
+        # convert axes to list
+        axes = [axes]
+    
+    for i, fltr in enumerate(filters):
+        
+        plot_image = np.clip(stacked_images[fltr], 0, None)
+        bkg = background(stacked_images[fltr])
+        
+        # plot background mesh
+        axes[i].imshow(plot_image, origin="lower", cmap="Greys_r", interpolation="nearest",
+                        norm=simple_norm(plot_image, stretch="log"))
+        bkg.plot_meshes(ax=axes[i], outlines=True, marker='.', color='cyan', alpha=0.3)
+        
+        #label plot
+        axes[i].set_title(fltr)
+        axes[i].set_xlabel("X")
+        axes[i].set_ylabel("Y")
+    
+    if save:
+        fig.savefig(os.path.join(out_directory, "diag/background_meshes.png"))
+    
+    if show:
+        plt.show(fig)
     else:
         fig.clear()
         plt.close(fig)
