@@ -15,21 +15,21 @@ from opticam_new.utils.fits_handlers import get_data
 
 
 def find_translation(
-    coords: NDArray,
-    reference_coords: NDArray
+    reference_coords: NDArray,
+    coords: NDArray
     ) -> SimilarityTransform:
     """
-    Find the translation that maps `coords` onto `reference_coords`. An advantage of this over
-    `astroalign.find_transform()` is that it requires fewer sources, however it is therefore more prone to mistakes. In
+    Find the translation that maps `reference_coords` onto `coords`. An advantage of this over
+    `astroalign.find_transform()` is that it requires fewer sources, however it is therefore more prone to errors. In
     general, `astroalign.find_transform()` should be used, but `find_translation()` is available if there are too few
     sources for `astroalign.find_transform()`.
     
     Parameters
     ----------
-    coords : NDArray
-        The source coordinates.
     reference_coords : NDArray
         The reference source coordinates.
+    coords : NDArray
+        The source coordinates.
     
     Returns
     -------
@@ -126,7 +126,7 @@ def align_batch(
             continue
         
         if len(coords) < len(reference_coords):
-            logger.info(f'[OPTICAM] n_alignment_sources={len(reference_coords)} but only {len(reference_coords)} sources detected in {file}. Skipping.')
+            logger.info(f'[OPTICAM] n_alignment_sources={len(reference_coords)} but only {len(coords)} sources detected in {file}. Skipping.')
             continue
         
         if transform_type == 'translation':
@@ -139,8 +139,8 @@ def align_batch(
             # find affine transformation using astroalign
             try:
                 transform = find_transform(
-                    coords,
                     reference_coords,
+                    coords,
                     max_control_points=n_alignment_sources,
                     )[0]
             except Exception as e:
@@ -165,7 +165,7 @@ def align_batch(
         # transform and stack image
         stacked_image += warp(
             data - bkg.background,
-            transform.inverse,
+            transform,
             output_shape=reference_image_shape,
             order=3,
             mode='constant',
