@@ -12,7 +12,8 @@ from astropy.io import fits
 from astroalign import find_transform
 
 from opticam_new.analysis.analyzer import Analyzer
-from opticam_new.utils.helpers import plot_catalog
+from opticam_new.utils.fits_handlers import get_stacked_images
+from opticam_new.plotting.plots import plot_catalogs
 from opticam_new.utils.time_helpers import infer_gtis
 
 
@@ -52,7 +53,7 @@ class DifferentialPhotometer:
         
         ########################################### attributes ###########################################
         
-        with open(os.path.join(self.out_directory, 'misc/input_parameters.json'), 'r') as file:
+        with open(os.path.join(self.out_directory, 'misc/reduction_parameters.json'), 'r') as file:
             input_parameters = json.load(file)
         self.filters = input_parameters['filters']
         self.t_ref = input_parameters['t_ref']
@@ -80,18 +81,14 @@ class DifferentialPhotometer:
         ########################################### plot catalogs ###########################################
         
         if show_plots:
-            stacked_images = {}
-            with fits.open(os.path.join(self.out_directory, 'cat/stacked_images.fits.gz')) as hdul:
-                for hdu in hdul:
-                    if 'FILTER' not in hdu.header:
-                        continue
-                    fltr = hdu.header['FILTER']
-                    stacked_images[fltr] = np.asarray(hdu.data)
+            stacked_images = get_stacked_images(self.out_directory)
             
-            fig, ax = plot_catalog(
-                self.filters,
-                stacked_images,
-                self.catalogs,
+            plot_catalogs(
+                out_directory=self.out_directory,
+                stacked_images=stacked_images,
+                catalogs=self.catalogs,
+                show=show_plots,
+                save=False,
                 )
             
             plt.show()

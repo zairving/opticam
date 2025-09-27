@@ -1,16 +1,18 @@
-from photutils.background import Background2D
+from abc import ABC, abstractmethod
 from typing import Tuple
+
 from numpy.typing import NDArray
+from photutils.background import Background2D
 
 
-class DefaultBackground:
+class BaseBackground(ABC):
     """
-    Default background estimator.
+    Base class for OPTICAM background estimators.
     """
     
     def __init__(self, box_size: int | Tuple[int, int]):
         """
-        Default background estimator.
+        Initialize a background estimator.
         
         Parameters
         ----------
@@ -25,19 +27,46 @@ class DefaultBackground:
         
         self.box_size = box_size
     
-    def __call__(self, data: NDArray) -> Background2D:
+    @abstractmethod
+    def __call__(self, image: NDArray) -> Background2D:
         """
         Compute the 2D background for an image.
         
         Parameters
         ----------
-        data : NDArray
-            Image data.
+        image : NDArray
+            The image.
         
         Returns
         -------
         Background2D
-            2D background.
+            The two-dimensional background.
         """
         
-        return Background2D(data, self.box_size)
+        pass
+
+
+class DefaultBackground(BaseBackground):
+    """
+    Default background estimator.
+    """
+    
+    def __call__(
+        self,
+        image: NDArray,
+        ) -> Background2D:
+        """
+        Compute the 2D background for an image.
+        
+        Parameters
+        ----------
+        image : NDArray
+            The image.
+        
+        Returns
+        -------
+        Background2D
+            The two-dimensional background.
+        """
+        
+        return Background2D(image, box_size=self.box_size)

@@ -1,3 +1,4 @@
+import matplotlib.colors as mcolors
 import numpy as np
 
 # custom tqdm progress bar format
@@ -33,3 +34,10 @@ colors = {
 
 # stdev -> FWHM scale factor
 fwhm_scale = 2 * np.sqrt(2 * np.log(2))
+
+# colors for catalog source markers
+catalog_colors = list(mcolors.TABLEAU_COLORS.keys())
+catalog_colors.pop(catalog_colors.index("tab:brown"))
+catalog_colors.pop(catalog_colors.index("tab:gray"))
+catalog_colors.pop(catalog_colors.index("tab:purple"))
+catalog_colors.pop(catalog_colors.index("tab:blue"))

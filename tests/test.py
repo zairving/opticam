@@ -5,9 +5,9 @@ import os
 import tempfile
 from astropy.io import fits
 
-from opticam_new.reduction.background import DefaultBackground
-from opticam_new.reduction.local_background import DefaultLocalBackground
-from opticam_new.reduction.finder import DefaultFinder
+from opticam_new.background.global_background import DefaultBackground
+from opticam_new.background.local_background import DefaultLocalBackground
+from opticam_new.finders import DefaultFinder
 from opticam_new.utils.generate import generate_flats, generate_gappy_observations, generate_observations
 
 
