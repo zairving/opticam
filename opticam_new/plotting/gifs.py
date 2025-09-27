@@ -23,7 +23,7 @@ def create_gif_frame(
     catalog: QTable,
     fltr: str,
     gains: Dict[str, float],
-    transforms: Dict[str, SimilarityTransform],
+    transforms: Dict[str, List[float]],
     reference_file: str,
     flat_corrector: FlatFieldCorrector | None,
     rebin_factor: int,
@@ -63,13 +63,12 @@ def create_gif_frame(
         if file == reference_file:
             aperture_position = source_position
             ax.set_title(f'{file_name} (reference)', color='blue')
+        elif file in transforms:
+            aperture_position = matrix_transform(source_position, transforms[file])[0]
+            ax.set_title(f'{file_name} (aligned)', color='black')
         else:
-            try:
-                aperture_position = matrix_transform(source_position, transforms[file])[0]
-                ax.set_title(f'{file_name} (aligned)', color='black')
-            except:
-                aperture_position = source_position
-                ax.set_title(f'{file_name} (unaligned)', color='red')
+            aperture_position = source_position
+            ax.set_title(f'{file_name} (unaligned)', color='red')
         
         radius = 5 * aperture_selector(catalog["semimajor_sigma"].value)
         
