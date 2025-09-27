@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from logging import Logger
 from typing import Callable, Dict, List, Tuple
+import warnings
 
 import numpy as np
 from numpy.typing import NDArray
@@ -44,6 +45,8 @@ class BasePhotometer(ABC):
             The local background estimator to use, by default `None`. If `None`, the catalogue's 2D background estimator
             is used. If not `None`, this will be used instead of the catalogue's 2D background estimator.
         """
+        
+        warnings.warn('[OPTICAM] from version 0.3.0, "match_sources" will be renamed to "forced". "forced=False" will function the same as "match_sources=True".')
         
         self.match_sources = match_sources
         self.source_matching_tolerance = source_matching_tolerance
