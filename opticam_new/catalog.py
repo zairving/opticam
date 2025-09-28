@@ -49,7 +49,7 @@ class Catalog:
         finder: None | Callable = None,
         threshold: float = 5,
         aperture_selector: Callable = np.median,
-        remove_cosmic_rays: bool = True,
+        remove_cosmic_rays: bool = False,
         number_of_processors: int = cpu_count() // 2,
         show_plots: bool = True,
         verbose: bool = True
@@ -95,9 +95,9 @@ class Catalog:
             photometry. If a callable is provided, it should take a list of source sizes (`List[float]`) as input and
             return a single value.
         remove_cosmic_rays: bool, optional
-            Whether to remove cosmic rays from images, by default True. Cosmic rays are removed using the LACosmic
+            Whether to remove cosmic rays from images, by default False. Cosmic rays are removed using the LACosmic
             algorithm as implemented in `astroscrappy`. Note: this can be computationally expensive, particularly for
-            large images (i.e., low binning factors).
+            large images.
         number_of_processors: int, optional
             The number of processors to use for parallel processing, by default half the number of available processors.
         show_plots: bool, optional
@@ -398,7 +398,6 @@ class Catalog:
                 reference_coords = self.get_source_coords_from_image(
                     reference_image,
                     background=self.background,
-                    away_from_edge=True,
                     n_sources=n_alignment_sources,
                     )
             except Exception as e:
