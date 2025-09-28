@@ -51,7 +51,6 @@ def get_source_coords_from_image(
     finder: DefaultFinder,
     threshold: float | int,
     bkg: Background2D | None = None,
-    away_from_edge: bool | None = False,
     n_sources: int | None = None,
     background: BaseBackground | None = None,
     ) -> NDArray:
@@ -64,8 +63,6 @@ def get_source_coords_from_image(
         The **non-background-subtracted** image from which to extract source coordinates.
     bkg : Background2D, optional
         The background of the image, by default None. If None, the background is estimated from the image.
-    away_from_edge : bool, optional
-        Whether to exclude sources near the edge of the image, by default False.
     n_sources : int, optional
         The number of source coordinates to return, by default `None` (all sources will be returned).
     
@@ -87,12 +84,6 @@ def get_source_coords_from_image(
     tbl.sort('segment_flux', reverse=True)  # sort catalog by flux in descending order
     
     coords = np.array([tbl["xcentroid"], tbl["ycentroid"]]).T
-    
-    if away_from_edge:
-        edge = background.box_size
-        for coord in coords:
-            if coord[0] < edge or coord[0] > image.shape[1] - edge or coord[1] < edge or coord[1] > image.shape[0] - edge:
-                coords = np.delete(coords, np.where(np.all(coords == coord, axis=1)), axis=0)
     
     if n_sources is not None:
         coords = coords[:n_sources]
