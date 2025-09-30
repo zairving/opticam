@@ -7,7 +7,7 @@ A Python package for reducing OPTICAM data.
    :maxdepth: 3
    :caption: Contents:
 
-   tutorials/basic_usage
+   tutorials/reduction
    tutorials/applying_corrections
    tutorials/backgrounds
    tutorials/local_backgrounds
