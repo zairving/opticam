@@ -452,7 +452,7 @@ def generate_gappy_observations(
         
         # randomly skip some images to create gaps
         if rng.random() < gap_probability:
-            # if an image is skipped, increase the probability of skipping the next one to creaate larger gaps
+            # if an image is skipped, increase the probability of skipping the next one to create larger gaps
             gap_probability = .95
             continue
         else:

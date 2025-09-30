@@ -486,6 +486,11 @@ class Analyzer:
             
             lc = self._convert_lc_time_to_seconds(self.light_curves[fltr])
             
+            dt = np.diff(lc.time)
+            if not np.allclose(dt, dt[0]):
+                print(f'[OPTICAM] Unable to compute periodogram for {fltr} light curve due to gaps. Consider using either the compute_lomb_scargle_periodograms() or compute_averaged_power_spectra() methods instead.')
+                continue
+            
             ps = Powerspectrum.from_lightcurve(
                 lc,
                 norm=norm,
@@ -494,7 +499,7 @@ class Analyzer:
             
             results[fltr] = ps
         
-        if self.show_plots:
+        if self.show_plots and len(results) > 0:
             fig = _plot(results, scale)
             fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_periodograms.png')
             plt.show()
@@ -645,22 +650,18 @@ class Analyzer:
             of filter names and the values are the cross-spectra.
         """
         
-        segment_size = segment_size.to(u.day).value  # convert from given units to days
+        segment_size = segment_size.to_value(u.s)  # convert from given units to seconds
         
         results = {}
         
         for fltr1, lc1 in self.light_curves.items():
             for fltr2, lc2 in self.light_curves.items():
-                if fltr1 == fltr2:
+                if fltr1 == fltr2 or (fltr1, fltr2) in results or (fltr2, fltr1) in results:
                     continue
                 
-                # convert light curves from days to seconds
-                lc1 = self._convert_lc_time_to_seconds(lc1)
-                lc2 = self._convert_lc_time_to_seconds(lc2)
-                
                 cs = AveragedCrossspectrum.from_lightcurve(
-                    lc1,
-                    lc2,
+                    self._convert_lc_time_to_seconds(lc1),
+                    self._convert_lc_time_to_seconds(lc2),
                     segment_size=segment_size,
                     norm=norm,
                     silent=True,
@@ -852,10 +853,15 @@ def _plot(
             x_label = 'Time lag [s]'
             y_label = 'Correlation'
         
+        if key in colors:
+            color = colors[key]
+        else:
+            color = 'k'
+        
         axes[i].step(
             x,
             y,
-            color='k',
+            color=color,
             lw=1,
             where='mid',
         )

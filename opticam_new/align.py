@@ -169,7 +169,7 @@ def align_batch(
             output_shape=reference_image_shape,
             order=3,
             mode='constant',
-            cval=float(np.nanmedian(data)),
+            cval=0.,
             clip=True,
             preserve_range=True,
             )
