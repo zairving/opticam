@@ -28,8 +28,8 @@ pip install .
 
 ### Requirements
 
-All of `opticam_new`'s dependencies are available as Python packages via your preferred package manager, and should be handled automatically via `pip`. However, in the unlikely event that the `pip` installation breaks any dependencies, a full copy of the environment I use for development is available as a [dependencies.yml](dependencies.yml) file.
+All of `opticam_new`'s dependencies are available as Python packages via your preferred package manager, and should be handled automatically via `pip`. If you would prefer to install the dependencies using conda, you can should use provided [YAML file](environment.yml) to create your environment before `pip`-installing `opticam_new`.
 
 ## Getting Started
 
-Documentation for `opticam_new` is available on [Read the Docs](https://opticam-new.readthedocs.io/en/latest/index.html). To get started, I recommend checking out the [basic usage](https://opticam-new.readthedocs.io/en/latest/tutorials/reduction.html) tutorial.
+Documentation for `opticam_new` is available on [Read the Docs](https://opticam-new.readthedocs.io/en/latest/index.html). To get started, I recommend checking out the [reduction tutorial](https://opticam-new.readthedocs.io/en/latest/tutorials/reduction.html).
