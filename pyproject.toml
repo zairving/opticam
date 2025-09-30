@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "opticam_new"
-version = "0.2.2"
+version = "0.2.3"
 description = "A Python package for reducing OPTICAM data."
 readme = "README.md"
 authors = [
