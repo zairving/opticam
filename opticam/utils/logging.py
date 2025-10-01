@@ -1,4 +1,5 @@
 import json
+import os
 from types import FunctionType
 from typing import Any, List
 
@@ -30,8 +31,12 @@ def log_binnings(
         else:
             file_binnings[binning] = [file]
     
-    with open(out_directory + "diag/binnings.json", "w") as f:
-        json.dump(file_binnings, f, indent=4)
+    path = os.path.join(out_directory, 'diag/binnings.json')
+    if not os.path.isdir(path):
+        os.makedirs(path, exist_ok=True)
+    
+    with open(path, "w") as json_file:
+        json.dump(file_binnings, json_file, indent=4)
 
 
 def log_filters(
@@ -59,8 +64,12 @@ def log_filters(
         else:
             file_filters[fltr] = [file]
     
-    with open(out_directory + "diag/filters.json", "w") as f:
-        json.dump(file_filters, f, indent=4)
+    path = os.path.join(out_directory, 'diag/filters.json')
+    if not os.path.isdir(path):
+        os.makedirs(path, exist_ok=True)
+    
+    with open(path, "w") as json_file:
+        json.dump(file_filters, json_file, indent=4)
 
 
 def recursive_log(param: Any, depth: int = 0, max_depth: int = 5) -> Any:

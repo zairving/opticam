@@ -10,9 +10,9 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 import os.path
 
-from opticam_new.correctors.flat_field_corrector import FlatFieldCorrector
-from opticam_new.utils.time_helpers import apply_barycentric_correction
-from opticam_new.utils.image_helpers import rebin_image
+from opticam.correctors.flat_field_corrector import FlatFieldCorrector
+from opticam.utils.time_helpers import apply_barycentric_correction
+from opticam.utils.image_helpers import rebin_image
 
 
 def get_header_info(

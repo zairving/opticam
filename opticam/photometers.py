@@ -8,12 +8,12 @@ from numpy.typing import NDArray
 from photutils.aperture import aperture_photometry, EllipticalAperture
 from photutils.segmentation import SourceCatalog, detect_threshold
 
-from opticam_new.background.global_background import BaseBackground
-from opticam_new.background.local_background import BaseLocalBackground
-from opticam_new.correctors.flat_field_corrector import FlatFieldCorrector
-from opticam_new.finders import DefaultFinder
-from opticam_new.utils.constants import fwhm_scale
-from opticam_new.utils.fits_handlers import get_data
+from opticam.background.global_background import BaseBackground
+from opticam.background.local_background import BaseLocalBackground
+from opticam.correctors.flat_field_corrector import FlatFieldCorrector
+from opticam.finders import DefaultFinder
+from opticam.utils.constants import fwhm_scale
+from opticam.utils.fits_handlers import get_data
 
 
 class BasePhotometer(ABC):

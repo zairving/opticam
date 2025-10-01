@@ -1,23 +1,23 @@
-import numpy as np
-import matplotlib.pyplot as plt
-from typing import Dict, Literal, Tuple
-from numpy.typing import NDArray
+import copy
 import os
+from typing import Dict, Literal, Tuple
+
 import astropy.units as u
 from astropy.units.quantity import Quantity
-from stingray import Lightcurve
+import numpy as np
+from numpy.typing import NDArray
 from matplotlib.figure import Figure
-import copy
+import matplotlib.pyplot as plt
+from pandas import DataFrame
 from stingray import AveragedPowerspectrum, Powerspectrum
 from stingray import AveragedCrossspectrum, Crossspectrum
-from stingray.lombscargle import LombScarglePowerspectrum
 from stingray import CrossCorrelation
-from pandas import DataFrame
+from stingray import Lightcurve
+from stingray.lombscargle import LombScarglePowerspectrum
 
-
-from opticam_new.utils.helpers import sort_filters
-from opticam_new.utils.time_helpers import infer_gtis
-from opticam_new.utils.constants import colors
+from opticam.utils.helpers import sort_filters
+from opticam.utils.time_helpers import infer_gtis
+from opticam.utils.constants import colors
 
 
 class Analyzer:
@@ -53,7 +53,7 @@ class Analyzer:
             Whether to render and show plots, by default `True`.
         """
         
-        self.light_curves = self._validate_light_curves(light_curves)
+        self.light_curves = validate_light_curves(light_curves)
         
         self.out_directory = out_directory
         if not os.path.isdir(out_directory):
@@ -71,63 +71,7 @@ class Analyzer:
                 os.makedirs(os.path.join(self.out_directory, 'plots'))
         
         if len(self.light_curves) > 0:
-            self.t_ref = float(min([np.min(lc.time) for lc in self.light_curves.values()]))
-
-    @staticmethod
-    def _validate_light_curves(
-        light_curves: Dict[str, Lightcurve | DataFrame] | None,
-        ) -> Dict[str, Lightcurve]:
-        """
-        Validate the light curves by converting DataFrames to Lightcurve objects and inferring GTIs.
-        
-        Parameters
-        ----------
-        light_curves : Dict[str, Lightcurve | DataFrame] | None
-            The light curves to validate, where the keys are the filter names and the values are either Lightcurve
-            objects or DataFrames containing 'BMJD', 'rel_flux', and 'rel_flux_err' columns. If `None`, an empty
-            dictionary will be returned.
-        
-        Returns
-        -------
-        Dict[str, Lightcurve]
-            If `light_curves` is `None`, returns an empty dictionary. Otherwise, returns a dictionary containing the 
-            validated light curves, where the keys are the filter names and the values are Lightcurve objects.
-        """
-        
-        validated_light_curves = {}
-        
-        if light_curves:
-            for fltr in light_curves.keys():
-                if isinstance(light_curves[fltr], DataFrame):
-                    time = np.asarray(light_curves[fltr]['BMJD'].values)
-                    counts = np.asarray(light_curves[fltr]['rel_flux'].values)
-                    counts_err = np.asarray(light_curves[fltr]['rel_flux_err'].values)
-                    
-                    # infer GTIs
-                    gtis = infer_gtis(time, threshold=1.5)
-                elif isinstance(light_curves[fltr], Lightcurve):
-                    time = np.asarray(light_curves[fltr].time)
-                    counts = np.asarray(light_curves[fltr].counts)
-                    counts_err = np.asarray(light_curves[fltr].counts_err)
-                    gtis = light_curves[fltr].gti
-                else:
-                    raise TypeError(f'[OPTICAM] Light curve for filter {fltr} must be either a DataFrame or a Lightcurve object, but got {type(light_curves[fltr])}.')
-                
-                # normalise flux
-                mean_flux = np.mean(counts)
-                counts /= mean_flux
-                counts_err /= mean_flux
-                
-                # convert DataFrame to Lightcurve
-                validated_light_curves[fltr] = Lightcurve(
-                    time,
-                    counts,
-                    err=counts_err,
-                    gti=gtis,
-                    err_dist='gauss',
-                    )
-        
-        return sort_filters(validated_light_curves)
+            self.t_ref = float(min([np.min(np.asarray(lc.time)) for lc in self.light_curves.values()]))
 
 
     def join(
@@ -164,15 +108,17 @@ class Analyzer:
         
         return Analyzer(
             out_directory=self.out_directory,
-            light_curves=new_light_curves,
+            light_curves=new_light_curves,  # type: ignore
             prefix=self.prefix,
             phot_label=self.phot_label,
             show_plots=self.show_plots,
         )
 
+
     def rebin_light_curves(
         self,
         dt: Quantity,
+        method: Literal['mean', 'sum'] = 'mean',
         ) -> None:
         """
         Rebin the light curves to a desired time resolution using `stingray.Lightcurve.rebin()`.
@@ -182,43 +128,15 @@ class Analyzer:
         dt : Quantity
             The desired time resolution for the rebinned light curves. This must be an astropy `Quantity` with units of
             time (e.g., `astropy.units.s`) to ensure correct handling of the time resolution.
+        method : Literal['mean', 'sum'], optional
+            The rebinning method, by default `'mean'`.
         """
         
         # convert dt to days
-        dt = dt.to(u.day).value
+        dt = dt.to_value(u.day)  # type: ignore
         
         for fltr, lc in self.light_curves.items():
-            self.light_curves[fltr] = lc.rebin(dt, method='mean')
-
-    def _convert_lc_time_to_seconds(
-        self,
-        lc: Lightcurve,
-        ) -> Lightcurve:
-        """
-        Convert the time of a light curve from days to seconds, relative to the reference time.
-        
-        Parameters
-        ----------
-        lc : Lightcurve
-            The light curve to convert.
-        
-        Returns
-        -------
-        Lightcurve
-            The light curve with time converted to seconds, relative to the reference time.
-        """
-        
-        t = (np.asarray(lc.time) - self.t_ref) * 86400
-        gti = (np.asarray(lc.gti) - self.t_ref) * 86400
-        
-        return Lightcurve(
-            t,
-            lc.counts,
-            err=lc.counts_err,
-            gti=gti,
-            err_dist=lc.err_dist,
-        )
-
+            self.light_curves[fltr] = lc.rebin(dt, method=method)
 
     def plot_light_curves(
         self,
@@ -322,7 +240,8 @@ class Analyzer:
             The phase folded light curves.
         """
         
-        period = period.to(u.day).value  # convert from given units to days
+        save_period = period.to_value(u.s)  # type: ignore
+        period = period.to_value(u.day)  # type: ignore
         
         results = {}
         
@@ -331,19 +250,55 @@ class Analyzer:
             results[fltr] = phase
         
         if self.show_plots:
-            fig, axs = plt.subplots(tight_layout=True, nrows=len(self.light_curves), sharex=True,
-                                    figsize=(6.4, (0.5 + 0.5*len(self.light_curves)*4.8)))
+            fig, axes = plt.subplots(
+                tight_layout=True,
+                nrows=len(self.light_curves),
+                sharex=True,
+                figsize=(6.4, .5 * len(self.light_curves) * 4.8),
+                gridspec_kw={'hspace': 0}
+                )
             
-            for i in range(len(self.light_curves)):
-                k = list(self.light_curves.keys())[i]
-                axs[i].errorbar(np.append(results[k], results[k] + 1),
-                                np.append(self.light_curves[k].counts, self.light_curves[k].counts),
-                                np.append(self.light_curves[k].counts_err, self.light_curves[k].counts_err),
-                                marker='.', ms=2, linestyle='none', color=colors[k], ecolor='grey', elinewidth=1)
-                axs[i].set_title(k)
+            for i, (fltr, lc) in enumerate(self.light_curves.items()):
+                axes[i].errorbar(
+                    np.append(results[fltr], results[fltr] + 1),
+                    np.append(np.asarray(lc.counts), np.asarray(lc.counts)),
+                    np.append(lc.counts_err, lc.counts_err),
+                    marker='none',
+                    linestyle='none',
+                    color=colors[fltr],
+                    ecolor='grey',
+                    elinewidth=1,
+                    alpha=.5,
+                    zorder=0,
+                    )
+                axes[i].plot(
+                    np.append(results[fltr], results[fltr] + 1),
+                    np.append(np.asarray(lc.counts), np.asarray(lc.counts)),
+                    marker='.',
+                    ms=2,
+                    linestyle='none',
+                    color=colors[fltr],
+                    zorder=2,
+                    )
+                axes[i].text(
+                    .95,
+                    .9,
+                    fltr,
+                    fontsize='large',
+                    va='top',
+                    ha='right',
+                    transform=axes[i].transAxes,
+                )
             
-            axs[-1].set_xlabel('Phase')
-            axs[len(self.light_curves)//2].set_ylabel('Relative Flux')
+            for ax in axes.flatten():
+                ax.minorticks_on()
+                ax.tick_params(which='both', direction='in', top=True, right=True)
+            
+            axes[-1].set_xlabel('Phase')
+            axes[len(self.light_curves) // 2].set_ylabel('Normalized Flux')
+            
+            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_P={save_period:.4f}s_phase_fold.png')
+            plt.show()
         
         return results
 
@@ -375,7 +330,8 @@ class Analyzer:
             The phase binned light curves.
         """
         
-        period = period.to_value(u.day)  # convert from given units to days
+        save_period = period.to_value(u.s)  # type: ignore
+        period = period.to_value(u.day)  # type: ignore
         
         results = {}
         
@@ -419,24 +375,28 @@ class Analyzer:
                 gridspec_kw={'hspace': 0.},
                 )
             
-            for i in range(len(self.light_curves)):
-                k = list(self.light_curves.keys())[i]
+            for i, (fltr, lc) in enumerate(self.light_curves.items()):
                 axes[i].errorbar(
-                    np.append(results[k]['phase'], results[k]['phase'] + 1),
-                    np.append(results[k]['flux'], results[k]['flux']),
-                    np.append(results[k]['flux error'], results[k]['flux error']),
-                    marker='none', linestyle='none', color=colors[k], ecolor='grey', elinewidth=1)
+                    np.append(results[fltr]['phase'], results[fltr]['phase'] + 1),
+                    np.append(results[fltr]['flux'], results[fltr]['flux']),
+                    np.append(results[fltr]['flux error'], results[fltr]['flux error']),
+                    marker='none',
+                    linestyle='none',
+                    color=colors[fltr],
+                    ecolor='grey',
+                    elinewidth=1,
+                    )
                 axes[i].step(
-                    np.append(results[k]['phase'], results[k]['phase'] + 1),
-                    np.append(results[k]['flux'], results[k]['flux']),
+                    np.append(results[fltr]['phase'], results[fltr]['phase'] + 1),
+                    np.append(results[fltr]['flux'], results[fltr]['flux']),
                     where='mid',
-                    color=colors[k],
+                    color=colors[fltr],
                     lw=1,
                 )
                 axes[i].text(
                     .95,
                     .9,
-                    k,
+                    fltr,
                     fontsize='large',
                     va='top',
                     ha='right',
@@ -444,12 +404,13 @@ class Analyzer:
                 )
             
             axes[-1].set_xlabel('Phase')
-            axes[len(self.light_curves)//2].set_ylabel('Normalised flux')
+            axes[len(self.light_curves) // 2].set_ylabel('Normalized flux')
             
             for ax in axes.flatten():
                 ax.minorticks_on()
                 ax.tick_params(which='both', direction='in', top=True, right=True)
             
+            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_P={save_period:.4f}s_phase_bin.png')
             plt.show()
         
         return results
@@ -482,25 +443,21 @@ class Analyzer:
         
         results = {}
         
-        for fltr in self.light_curves.keys():
+        for fltr, lc in self.light_curves.items():
             
-            lc = self._convert_lc_time_to_seconds(self.light_curves[fltr])
-            
-            dt = np.diff(lc.time)
+            dt = np.diff(np.asarray(lc.time))
             if not np.allclose(dt, dt[0]):
                 print(f'[OPTICAM] Unable to compute periodogram for {fltr} light curve due to gaps. Consider using either the compute_lomb_scargle_periodograms() or compute_averaged_power_spectra() methods instead.')
                 continue
             
-            ps = Powerspectrum.from_lightcurve(
-                lc,
+            results[fltr] = Powerspectrum.from_lightcurve(
+                convert_lc_time_to_seconds(lc, self.t_ref),
                 norm=norm,
                 silent=True,
                 )
-            
-            results[fltr] = ps
         
         if self.show_plots and len(results) > 0:
-            fig = _plot(results, scale)
+            fig = plot(results, scale)
             fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_periodograms.png')
             plt.show()
         
@@ -541,139 +498,28 @@ class Analyzer:
             the averaged power spectra.
         """
         
-        segment_size = segment_size.to(u.s).value  # convert from given units to days
+        segment_size = segment_size.to_value(u.s)  # type: ignore
         
         results = {}
-        for k in self.light_curves.keys():
-            
-            lc = self._convert_lc_time_to_seconds(self.light_curves[k])
+        for fltr, lc in self.light_curves.items():
             
             ps = AveragedPowerspectrum.from_lightcurve(
-                lc,
+                convert_lc_time_to_seconds(lc, self.t_ref),
                 segment_size,
                 norm=norm,
                 silent=True,
             )
             
-            print(f'[OPTICAM] {ps.m} {k} segments averaged.')
+            print(f'[OPTICAM] {ps.m} {fltr} segments averaged.')
             
             if rebin_factor:
                 ps = ps.rebin_log(rebin_factor)
             
-            results[k] = ps
+            results[fltr] = ps
         
         if self.show_plots:
-            fig = _plot(results, scale)
+            fig = plot(results, scale)
             fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_averaged_power_spectra.png')
-            plt.show()
-        
-        return results
-
-
-    def compute_crossspectra(
-        self,
-        norm: Literal['frac', 'abs'] = 'frac',
-        scale: Literal['linear', 'log', 'loglog'] = 'linear',
-        ) -> Dict[str, Crossspectrum]:
-        """
-        Compute the cross-spectra for each pair of light curves using `stingray.Crossspectrum`. It's usually a good idea
-        to call the rebin() method to rebin your light curves to a regular time grid before calling this method.
-        
-        Parameters
-        ----------
-        norm : Literal['frac', 'abs'], optional
-            The normalisation to use for the cross-spectrum, by default 'frac'. If 'frac', the cross-spectrum is
-            normalised to fractional rms. If 'abs', the cross-spectrum is normalised to absolute power.
-        scale : Literal['linear', 'log', 'loglog'], optional
-            The scale to use for the plot, by default 'linear'. If 'linear', all axes are linear. If 'log', the
-            frequency axis is logarithmic. If 'loglog', both the frequency and power axes are logarithmic.
-        
-        Returns
-        -------
-        Dict[str, Crossspectrum]
-            A dictionary containing the cross-spectra for each pair of light curves, where the keys are tuples of
-            filter names and the values are the cross-spectra.
-        """
-        
-        results = {}
-        
-        for fltr1, lc1 in self.light_curves.items():
-            for fltr2, lc2 in self.light_curves.items():
-                if fltr1 == fltr2:
-                    continue
-                
-                # convert light curves from days to seconds
-                lc1 = self._convert_lc_time_to_seconds(lc1)
-                lc2 = self._convert_lc_time_to_seconds(lc2)
-                
-                cs = Crossspectrum.from_lightcurve(
-                    lc1,
-                    lc2,
-                    norm=norm,
-                    silent=True,
-                    )
-                results[(fltr1, fltr2)] = cs
-        
-        if self.show_plots:
-            fig = _plot(results, scale)
-            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_cross_spectra.png')
-            plt.show()
-        
-        return results
-
-    def compute_averaged_crossspectra(
-        self,
-        segment_size: Quantity,
-        norm: Literal['frac', 'abs'] = 'frac',
-        scale: Literal['linear', 'log', 'loglog'] = 'linear',
-        ) -> Dict[str, AveragedCrossspectrum]:
-        """
-        Compute the cross-spectra for each pair of light curves using `stingray.Crossspectrum`. It's usually a good idea
-        to call the rebin() method to rebin your light curves to a regular time grid before calling this method.
-        
-        Parameters
-        ----------
-        segment_size : Quantity
-            The size of the segments to use for averaging the cross-spectra. This must be an astropy `Quantity` with
-            units of time (e.g., `astropy.units.s`) to ensure correct handling of the segment size.
-        norm : Literal['frac', 'abs'], optional
-            The normalisation to use for the cross-spectrum, by default 'frac'. If 'frac', the cross-spectrum is
-            normalised to fractional rms. If 'abs', the cross-spectrum is normalised to absolute power.
-        scale : Literal['linear', 'log', 'loglog'], optional
-            The scale to use for the plot, by default 'linear'. If 'linear', all axes are linear. If 'log', the
-            frequency axis is logarithmic. If 'loglog', both the frequency and power axes are logarithmic.
-        
-        Returns
-        -------
-        Dict[str, AveragedCrossspectrum]
-            A dictionary containing the averaged cross-spectra for each pair of light curves, where the keys are tuples
-            of filter names and the values are the cross-spectra.
-        """
-        
-        segment_size = segment_size.to_value(u.s)  # convert from given units to seconds
-        
-        results = {}
-        
-        for fltr1, lc1 in self.light_curves.items():
-            for fltr2, lc2 in self.light_curves.items():
-                if fltr1 == fltr2 or (fltr1, fltr2) in results or (fltr2, fltr1) in results:
-                    continue
-                
-                cs = AveragedCrossspectrum.from_lightcurve(
-                    self._convert_lc_time_to_seconds(lc1),
-                    self._convert_lc_time_to_seconds(lc2),
-                    segment_size=segment_size,
-                    norm=norm,
-                    silent=True,
-                    )
-                
-                print(f'[OPTICAM] {cs.m} {fltr1} x {fltr2} segments averaged.')
-                
-                results[(fltr1, fltr2)] = cs
-        
-        if self.show_plots:
-            fig = _plot(results, scale)
-            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_averaged_cross_spectra.png')
             plt.show()
         
         return results
@@ -707,20 +553,17 @@ class Analyzer:
         
         results = {}
         
-        for k in self.light_curves.keys():
+        for fltr, lc in self.light_curves.items():
             
-            lc = self._convert_lc_time_to_seconds(self.light_curves[k])
-            
-            # don't use .from_lightcurve() here as it causes an error
-            lsp = LombScarglePowerspectrum(
-                lc,
+            # from_lightcurve() causes an error?
+            results[fltr] = LombScarglePowerspectrum(
+                convert_lc_time_to_seconds(lc, self.t_ref),
                 norm=norm,
                 power_type='absolute',
             )
-            results[k] = lsp
         
         if self.show_plots:
-            fig = _plot(results, scale)
+            fig = plot(results, scale)
             fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_L-S_periodograms.png')
             plt.show()
         
@@ -761,12 +604,12 @@ class Analyzer:
         for fltr1, lc1 in self.light_curves.items():
             for fltr2, lc2 in self.light_curves.items():
                 # skip if the filters are the same or if the cross-correlation has already been computed
-                if fltr1 == fltr2 or (fltr2, fltr1) in results.keys():
+                if fltr1 == fltr2 or f'{fltr2} x {fltr1}' in results.keys():
                     continue
                 
                 if force_match:
                     # force the light curves to have the same time columns
-                    lc1, lc2 = _match_light_curve_times(lc1, lc2)
+                    lc1, lc2 = match_light_curve_times(lc1, lc2)
                 
                 cc = CrossCorrelation(
                     lc1,
@@ -774,14 +617,16 @@ class Analyzer:
                     mode=mode,
                     norm=norm,
                     )
+                
                 # convert times to seconds
-                cc.dt *= 86400
-                cc.time_lags *= 86400
-                cc.time_shift *= 86400
-                results[(fltr1, fltr2)] = cc
+                cc.dt *= 86400  # type: ignore
+                cc.time_lags *= 86400  # type: ignore
+                cc.time_shift *= 86400  # type: ignore
+                
+                results[f'{fltr1} x {fltr2}'] = cc
         
         if self.show_plots:
-            fig = _plot(results)
+            fig = plot(results)
             fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_cross_correlations.png')
             plt.show()
         
@@ -790,7 +635,94 @@ class Analyzer:
 
 
 
-def _plot(
+def validate_light_curves(
+    light_curves: Dict[str, Lightcurve | DataFrame] | None,
+    ) -> Dict[str, Lightcurve]:
+    """
+    Validate the light curves by converting DataFrames to Lightcurve objects and inferring GTIs.
+    
+    Parameters
+    ----------
+    light_curves : Dict[str, Lightcurve | DataFrame] | None
+        The light curves to validate, where the keys are the filter names and the values are either Lightcurve
+        objects or DataFrames containing 'BMJD', 'rel_flux', and 'rel_flux_err' columns. If `None`, an empty
+        dictionary will be returned.
+    
+    Returns
+    -------
+    Dict[str, Lightcurve]
+        If `light_curves` is `None`, returns an empty dictionary. Otherwise, returns a dictionary containing the 
+        validated light curves, where the keys are the filter names and the values are Lightcurve objects.
+    """
+    
+    validated_light_curves = {}
+    
+    if light_curves:
+        for fltr in light_curves.keys():
+            if isinstance(light_curves[fltr], DataFrame):
+                time = np.asarray(light_curves[fltr]['BMJD'].values)
+                counts = np.asarray(light_curves[fltr]['rel_flux'].values)
+                counts_err = np.asarray(light_curves[fltr]['rel_flux_err'].values)
+                
+                # infer GTIs
+                gtis = infer_gtis(time, threshold=1.5)
+            elif isinstance(light_curves[fltr], Lightcurve):
+                time = np.asarray(light_curves[fltr].time)
+                counts = np.asarray(light_curves[fltr].counts)
+                counts_err = np.asarray(light_curves[fltr].counts_err)
+                gtis = light_curves[fltr].gti
+            else:
+                raise TypeError(f'[OPTICAM] Light curve for filter {fltr} must be either a DataFrame or a Lightcurve object, but got {type(light_curves[fltr])}.')
+            
+            # normalise flux
+            mean_flux = np.mean(counts)
+            counts /= mean_flux
+            counts_err /= mean_flux
+            
+            # convert DataFrame to Lightcurve
+            validated_light_curves[fltr] = Lightcurve(
+                time,
+                counts,
+                err=counts_err,
+                gti=gtis,
+                err_dist='gauss',
+                )
+    
+    return sort_filters(validated_light_curves)
+
+def convert_lc_time_to_seconds(
+    lc: Lightcurve,
+    t_ref: float,
+    ) -> Lightcurve:
+    """
+    Convert the time of a light curve from days to seconds from some reference time.
+    
+    Parameters
+    ----------
+    lc : Lightcurve
+        The light curve to convert.
+    t_ref : float
+        The reference time.
+    
+    Returns
+    -------
+    Lightcurve
+        The light curve with time converted to seconds from `t_ref`.
+    """
+    
+    t = (np.asarray(lc.time) - t_ref) * 86400
+    gti = (np.asarray(lc.gti) - t_ref) * 86400
+    
+    return Lightcurve(
+        t,
+        lc.counts,
+        err=lc.counts_err,
+        gti=gti,
+        err_dist=lc.err_dist,
+    )
+
+
+def plot(
     results: Dict[str,
                   AveragedPowerspectrum | 
                   Powerspectrum | 
@@ -835,16 +767,14 @@ def _plot(
         if isinstance(results[key], 
                       AveragedPowerspectrum | 
                       Powerspectrum | 
-                      Crossspectrum | 
-                      AveragedCrossspectrum |
                       LombScarglePowerspectrum
                       ):
             x = results[key].freq
             y = results[key].power
-            yerr = _define_yerr(results[key])
+            yerr = define_yerr(results[key])
             
             x_label = 'Frequency [Hz]'
-            y_label = f'Power [{_get_normalisation_units(results[key].norm)}]'
+            y_label = f'Power [{get_normalisation_units(results[key].norm)}]'
         elif isinstance(results[key], CrossCorrelation):
             x = results[key].time_lags
             y = results[key].corr
@@ -916,31 +846,7 @@ def _plot(
     
     return fig
 
-def _get_normalisation_units(
-    norm: str,
-    ) -> str:
-    """
-    Get the units of the normalisation based on the specified normalisation type.
-    
-    Parameters
-    ----------
-    norm : str
-        The normalisation type.
-    
-    Returns
-    -------
-    str
-        The units of the normalisation.
-    
-    Raises
-    ------
-    ValueError
-        If the specified normalisation type is invalid.
-    """
-    
-    return '(fractional rms)$^2$ Hz$^{{-1}}$'
-
-def _define_yerr(
+def define_yerr(
     obj: AveragedPowerspectrum |
     Powerspectrum |
     Crossspectrum |
@@ -966,36 +872,37 @@ def _define_yerr(
     
     return None
 
-
-
-
-def _intersect_gtis(gti1, gti2):
-
-    result = []
-    for start1, stop1 in gti1:
-        for start2, stop2 in gti2:
-            start = max(start1, start2)
-            stop = min(stop1, stop2)
-            if start < stop:
-                result.append([start, stop])
+def get_normalisation_units(
+    norm: str,
+    ) -> str:
+    """
+    Get the units of the normalisation based on the specified normalisation type.
     
-    return np.array(result)
-
-def _restrict_to_gti(lc, gti):
+    Parameters
+    ----------
+    norm : str
+        The normalisation type.
     
-    mask = np.zeros_like(lc.time, dtype=bool)
-    for start, stop in gti:
-        mask |= (lc.time >= start) & (lc.time <= stop)
-        
-    return Lightcurve(
-        lc.time[mask],
-        lc.counts[mask],
-        err=lc.counts_err[mask],
-        gti=gti,
-        err_dist=lc.err_dist,
-    )
+    Returns
+    -------
+    str
+        The units of the normalisation.
+    
+    Raises
+    ------
+    ValueError
+        If the specified normalisation type is invalid.
+    """
+    
+    if norm == 'frac':
+        return '(fractional rms)$^2$ Hz$^{{-1}}$'
+    elif norm == 'abs':
+        return 'rms$^2$ Hz$^{{-1}}$'
+    else:
+        raise ValueError(f'[OPTICAM] Normalization {norm} is not supported. Use either "frac" (recommended) or "abs".')
 
-def _match_light_curve_times(
+
+def match_light_curve_times(
     lc1: Lightcurve,
     lc2: Lightcurve,
     ) -> Tuple[Lightcurve, Lightcurve]:
@@ -1016,9 +923,9 @@ def _match_light_curve_times(
     """
     
     # get intersecting GTIs
-    gti = _intersect_gtis(lc1.gti, lc2.gti)
-    lc1_restricted = _restrict_to_gti(lc1, gti)
-    lc2_restricted = _restrict_to_gti(lc2, gti)
+    gti = intersect_gtis(lc1.gti, lc2.gti)
+    lc1_restricted = restrict_to_gti(lc1, gti)
+    lc2_restricted = restrict_to_gti(lc2, gti)
     
     # interpolate lc2 onto lc1's time grid
     interp_counts = np.interp(
@@ -1040,5 +947,31 @@ def _match_light_curve_times(
     )
     
     return lc1_restricted, lc2_interp
+
+def intersect_gtis(gti1, gti2):
+
+    result = []
+    for start1, stop1 in gti1:
+        for start2, stop2 in gti2:
+            start = max(start1, start2)
+            stop = min(stop1, stop2)
+            if start < stop:
+                result.append([start, stop])
+    
+    return np.array(result)
+
+def restrict_to_gti(lc, gti):
+    
+    mask = np.zeros_like(lc.time, dtype=bool)
+    for start, stop in gti:
+        mask |= (lc.time >= start) & (lc.time <= stop)
+        
+    return Lightcurve(
+        lc.time[mask],
+        lc.counts[mask],
+        err=lc.counts_err[mask],
+        gti=gti,
+        err_dist=lc.err_dist,
+    )
 
 
