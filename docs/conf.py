@@ -10,9 +10,9 @@ from pathlib import Path
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
-project = 'opticam_new'
-copyright = '2025, Zackery Irving'
-author = 'Zackery Irving'
+project = 'opticam'
+copyright = '2025, Zackery A. Irving'
+author = 'Zackery A. Irving'
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
@@ -22,7 +22,7 @@ extensions = [
     'nbsphinx',
 ]
 autoapi_dirs = [
-    "../opticam_new"
+    "../opticam"
 ]
 autodoc_typehints = 'description'
 

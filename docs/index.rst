@@ -1,4 +1,4 @@
-opticam_new
+opticam
 =====
 
 A Python package for reducing OPTICAM data.

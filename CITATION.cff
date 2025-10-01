@@ -4,8 +4,8 @@ authors:
   - family-names: Irving
     given-names: Zackery A.
     orcid: https://orcid.org/0009-0006-0951-3429
-title: "opticam_new"
-version: 0.2.3
+title: "opticam"
+version: 0.3.0
 identifiers:
 #  - type: doi
 #    value: 10.5281/zenodo.1234
