@@ -3,12 +3,12 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "opticam_new"
-version = "0.2.3"
+name = "opticam"
+version = "0.3.0"
 description = "A Python package for reducing OPTICAM data."
 readme = "README.md"
 authors = [
-    {name = "Zac Irving", email = "zackery.irving@icloud.com"},
+    {name = "Zackery A. Irving", email = "zackery.irving@icloud.com"},
 ]
 
 requires-python = ">=3.12.7"
@@ -29,7 +29,7 @@ dependencies = [
 
 [project.optional-dependencies]
 docs = [
-    "jupyter>=1.1.1",
+    "jupyter >=1.1.1",
     "nbsphinx >= 0.9",
     "sphinx >= 8.1",
     "sphinx-autoapi >= 3.4",
