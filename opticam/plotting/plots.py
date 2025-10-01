@@ -9,8 +9,8 @@ from numpy.typing import NDArray
 import os.path
 from pandas import DataFrame
 
-from opticam_new.background.global_background import BaseBackground
-from opticam_new.utils.constants import catalog_colors
+from opticam.background.global_background import BaseBackground
+from opticam.utils.constants import catalog_colors
 
 
 def plot_catalogs(

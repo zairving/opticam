@@ -28,7 +28,7 @@ pip install .
 
 ### Requirements
 
-All of `opticam_new`'s dependencies are available as Python packages via your preferred package manager, and should be handled automatically via `pip`. If you would prefer to install the dependencies using conda, you can should use provided [YAML file](environment.yml) to create your environment before `pip`-installing `opticam_new`.
+All of `opticam_new`'s dependencies are available as Python packages via your preferred package manager, and should be handled automatically via `pip`. If you would prefer to install the dependencies via `conda`, use provided [YAML file](environment.yml) to set up your environment, and then install `opticam_new` via `pip` as described above.
 
 ## Getting Started
 

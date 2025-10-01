@@ -11,10 +11,10 @@ from matplotlib.axes import Axes
 from astropy.io import fits
 from astroalign import find_transform
 
-from opticam_new.analysis.analyzer import Analyzer
-from opticam_new.utils.fits_handlers import get_stacked_images
-from opticam_new.plotting.plots import plot_catalogs
-from opticam_new.utils.time_helpers import infer_gtis
+from opticam.analysis.analyzer import Analyzer
+from opticam.utils.fits_handlers import get_stacked_images
+from opticam.plotting.plots import plot_catalogs
+from opticam.utils.time_helpers import infer_gtis
 
 
 class DifferentialPhotometer:

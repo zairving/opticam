@@ -16,24 +16,24 @@ from photutils.segmentation import SourceCatalog, detect_threshold
 from tqdm.contrib.concurrent import process_map
 from tqdm import tqdm
 
-from opticam_new.align import align_batch
-from opticam_new.background.global_background import BaseBackground, DefaultBackground
-from opticam_new.correctors.flat_field_corrector import FlatFieldCorrector
-from opticam_new.finders import DefaultFinder, get_source_coords_from_image
-from opticam_new.photometers import BasePhotometer, perform_photometry
-from opticam_new.utils.batching import get_batches, get_batch_size
-from opticam_new.utils.constants import bar_format, pixel_scales
-from opticam_new.utils.data_checks import check_data
-from opticam_new.plotting.gifs import compile_gif, create_gif_frame
-from opticam_new.utils.helpers import camel_to_snake
-from opticam_new.utils.fits_handlers import get_data, get_stacked_images, save_stacked_images
-from opticam_new.utils.logging import recursive_log
-from opticam_new.plotting.plots import plot_backgrounds, plot_background_meshes, plot_catalogs, plot_time_between_files
+from opticam.align import align_batch
+from opticam.background.global_background import BaseBackground, DefaultBackground
+from opticam.correctors.flat_field_corrector import FlatFieldCorrector
+from opticam.finders import DefaultFinder, get_source_coords_from_image
+from opticam.photometers import BasePhotometer, perform_photometry
+from opticam.utils.batching import get_batches, get_batch_size
+from opticam.utils.constants import bar_format, pixel_scales
+from opticam.utils.data_checks import check_data
+from opticam.plotting.gifs import compile_gif, create_gif_frame
+from opticam.utils.helpers import camel_to_snake
+from opticam.utils.fits_handlers import get_data, get_stacked_images, save_stacked_images
+from opticam.utils.logging import recursive_log
+from opticam.plotting.plots import plot_backgrounds, plot_background_meshes, plot_catalogs, plot_time_between_files
 
 
-class Catalog:
+class Reducer:
     """
-    Create a catalog of sources from OPTICAM data.
+    Class for reducing OPTICAM data.
     """
 
     def __init__(
@@ -55,7 +55,7 @@ class Catalog:
         verbose: bool = True
         ) -> None:
         """
-        Helper class for reducing OPTICAM data.
+        Class for reducing OPTICAM data.
         
         Parameters
         ----------
@@ -106,8 +106,6 @@ class Catalog:
         verbose: bool, optional
             Whether to print verbose output, by default `True`.
         """
-        
-        warnings.warn(f'[OPTICAM] from version 0.3.0, opticam_new.Catalog() will be renamed to opticam_new.Reducer()')
         
         self.verbose = verbose
         
@@ -243,29 +241,6 @@ class Catalog:
         
         log_reducer_params(self)
         
-        ########################################### pseudo-methods ###########################################
-        
-        self.get_data = partial(
-            get_data,
-            flat_corrector=self.flat_corrector,
-            rebin_factor=self.rebin_factor,
-            remove_cosmic_rays=self.remove_cosmic_rays,
-        )
-        
-        self.get_source_coords_from_image = partial(
-            get_source_coords_from_image,
-            finder=self.finder,
-            threshold=self.threshold,
-        )
-        
-        self.set_psf_params = partial(
-            set_psf_params,
-            out_directory=self.out_directory,
-            aperture_selector=self.aperture_selector,
-            binning_scale=self.binning_scale,
-            rebin_factor=self.rebin_factor,
-            )
-        
         ########################################### misc attributes ###########################################
         
         self.transforms = {}  # define transforms as empty dictionary
@@ -294,18 +269,22 @@ class Catalog:
                             )
                         }
                     )
-                self.psf_params[fltr] = self.set_psf_params(
+                self.psf_params[fltr] = set_psf_params(
                     fltr=fltr,
+                    aperture_selector=self.aperture_selector,
+                    out_directory=self.out_directory,
                     catalog=self.catalogs[fltr],
+                    binning_scale=self.binning_scale,
+                    rebin_factor=self.rebin_factor,
                 )
                 if self.verbose:
                     print(f"[OPTICAM] Read {fltr} catalog from file.")
 
     def create_catalogs(
         self,
-        max_catalog_sources: int = 50,
-        n_alignment_sources: int = 3,
-        transform_type: Literal['affine', 'translation'] = 'translation',
+        max_catalog_sources: int = 30,
+        n_alignment_sources: int = 30,
+        transform_type: Literal['affine', 'translation'] = 'affine',
         rotation_limit: float | None = None,
         translation_limit: float | int | List[float | int] | None = None,
         scale_limit: float | None = None,
@@ -318,24 +297,25 @@ class Catalog:
         Parameters
         ----------
         max_catalog_sources : int, optional
-            The maximum number of sources above the specified threshold that will be included in the catalog, by default
-            50. Only the brightest max_catalog_sources sources are included in the catalog.
+            The maximum number of sources to include in the catalog, by default 30. Since source IDs are ordered by
+            brightness, the brightest `max_catalog_sources` sources are included in the catalog.
         n_alignment_sources : int, optional
-            The (maximum) number of sources to use for image alignment, by default 3. If `transform_type='translation'`,
-            `n_alignment_sources` must be >= 1, and the brightest `n_alignment_sources` sources are used for image
-            alignment. If `transform_type='affine'`, `n_alignment_sources` must be >= 3 and represents that *maximum*
-            number of sources that *may* be used for image alignment.
+            The (maximum) number of sources to use for image alignment, by default 30. If
+            `transform_type='translation'`, `n_alignment_sources` must be >= 1, and the brightest `n_alignment_sources`
+            sources are used for image alignment. If `transform_type='affine'`, `n_alignment_sources` must be >= 3 and
+            represents that *maximum* number of sources that *may* be used for image alignment.
         transform_type : Literal['affine', 'translation'], optional
-            The type of transform to use for image alignment, by default 'translation'. 'translation' performs simple
-            x, y translations, while 'affine' uses `astroalign.find_transform()`.
+            The type of transform to use for image alignment, by default 'affine'. 'translation' performs simple
+            x, y translations, while 'affine' uses `astroalign.find_transform()`. 'affine' is generally more robust 
+            (and is therefore the default) while 'translation' can work with fewer sources.
         rotation_limit : float, optional
             The maximum rotation limit (in degrees) for affine transformations, by default `None` (no limit).
         scale_limit : float, optional
             The maximum scale limit for affine transformations, by default `None` (no limit).
         translation_limit : float | int | List[float | int] | None, optional
-            The maximum translation limit for transformations, by default `None` (no limit). Can be a scalar value that
-            applies to both x- and y-translations, or an iterable where the first value defines the x-translation limit
-            and the second value defines the y-translation limit.
+            The maximum translation limit for both types of transformations, by default `None` (no limit). Can be a
+            scalar value that applies to both x- and y-translations, or an iterable where the first value defines the
+            x-translation limit and the second value defines the y-translation limit.
         overwrite : bool, optional
             Whether to overwrite existing catalogs, by default False.
         show_diagnostic_plots : bool, optional
@@ -344,8 +324,6 @@ class Catalog:
         """
         
         assert transform_type in ['affine', 'translation'], '[OPTICAM] transform_type must be either "affine" or "translation".'
-        
-        warnings.warn(f'[OPTICAM] from version 0.3.0, create_catalogs() will default to transform_type="affine".')
         
         if translation_limit is not None:
             # if a scalar translation limit is specified, convert it to a list
@@ -386,17 +364,22 @@ class Catalog:
             # get reference image
             # np.asarray() to fix type error
             reference_image = np.asarray(
-                self.get_data(
+                get_data(
                     file=self.reference_files[fltr],
                     gain=self.gains[self.reference_files[fltr]],
                     return_error=False,
+                    flat_corrector=self.flat_corrector,
+                    rebin_factor=self.rebin_factor,
+                    remove_cosmic_rays=self.remove_cosmic_rays,
                     )
                 )
             
             try:
                 # get source coordinates in descending order of brightness
-                reference_coords = self.get_source_coords_from_image(
+                reference_coords = get_source_coords_from_image(
                     reference_image,
+                    finder=self.finder,
+                    threshold=self.threshold,
                     background=self.background,
                     n_sources=n_alignment_sources,
                     )
@@ -404,7 +387,7 @@ class Catalog:
                 self.logger.info(f'[OPTICAM] No sources detected in {fltr} reference image ({self.reference_files[fltr]}): {e}. Reducing threshold or npixels in the source finder may help.')
                 continue
             
-            if len(reference_coords) < n_alignment_sources and transform_type=='translation':
+            if len(reference_coords) < n_alignment_sources and transform_type == 'translation':
                 self.logger.info(f'[OPTICAM] Found {len(reference_coords)} sources in {fltr} reference image ({self.reference_files[fltr]}) but n_alignment_sources={n_alignment_sources}. transform_type="translation" requires at least n_alignment_sources be detected in the reference image to work. Consider reducing n_alignment_sources and/or threshold, or using transform_type="affine".')
                 continue
             
@@ -445,10 +428,9 @@ class Catalog:
                 threshold = detect_threshold(
                     stacked_image,
                     nsigma=self.threshold,
-                    sigma_clip=SigmaClip(sigma=3, maxiters=10),
                     )
-            except:
-                self.logger.info('[OPTICAM] Unable to estimate source detection threshold for ' + fltr + ' stacked image.')
+            except Exception as e:
+                self.logger.info(f'[OPTICAM] Unable to estimate source detection threshold for {fltr} stacked image: {e}.')
                 continue
             
             try:
@@ -461,14 +443,15 @@ class Catalog:
                 self.logger.info(f'[OPTICAM] No sources detected in the stacked {fltr} stacked image: {e}. Reducing threshold may help.')
                 continue
             
-            # save stacked image and its background
+            # save stacked image
             stacked_images[fltr] = stacked_image
             
-            tbl = SourceCatalog(stacked_image, segment_map).to_table()  # create catalog of sources
+            # catalog sources
+            tbl = SourceCatalog(stacked_image, segment_map).to_table()
             tbl.sort('segment_flux', reverse=True)
             tbl = tbl[:max_catalog_sources]  # limit catalog to brightest max_catalog_sources sources
             
-            # create catalog of sources in stacked image and write to file
+            # save catalog
             self.catalogs.update({fltr: tbl})
             self.catalogs[fltr].write(
                 os.path.join(self.out_directory, f"cat/{fltr}_catalog.ecsv"),
@@ -476,9 +459,13 @@ class Catalog:
                 overwrite=True,
                 )
             
-            self.psf_params[fltr] = self.set_psf_params(
+            self.psf_params[fltr] = set_psf_params(
                 fltr=fltr,
+                aperture_selector=self.aperture_selector,
+                out_directory=self.out_directory,
                 catalog=self.catalogs[fltr],
+                binning_scale=self.binning_scale,
+                rebin_factor=self.rebin_factor,
                 )
         
         plot_catalogs(
@@ -726,7 +713,7 @@ class Catalog:
 ################### for a clearner UI, the following functions are intentionally not Catalog methods ###################
 
 def log_reducer_params(
-    reducer: Catalog,
+    reducer: Reducer,
     ) -> None:
     
     # get parameters

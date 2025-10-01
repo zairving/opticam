@@ -8,10 +8,10 @@ from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import cdist
 from skimage.transform import SimilarityTransform, warp
 
-from opticam_new.background.global_background import BaseBackground
-from opticam_new.correctors.flat_field_corrector import FlatFieldCorrector
-from opticam_new.finders import DefaultFinder, get_source_coords_from_image
-from opticam_new.utils.fits_handlers import get_data
+from opticam.background.global_background import BaseBackground
+from opticam.correctors.flat_field_corrector import FlatFieldCorrector
+from opticam.finders import DefaultFinder, get_source_coords_from_image
+from opticam.utils.fits_handlers import get_data
 
 
 def find_translation(

@@ -10,10 +10,10 @@ from PIL import Image
 from skimage.transform import matrix_transform, SimilarityTransform
 from tqdm import tqdm
 
-from opticam_new.background.global_background import BaseBackground
-from opticam_new.correctors.flat_field_corrector import FlatFieldCorrector
-from opticam_new.utils.constants import catalog_colors
-from opticam_new.utils.fits_handlers import get_data
+from opticam.background.global_background import BaseBackground
+from opticam.correctors.flat_field_corrector import FlatFieldCorrector
+from opticam.utils.constants import catalog_colors
+from opticam.utils.fits_handlers import get_data
 
 
 def create_gif_frame(

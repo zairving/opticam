@@ -9,10 +9,10 @@ import numpy as np
 from tqdm.contrib.concurrent import process_map
 from tqdm import tqdm
 
-from opticam_new.utils.constants import bar_format
-from opticam_new.utils.fits_handlers import get_header_info
-from opticam_new.utils.helpers import create_file_paths, sort_filters
-from opticam_new.utils.logging import log_binnings, log_filters
+from opticam.utils.constants import bar_format
+from opticam.utils.fits_handlers import get_header_info
+from opticam.utils.helpers import create_file_paths, sort_filters
+from opticam.utils.logging import log_binnings, log_filters
 
 
 def check_data(

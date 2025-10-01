@@ -3,7 +3,7 @@ from numpy.typing import NDArray
 from photutils.background import Background2D
 from photutils.segmentation import SourceCatalog, SourceFinder, SegmentationImage
 
-from opticam_new.background.global_background import BaseBackground
+from opticam.background.global_background import BaseBackground
 
 
 class DefaultFinder:
