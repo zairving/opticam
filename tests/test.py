@@ -5,10 +5,10 @@ import os
 import tempfile
 from astropy.io import fits
 
-from opticam_new.background.global_background import DefaultBackground
-from opticam_new.background.local_background import DefaultLocalBackground
-from opticam_new.finders import DefaultFinder
-from opticam_new.utils.generate import generate_flats, generate_gappy_observations, generate_observations
+from opticam.background.global_background import DefaultBackground
+from opticam.background.local_background import DefaultLocalBackground
+from opticam.finders import DefaultFinder
+from opticam.utils.generate import generate_flats, generate_gappy_observations, generate_observations
 
 
 class TestBackground(unittest.TestCase):
