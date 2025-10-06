@@ -1,7 +1,6 @@
 from abc import ABC, abstractmethod
 from logging import Logger
 from typing import Callable, Dict, List, Tuple
-import warnings
 
 import numpy as np
 from numpy.typing import NDArray
@@ -23,7 +22,7 @@ class BasePhotometer(ABC):
 
     def __init__(
         self,
-        match_sources: bool = True,
+        forced: bool = False,
         source_matching_tolerance: float = 2.,
         local_background_estimator: None | BaseLocalBackground = None,
         ):
@@ -32,11 +31,10 @@ class BasePhotometer(ABC):
         
         Parameters
         ----------
-        match_sources : bool, optional
-            Whether to match sources in the image to sources in the catalogue, by default True. This can improve source
-            position matching, but may lead to incorrect source matching if the field is crowded or the
-            alignments are poor. If False, the photometer will use the source positions from the catalogue directly,
-            and the directory in which the resulting light curves will be saved will have a 'forced' prefix.
+        forced : bool, optional
+            Whether to performed "forced" photometry, by default `False`. If `True`, the catalog-aligned coordinates
+            are used to perform photometry, even in images where the source is not detected, and the resulting light
+            curves will be saved with a 'forced' prefix.
         source_matching_tolerance : float, optional
             The tolerance for source position matching in standard deviations (assuming a Gaussian PSF), by default 2.
             This parameter defines how far from the transformed catalogue position a source can be while still being
@@ -46,11 +44,8 @@ class BasePhotometer(ABC):
             is used. If not `None`, this will be used instead of the catalogue's 2D background estimator.
         """
         
-        warnings.warn('[OPTICAM] from version 0.3.0, "match_sources" will be renamed to "forced". "forced=False" will function the same as "match_sources=True".')
-        
-        self.match_sources = match_sources
+        self.forced = forced
         self.source_matching_tolerance = source_matching_tolerance
-        self.scale_factor = 1 if match_sources else 2  # use a larger aperture if source matching is disabled
         
         if local_background_estimator is not None:
             assert callable(local_background_estimator), "[OPTICAM] local_background_estimator must be either None or a callable object."
@@ -199,8 +194,8 @@ class SimplePhotometer(BasePhotometer):
         
         aperture = EllipticalAperture(
             position,
-            fwhm_scale * self.scale_factor * psf_params['semimajor_sigma'],
-            fwhm_scale * self.scale_factor * psf_params['semiminor_sigma'],
+            fwhm_scale * psf_params['semimajor_sigma'],
+            fwhm_scale * psf_params['semiminor_sigma'],
             psf_params['orientation'],
             )
         
@@ -261,7 +256,7 @@ class SimplePhotometer(BasePhotometer):
             The source coordinates.
         """
         
-        if self.match_sources:
+        if not self.forced:
             return self.get_closest_source(
                 source_coords,
                 image_coords,
@@ -608,7 +603,7 @@ def perform_photometry(
         threshold = detect_threshold(image, threshold, error=error)  # type: ignore
     
     image_coords = None  # assume no image coordinates by default
-    if photometer.match_sources:
+    if not photometer.forced:
         try:
             segm = finder(image, threshold)
             tbl = SourceCatalog(image, segm).to_table()
@@ -629,7 +624,7 @@ def perform_photometry(
                 logger.warning(f"[OPTICAM] {key} could not be determined for source {i + 1} in {fltr} (got value {value}).")
     
     # add time stamp
-    results['BMJD'] = bmjds[file]  # add time of observation
+    results['BMJD'] = bmjds[file]  # type: ignore
     
     return results
 
