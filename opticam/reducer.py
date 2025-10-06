@@ -4,9 +4,7 @@ import logging
 from multiprocessing import cpu_count
 import os
 from typing import Callable, Dict, List, Literal, Tuple
-import warnings
 
-from astropy.stats import SigmaClip
 from astropy.table import QTable
 from matplotlib import pyplot as plt
 from matplotlib.animation import FuncAnimation
@@ -213,7 +211,7 @@ class Reducer:
         ########################################### background ###########################################
         
         if background is None:
-            box_size = 2048 // self.binning_scale // self.rebin_factor // 16
+            box_size = 2048 // self.binning_scale // self.rebin_factor // 32
             self.background = DefaultBackground(box_size)
             self.logger.info(f'[OPTICAM] Using default background estimator with box_size={box_size}.')
         elif callable(background):
@@ -332,7 +330,16 @@ class Reducer:
         
         # if catalogs already exist, skip
         if os.path.isfile(os.path.join(self.out_directory, 'cat/catalogs.png')) and not overwrite:
-            print('[OPTICAM] Catalogs already exist. To overwrite, set overwrite to True.')
+            print('[OPTICAM] Catalogs already exist. To overwrite, set overwrite=True.')
+            
+            plot_catalogs(
+                out_directory=self.out_directory,
+                stacked_images=get_stacked_images(self.out_directory),
+                catalogs=self.catalogs,
+                show=self.show_plots,
+                save=False,
+            )
+            
             return
         
         if self.verbose:
@@ -642,6 +649,7 @@ class Reducer:
     def photometry(
         self,
         photometer: BasePhotometer,
+        overwrite: bool = False,
         ) -> None:
         """
         Perform photometry on the catalogs using the provided photometer.
@@ -651,6 +659,8 @@ class Reducer:
         photometer : BasePhotometer
             The photometer. Should be a subclass of `BasePhotometer`, or implement a `compute` method that follows the
             `BasePhotometer` interface.
+        overwrite : bool, optional
+            Whether to overwrite any existing light curves files computed using the same photometer, by default `False`.
         """
         
         # define save directory using the photometer name
@@ -659,7 +669,7 @@ class Reducer:
         # change save directory based on photometer settings
         if photometer.local_background_estimator is not None:
             save_name += '_annulus'
-        if not photometer.match_sources:
+        if photometer.forced:
             save_name = 'forced_' + save_name
         
         print(f'[OPTICAM] Photometry results will be saved to {save_name}_light_curves in {self.out_directory}.')
@@ -670,6 +680,11 @@ class Reducer:
         
         # for each filter
         for fltr in self.catalogs.keys():
+            
+            if os.path.isfile(os.path.join(self.out_directory, f'{save_name}_light_curves/{fltr}_source_1.csv')) and not overwrite:
+                print(f'[OPTICAM] Skipping {fltr} since existing light curves files were found. To overwrite these files, set overwrite=True.')
+                continue
+            
             source_coords = np.array([self.catalogs[fltr]["xcentroid"].value,
                                       self.catalogs[fltr]["ycentroid"].value]).T
             
@@ -749,6 +764,7 @@ def log_reducer_params(
     with open(os.path.join(reducer.out_directory, "misc/reduction_parameters.json"), "w") as file:
         json.dump(params, file, indent=4)
 
+
 def set_psf_params(
     fltr: str,
     out_directory: str,
@@ -795,6 +811,7 @@ def set_psf_params(
     
     return psf_params_pix
 
+
 def parse_alignment_results(
     results: Tuple,
     camera_files: List[str],
@@ -833,6 +850,7 @@ def parse_alignment_results(
         print(f'[OPTICAM] {len(fltr_unaligned_files)} image(s) could not be aligned.')
     
     return transforms, unaligned_files, stacked_image, fltr_background_medians, fltr_background_rmss
+
 
 def save_photometry_results(
     results: Tuple[Dict],
