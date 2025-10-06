@@ -125,8 +125,8 @@ def align_batch(
             logger.info(f'[OPTICAM] No sources detected in {file}: {e}.')
             continue
         
-        if len(coords) < len(reference_coords):
-            logger.info(f'[OPTICAM] n_alignment_sources={len(reference_coords)} but only {len(coords)} sources detected in {file}. Skipping.')
+        if len(coords) < n_alignment_sources and transform_type == 'translation':
+            logger.info(f'[OPTICAM] {len(coords)} sources detected in {file} but n_alignment_sources={n_alignment_sources} and transform_type="translation". Skipping. To attempt to align images in which fewer than n_alignment_sources are detected, try transform_type="affine".')
             continue
         
         if transform_type == 'translation':
