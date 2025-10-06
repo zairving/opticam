@@ -54,7 +54,7 @@ def infer_gtis(time: NDArray, threshold: float = 1.5) -> NDArray:
         The inferred GTIs.
     """
     
-    time = np.asarray(time)
+    time = np.sort(np.asarray(time))  # ensure time stamps are sorted
     
     # compute the gap threshold
     gap_threshold = threshold * np.median(np.diff(time))
@@ -68,7 +68,11 @@ def infer_gtis(time: NDArray, threshold: float = 1.5) -> NDArray:
         if time[i] - time[i - 1] > gap_threshold:
             gti_stops.append(time[i - 1])
             gti_starts.append(time[i])
-    gti_stops.append(time[-1])
+    
+    if gti_starts[-1] == time[-1]:
+        gti_starts.pop()
+    else:
+        gti_stops.append(time[-1])
     
     # define GTIs in stingray format
     return np.array(list(zip(gti_starts, gti_stops)))
