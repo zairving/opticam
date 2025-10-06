@@ -92,12 +92,10 @@ def plot_catalogs(
             # label plot
             axes[i].set_title(fltr)
             axes[i].set_xlabel("X")
-            
-            if i > 0:
-                axes[i].set_ylabel("Y")
+            axes[i].set_ylabel("Y")
     
     if save:
-        fig.savefig(os.path.join(out_directory, "cat/catalogs.png"))
+        fig.savefig(os.path.join(out_directory, "cat/catalogs.png"), dpi=200)
     
     if show:
         plt.show(fig)
