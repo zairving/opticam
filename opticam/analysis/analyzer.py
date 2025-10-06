@@ -170,9 +170,7 @@ class Analyzer:
             axes = [axes]
         
         for i, (fltr, lc) in enumerate(self.light_curves.items()):
-            
             for lc_segment in lc.split_by_gti(min_points=1):
-            
                 t = (np.asarray(lc_segment.time) - self.t_ref) * 86400
                 
                 axes[i].errorbar(
@@ -204,7 +202,7 @@ class Analyzer:
             )
         
         axes[-1].set_xlabel(f'Time from BMJD {self.t_ref:.4f} [s]', fontsize='large')
-        axes[len(self.light_curves) // 2].set_ylabel('Normalised flux', fontsize='large')
+        axes[len(self.light_curves) // 2].set_ylabel('Normalized flux', fontsize='large')
         
         if title is not None:
             axes[0].set_title(title)
@@ -307,7 +305,9 @@ class Analyzer:
         period: Quantity,
         t0: float | None = None,
         n_bins: int = 10,
-        plot=True,
+        plot: bool = True,
+        subplot : bool = True,
+        sharey: bool = False,
         ) -> Dict[str, Dict[str, NDArray]]:
         """
         Phase bin each light curve using the given period.
@@ -323,6 +323,11 @@ class Analyzer:
             The number of phase bins, by default 10.
         plot : bool, optional
             Whether to plot the phase binned light curves, by default True.
+        subplot : bool, optional
+            Whether to plot filters in separate subplots, by default True.
+        sharey : bool, optional
+            Whether to render the plot with a common y-axis (useful for directly comparing amplitudes), by default
+            False. Only used if `plot=True` and `subplot=True`.
         
         Returns
         -------
@@ -367,46 +372,77 @@ class Analyzer:
             }
         
         if plot:
-            fig, axes = plt.subplots(
-                tight_layout=True,
-                nrows=len(self.light_curves),
-                sharex=True,
-                figsize=(6.4, (0.5 * len(self.light_curves) * 4.8)),
-                gridspec_kw={'hspace': 0.},
-                )
-            
-            for i, (fltr, lc) in enumerate(self.light_curves.items()):
-                axes[i].errorbar(
-                    np.append(results[fltr]['phase'], results[fltr]['phase'] + 1),
-                    np.append(results[fltr]['flux'], results[fltr]['flux']),
-                    np.append(results[fltr]['flux error'], results[fltr]['flux error']),
-                    marker='none',
-                    linestyle='none',
-                    color=colors[fltr],
-                    ecolor='grey',
-                    elinewidth=1,
+            if subplot:
+                fig, axes = plt.subplots(
+                    tight_layout=True,
+                    nrows=len(self.light_curves),
+                    sharex=True,
+                    sharey=sharey,
+                    figsize=(6.4, (0.5 * len(self.light_curves) * 4.8)),
+                    gridspec_kw={'hspace': 0.},
                     )
-                axes[i].step(
-                    np.append(results[fltr]['phase'], results[fltr]['phase'] + 1),
-                    np.append(results[fltr]['flux'], results[fltr]['flux']),
-                    where='mid',
-                    color=colors[fltr],
-                    lw=1,
-                )
-                axes[i].text(
-                    .95,
-                    .9,
-                    fltr,
-                    fontsize='large',
-                    va='top',
-                    ha='right',
-                    transform=axes[i].transAxes,
-                )
-            
-            axes[-1].set_xlabel('Phase')
-            axes[len(self.light_curves) // 2].set_ylabel('Normalized flux')
-            
-            for ax in axes.flatten():
+                
+                for i, (fltr, lc) in enumerate(self.light_curves.items()):
+                    axes[i].errorbar(
+                        np.append(results[fltr]['phase'], results[fltr]['phase'] + 1),
+                        np.append(results[fltr]['flux'], results[fltr]['flux']),
+                        np.append(results[fltr]['flux error'], results[fltr]['flux error']),
+                        marker='none',
+                        linestyle='none',
+                        color=colors[fltr],
+                        ecolor='grey',
+                        elinewidth=1,
+                        )
+                    axes[i].step(
+                        np.append(results[fltr]['phase'], results[fltr]['phase'] + 1),
+                        np.append(results[fltr]['flux'], results[fltr]['flux']),
+                        where='mid',
+                        color=colors[fltr],
+                        lw=1,
+                    )
+                    axes[i].text(
+                        .95,
+                        .9,
+                        fltr,
+                        fontsize='large',
+                        va='top',
+                        ha='right',
+                        transform=axes[i].transAxes,
+                    )
+                
+                axes[-1].set_xlabel('Phase', fontsize='large')
+                axes[len(self.light_curves) // 2].set_ylabel('Normalized flux', fontsize='large')
+                
+                for ax in axes.flatten():
+                    ax.minorticks_on()
+                    ax.tick_params(which='both', direction='in', top=True, right=True)
+            else:
+                fig, ax = plt.subplots(
+                    tight_layout=True,
+                    )
+                
+                for i, (fltr, lc) in enumerate(self.light_curves.items()):
+                    ax.errorbar(
+                        np.append(results[fltr]['phase'], results[fltr]['phase'] + 1),
+                        np.append(results[fltr]['flux'], results[fltr]['flux']),
+                        np.append(results[fltr]['flux error'], results[fltr]['flux error']),
+                        marker='none',
+                        linestyle='none',
+                        color=colors[fltr],
+                        ecolor='grey',
+                        elinewidth=1,
+                        )
+                    ax.step(
+                        np.append(results[fltr]['phase'], results[fltr]['phase'] + 1),
+                        np.append(results[fltr]['flux'], results[fltr]['flux']),
+                        where='mid',
+                        color=colors[fltr],
+                        label=fltr,
+                    )
+                
+                ax.set_xlabel('Phase', fontsize='large')
+                ax.set_ylabel('Normalized flux', fontsize='large')
+                ax.legend(fontsize='large')
                 ax.minorticks_on()
                 ax.tick_params(which='both', direction='in', top=True, right=True)
             
@@ -679,14 +715,13 @@ def validate_light_curves(
             counts /= mean_flux
             counts_err /= mean_flux
             
-            # convert DataFrame to Lightcurve
             validated_light_curves[fltr] = Lightcurve(
                 time,
                 counts,
                 err=counts_err,
                 gti=gtis,
                 err_dist='gauss',
-                )
+                ).sort()
     
     return sort_filters(validated_light_curves)
 
