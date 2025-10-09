@@ -17,6 +17,7 @@ from opticam.utils.image_helpers import rebin_image
 
 def get_header_info(
     file: str,
+    barycenter: bool,
     logger: Logger | None,
     ) -> Tuple[ArrayLike | None, str | None, str | None, float | None]:
     """
@@ -26,6 +27,10 @@ def get_header_info(
     ----------
     file : str
         The file path.
+    barycenter : bool
+        Whether to apply a Barycentric correction to the image time stamps.
+    logger : Logger | None
+        The logger.
     
     Returns
     -------
@@ -51,20 +56,22 @@ def get_header_info(
         mjd = get_time(header, file)
         fltr = header["FILTER"]
         
-        try:
-            # try to compute barycentric dynamical time
-            coords = SkyCoord(ra, dec, unit=(u.hourangle, u.deg))
-            bmjd = apply_barycentric_correction(mjd, coords)
-        except Exception as e:
-            if logger:
-                logger.info(f"[OPTICAM] Could not compute BMJD for {file}: {e}. Skipping.")
-            return None, None, None, None
+        if barycenter:
+            try:
+                # try to compute barycentric dynamical time
+                coords = SkyCoord(ra, dec, unit=(u.hourangle, u.deg))
+                bmjd = apply_barycentric_correction(mjd, coords)
+                return bmjd, fltr, binning, gain
+            except Exception as e:
+                if logger:
+                    logger.info(f"[OPTICAM] Could not compute BMJD for {file}: {e}. Skipping.")
+                return None, None, None, None
     except Exception as e:
         if logger:
             logger.info(f'[OPTICAM] Could not read {file}: {e}. Skipping.')
         return None, None, None, None
     
-    return bmjd, fltr, binning, gain
+    return mjd, fltr, binning, gain
 
 
 def get_time(

@@ -48,6 +48,7 @@ class Reducer:
         threshold: float = 5,
         aperture_selector: Callable = np.median,
         remove_cosmic_rays: bool = False,
+        barycenter: bool = True,
         number_of_processors: int = cpu_count() // 2,
         show_plots: bool = True,
         verbose: bool = True
@@ -96,6 +97,8 @@ class Reducer:
             Whether to remove cosmic rays from images, by default False. Cosmic rays are removed using the LACosmic
             algorithm as implemented in `astroscrappy`. Note: this can be computationally expensive, particularly for
             large images.
+        barycenter: bool, optional
+            Whether to apply a barycentric correction to the image time stamps, by default True.
         number_of_processors: int, optional
             The number of processors to use for parallel processing, by default half the number of available processors.
         show_plots: bool, optional
@@ -167,6 +170,7 @@ class Reducer:
         self.aperture_selector = aperture_selector
         self.threshold = threshold
         self.remove_cosmic_rays = remove_cosmic_rays
+        self.barycenter = barycenter
         self.number_of_processors = number_of_processors
         self.show_plots = show_plots
         
@@ -178,6 +182,7 @@ class Reducer:
                 c2_directory=c2_directory,
                 c3_directory=c3_directory,
                 out_directory=out_directory,
+                barycenter=self.barycenter,
                 verbose=verbose,
                 return_output=True,
                 logger=self.logger,
@@ -696,6 +701,7 @@ class Reducer:
                     source_coords=source_coords,
                     gains=self.gains,
                     bmjds=self.bmjds,
+                    barycenter=self.barycenter,
                     flat_corrector=self.flat_corrector,
                     rebin_factor=self.rebin_factor,
                     remove_cosmic_rays=self.remove_cosmic_rays,
@@ -718,6 +724,7 @@ class Reducer:
             save_photometry_results(
                 results=results,
                 catalogs=self.catalogs,
+                barycenter=self.barycenter,
                 save_dir=save_dir,
                 fltr=fltr
             )
@@ -726,6 +733,7 @@ class Reducer:
 
 
 ################### for a clearner UI, the following functions are intentionally not Catalog methods ###################
+
 
 def log_reducer_params(
     reducer: Reducer,
@@ -855,6 +863,7 @@ def parse_alignment_results(
 def save_photometry_results(
     results: Tuple[Dict],
     catalogs: Dict[str, QTable],
+    barycenter: bool,
     save_dir: str,
     fltr: str,
     ):
@@ -875,6 +884,8 @@ def save_photometry_results(
     
     photometry_results = parse_photometry_results(results)
     
+    time_key = 'BMJD' if barycenter else 'MJD'
+    
     # for each source in the catalog
     for i in range(len(catalogs[fltr])):
         
@@ -883,7 +894,7 @@ def save_photometry_results(
         for key, values in photometry_results.items():
             
             # time is a special case since it is already a single column
-            if key == 'BMJD':
+            if key == time_key:
                 source_results[key] = np.asarray(values)
             # for other keys, the ith column needs to be extracted
             else:

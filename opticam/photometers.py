@@ -573,6 +573,7 @@ def perform_photometry(
     source_coords: NDArray,
     gains: Dict[str, float],
     bmjds: Dict[str, float],
+    barycenter: bool,
     flat_corrector: FlatFieldCorrector | None,
     rebin_factor: int,
     remove_cosmic_rays: bool,
@@ -583,6 +584,47 @@ def perform_photometry(
     fltr: str,
     logger: Logger,
     ) -> Dict[str, List]:
+    """
+    Perform photometry on a file.
+    
+    Parameters
+    ----------
+    file : str
+        The file path.
+    photometer : BasePhotometer
+        The photometer to use.
+    source_coords : NDArray
+        The coordinates of the sources.
+    gains : Dict[str, float]
+        The image gain.
+    bmjds : Dict[str, float]
+        The image time stamps.
+    barycenter : bool
+        Whether to apply a barycentric correction to the image time stamps.
+    flat_corrector : FlatFieldCorrector | None
+        The flat field corrector.
+    rebin_factor : int
+        The software pixel rebinning factor.
+    remove_cosmic_rays : bool
+        Whether to remove cosmic rays from the image.
+    background : BaseBackground
+        The two-dimensional background estimator.
+    threshold : float
+        The scalar source detection threshold in units of background RMS.
+    finder : DefaultFinder
+        The source finder.
+    psf_params : Dict[str, Dict[str, float]]
+        The PSF parameters.
+    fltr : str
+        The image filter.
+    logger : Logger
+        The logger.
+    
+    Returns
+    -------
+    Dict[str, List]
+        The photometry results.
+    """
     
     image, error = get_data(
         file=file,
@@ -624,7 +666,10 @@ def perform_photometry(
                 logger.warning(f"[OPTICAM] {key} could not be determined for source {i + 1} in {fltr} (got value {value}).")
     
     # add time stamp
-    results['BMJD'] = bmjds[file]  # type: ignore
+    if barycenter:
+        results['BMJD'] = bmjds[file]  # type: ignore
+    else:
+        results['MJD'] = bmjds[file]  # type: ignore
     
     return results
 
