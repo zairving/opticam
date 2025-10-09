@@ -32,9 +32,6 @@ def log_binnings(
             file_binnings[binning] = [file]
     
     path = os.path.join(out_directory, 'diag/binnings.json')
-    if not os.path.isdir(path):
-        os.makedirs(path, exist_ok=True)
-    
     with open(path, "w") as json_file:
         json.dump(file_binnings, json_file, indent=4)
 
@@ -65,9 +62,6 @@ def log_filters(
             file_filters[fltr] = [file]
     
     path = os.path.join(out_directory, 'diag/filters.json')
-    if not os.path.isdir(path):
-        os.makedirs(path, exist_ok=True)
-    
     with open(path, "w") as json_file:
         json.dump(file_filters, json_file, indent=4)
 
