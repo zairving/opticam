@@ -26,7 +26,7 @@ from opticam.plotting.gifs import compile_gif, create_gif_frame
 from opticam.utils.helpers import camel_to_snake
 from opticam.utils.fits_handlers import get_data, get_stacked_images, save_stacked_images
 from opticam.utils.logging import recursive_log
-from opticam.plotting.plots import plot_backgrounds, plot_background_meshes, plot_catalogs, plot_time_between_files
+from opticam.plotting.plots import plot_backgrounds, plot_background_meshes, plot_catalogs, plot_growth_curves, plot_time_between_files
 
 
 class Reducer:
@@ -248,7 +248,7 @@ class Reducer:
         
         self.transforms = {}  # define transforms as empty dictionary
         self.unaligned_files = []  # define unaligned files as empty list
-        self.catalogs = {}  # define catalogs as empty dictionary
+        self.catalogs : Dict[str, QTable] = {}  # define catalogs as empty dictionary
         self.psf_params = {}  # define PSF parameters as empty dictionary
         
         ########################################### read transforms ###########################################
@@ -525,6 +525,73 @@ class Reducer:
                 for file in self.unaligned_files:
                     unaligned_file.write(file + "\n")
 
+    def plot_growth_curves(
+        self,
+        targets: Dict[str, int | List[int]] | None = None,
+        show: bool = True,
+        ) -> None:
+        """
+        Plot the growth curves for the sources identified in the catalog images. The resulting plots are saved to
+        out_directory/diag/growth_curves as PDF files.
+        
+        Parameters
+        ----------
+        targets : Dict[str, int | List[int]] | None, optional
+            The targets for which growth curves will be created, by default `None` (growth curves are created for all
+            catalog sources). To create growth curves for specific targets, pass a dictionary with keys listing the
+            desired filters and values listing each filter's correpsonding target(s). For example:
+            ```
+            # plot growth curves for the three brightest sources in each catalog
+            plot_growth_curves(
+                targets = {
+                    'g-band': [1, 2, 3],
+                    'r-band': [1, 2, 3],
+                    'i-band': [1, 2, 3],
+                    },
+                )
+            ```
+        show : bool, optional
+            Whether to show the plots, by default `True`. The resulting plots are saved regardless of this value.
+        """
+        
+        stacked_images = get_stacked_images(self.out_directory)
+        
+        # create targets dict if it does not already exist
+        if targets is None:
+            growth_curve_targets = create_targets_dict(self.catalogs)
+        else:
+            growth_curve_targets = targets
+        
+        self.logger.info(f'[OPTICAM] Generating growth curves for targets: {repr(growth_curve_targets)}')
+        
+        for fltr, cat in self.catalogs.items():
+            
+            if fltr not in growth_curve_targets.keys():
+                self.logger.info(f'[OPTICAM] Filter {fltr} is not in target dictionary. Skipping.')
+                continue
+            
+            fig = plot_growth_curves(
+                image=stacked_images[fltr],
+                cat=cat,
+                targets=growth_curve_targets[fltr],
+                psf_params=self.psf_params[fltr],
+                )
+            
+            fig.suptitle(fltr, fontsize='large')
+            
+            dir_path = os.path.join(self.out_directory, 'diag/growth_curves')
+            if not os.path.isdir(dir_path):
+                os.makedirs(dir_path, exist_ok=True)
+            
+            fig.savefig(os.path.join(dir_path, f'{fltr}_growth_curves.pdf'))
+            
+            if show:
+                plt.show(fig)
+            else:
+                plt.close(fig)
+        
+        self.logger.info('[OPTICAM] Growth curves generated.')
+
     def plot_psfs(
         self,
         ) -> None:
@@ -539,15 +606,15 @@ class Reducer:
             x_lo, x_hi = 0, stacked_images[fltr].shape[1]
             y_lo, y_hi = 0, stacked_images[fltr].shape[0]
             
-            for source in tqdm(
-                self.catalogs[fltr]['label'],
+            for source_indx in tqdm(
+                range(len(self.catalogs[fltr])),
                 disable=not self.verbose,
                 desc=f'[OPTICAM] Plotting {fltr} PSFs',
                 bar_format=bar_format,
                 ):
                 
-                x, y = int(self.catalogs[fltr]['xcentroid'][source - 1]), int(self.catalogs[fltr]['ycentroid'][source - 1])  # source position
-                w = int(self.catalogs[fltr]['semimajor_sigma'][source - 1].value) * 10  # source stdev
+                x, y = int(self.catalogs[fltr]['xcentroid'][source_indx]), int(self.catalogs[fltr]['ycentroid'][source_indx])  # source position
+                w = int(self.catalogs[fltr]['semimajor_sigma'][source_indx].value) * 10  # source stdev
                 x_range = np.arange(max(x_lo, int(x - w)), min(x_hi, int(x + w)))  # x range
                 y_range = np.arange(max(y_lo, int(y - w)), min(y_hi, int(y + w)))  # y range
                 
@@ -573,7 +640,7 @@ class Reducer:
                 # ax.contour(x, y, region, 20, zdir='y', offset=ax.set_ylim()[1], colors='black', linewidths=.5)
                 ax.contour(x, y, region, 10, zdir='z', offset=ax.set_zlim()[0], colors='black', linewidths=.5)
                 
-                ax.set_title(f'{fltr} source {source}')
+                ax.set_title(f'{fltr} source {source_indx + 1}')
                 
                 def update(frame):
                     ax.view_init(elev=30, azim=frame)
@@ -583,7 +650,7 @@ class Reducer:
                 ani.save(
                     os.path.join(
                         self.out_directory,
-                        f'psfs/{fltr}_source_{source}.gif'),
+                        f'psfs/{fltr}_source_{source_indx + 1}.gif'),
                     writer='pillow',
                     fps=30,
                     )
@@ -732,7 +799,7 @@ class Reducer:
 
 
 
-################### for a clearner UI, the following functions are intentionally not Catalog methods ###################
+################### for a clearner UI, the following functions are intentionally not Reducer methods ###################
 
 
 def log_reducer_params(
@@ -858,6 +925,33 @@ def parse_alignment_results(
         print(f'[OPTICAM] {len(fltr_unaligned_files)} image(s) could not be aligned.')
     
     return transforms, unaligned_files, stacked_image, fltr_background_medians, fltr_background_rmss
+
+
+def create_targets_dict(
+    catalogs: Dict[str, QTable],
+    ) -> Dict[str, List[int]]:
+    """
+    Create a dictionary of target IDs for all catalog sources.
+    
+    Parameters
+    ----------
+    catalogs : Dict[str, QTable]
+        The catalogs.
+    
+    Returns
+    -------
+    Dict[str, List[int]]
+        The target IDs for all catalog sources.
+    """
+    
+    targets: Dict[str, List[int]] = {}
+    
+    for fltr, cat in catalogs.items():
+        targets[fltr] = []
+        for i in range(len(cat)):
+            targets[fltr].append(i + 1)
+    
+    return targets
 
 
 def save_photometry_results(
