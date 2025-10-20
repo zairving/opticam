@@ -181,6 +181,7 @@ class Analyzer:
                     linestyle='none',
                     ecolor='grey',
                     elinewidth=1,
+                    alpha=.3,
                     )
                 axes[i].step(
                     t,
