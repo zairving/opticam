@@ -198,7 +198,7 @@ def save_stacked_images(
     overwrite: bool,
     ) -> None:
     """
-    Save the stacked images to a compressed FITS file.
+    Save the stacked images to a compressed FITS cube.
     
     Parameters
     ----------
@@ -207,7 +207,7 @@ def save_stacked_images(
     """
     
     hdr = fits.Header()
-    hdr['COMMENT'] = 'This FITS file contains the stacked images for each filter.'
+    hdr['COMMENT'] = 'This FITS file contains stacked images for each filter.'
     empty_primary = fits.PrimaryHDU(header=hdr)
     hdul = fits.HDUList([empty_primary])
     
