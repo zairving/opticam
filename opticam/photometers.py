@@ -290,6 +290,49 @@ class AperturePhotometer(BasePhotometer):
     """
     A photometer for performing aperture photometry.
     """
+    
+    def __init__(
+        self,
+        semimajor_axis: int | None = None,
+        semiminor_axis: int | None = None,
+        orientation: float | None = None,
+        forced: bool = False,
+        source_matching_tolerance: float = 2.,
+        local_background_estimator: None | BaseLocalBackground = None,
+        ):
+        """
+        Initialise a photometer.
+        
+        Parameters
+        ----------
+        semimajor_axis : int | None, optional
+            The semi-major axis of the aperture, by default None (set to the FWHM of the PSF).
+        semiminor_axis : int | None, optional
+            The semi-minor axis of the aperture, by default None (set to the FWHM of the PSF).
+        orientation : float, optional
+            The orientation of the ellipse, by default None (set based on the averaged PSF orientation).
+        forced : bool, optional
+            Whether to performed "forced" photometry, by default `False`. If `True`, the catalog-aligned coordinates
+            are used to perform photometry, even in images where the source is not detected, and the resulting light
+            curves will be saved with a 'forced' prefix.
+        source_matching_tolerance : float, optional
+            The tolerance for source position matching in standard deviations (assuming a Gaussian PSF), by default 2.
+            This parameter defines how far from the transformed catalogue position a source can be while still being
+            considered the same source.
+        local_background_estimator : None | BaseLocalBackground, optional
+            The local background estimator to use, by default `None`. If `None`, the catalogue's 2D background estimator
+            is used. If not `None`, this will be used instead of the catalogue's 2D background estimator.
+        """
+        
+        self.semimajor_axis = semimajor_axis
+        self.semiminor_axis = semiminor_axis
+        self.orientation = orientation
+        
+        super().__init__(
+            forced=forced,
+            source_matching_tolerance=source_matching_tolerance,
+            local_background_estimator=local_background_estimator,
+            )
 
     def compute(
         self,
@@ -383,12 +426,20 @@ class AperturePhotometer(BasePhotometer):
             returned.
         """
         
-        aperture = EllipticalAperture(
-            position,
-            fwhm_scale * psf_params['semimajor_sigma'],
-            fwhm_scale * psf_params['semiminor_sigma'],
-            psf_params['orientation'],
-            )
+        if self.semimajor_axis is not None and self.semiminor_axis is not None and self.orientation is not None:
+            aperture = EllipticalAperture(
+                position,
+                self.semimajor_axis,
+                self.semiminor_axis,
+                self.orientation,
+                )
+        else:
+            aperture = EllipticalAperture(
+                position,
+                fwhm_scale * psf_params['semimajor_sigma'],
+                fwhm_scale * psf_params['semiminor_sigma'],
+                psf_params['orientation'],
+                )
         
         phot_table = aperture_photometry(data, aperture, error=error)
         
@@ -664,6 +715,58 @@ def perform_photometry(
         results['MJD'] = bmjds[file]  # type: ignore
     
     return results
+
+
+def get_growth_curve(
+    image: NDArray,
+    x_centroid: float,
+    y_centroid: float,
+    r_max: int,
+    ) -> Tuple[NDArray, NDArray]:
+    """
+    Compute the growth curve for a point in an image.
+    
+    Parameters
+    ----------
+    image : NDArray
+        The image.
+    x_centroid : float
+        The x centroid of the point.
+    y_centroid : float
+        The y centroid of the point.
+    r_max : int
+        The maximum radius in pixels.
+    
+    Returns
+    -------
+    Tuple[NDArray, NDArray]
+        _description_
+    """
+    
+    position = np.array([x_centroid, y_centroid])
+    
+    radii, fluxes = [], []
+    
+    for r in range(1, r_max):
+        radii.append(r)
+        
+        photometer = AperturePhotometer(
+            semimajor_axis=r,
+            semiminor_axis=r,
+            orientation=0,
+            forced=True,
+            )
+        
+        flux = photometer.compute_aperture_flux(
+            data=image,
+            error=image,
+            position=position,
+            psf_params={},  # empty dict since not needed
+            )[0]
+        
+        fluxes.append(flux)
+    
+    return np.array(radii), np.array(fluxes)
 
 
 
