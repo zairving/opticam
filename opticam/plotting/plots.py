@@ -4,13 +4,15 @@ from astropy.table import QTable
 from astropy.visualization import simple_norm
 from matplotlib.patches import Circle
 from matplotlib import pyplot as plt
+from matplotlib.figure import Figure
 import numpy as np
 from numpy.typing import NDArray
 import os.path
 from pandas import DataFrame
 
 from opticam.background.global_background import BaseBackground
-from opticam.utils.constants import catalog_colors
+from opticam.utils.constants import catalog_colors, fwhm_scale
+from opticam.photometers import get_growth_curve
 
 
 def plot_catalogs(
@@ -57,7 +59,7 @@ def plot_catalogs(
         axes[i].imshow(
             plot_image,
             origin="lower",
-            cmap="Greys_r",
+            cmap="Greys",
             interpolation="nearest",
             norm=simple_norm(
                 plot_image,
@@ -90,9 +92,9 @@ def plot_catalogs(
                 )
             
             # label plot
-            axes[i].set_title(fltr)
-            axes[i].set_xlabel("X")
-            axes[i].set_ylabel("Y")
+            axes[i].set_title(fltr, fontsize='large')
+            axes[i].set_xlabel("X", fontsize='large')
+            axes[i].set_ylabel("Y", fontsize='large')
     
     if save:
         fig.savefig(os.path.join(out_directory, "cat/catalogs.png"), dpi=200)
@@ -324,9 +326,9 @@ def plot_background_meshes(
         bkg = background(stacked_images[fltr])
         
         # plot background mesh
-        axes[i].imshow(plot_image, origin="lower", cmap="Greys_r", interpolation="nearest",
+        axes[i].imshow(plot_image, origin="lower", cmap="Greys", interpolation="nearest",
                         norm=simple_norm(plot_image, stretch="log"))
-        bkg.plot_meshes(ax=axes[i], outlines=True, marker='.', color='cyan', alpha=0.3)
+        bkg.plot_meshes(ax=axes[i], outlines=True, marker='.', color='red', alpha=0.3)
         
         #label plot
         axes[i].set_title(fltr)
@@ -341,3 +343,108 @@ def plot_background_meshes(
     else:
         fig.clear()
         plt.close(fig)
+
+
+def plot_growth_curves(
+    image: NDArray,
+    cat: QTable,
+    targets: int | List[int],
+    psf_params: Dict,
+    ) -> Figure:
+    """
+    Plot the growth curves given a (stacked) image and a source catalog.
+    
+    Parameters
+    ----------
+    image : NDArray
+        The image.
+    cat : QTable
+        The catalog corresponding to `image`.
+    targets : int | List[int]
+        The target(s) for which growth curves are to be computed.
+    psf_params : Dict
+        The PSF parameters.
+    
+    Returns
+    -------
+    Figure
+        The growth curve plots.
+    """
+    
+    def pix2sigma(x):
+        return x / (psf_params['semimajor_sigma'] * fwhm_scale)
+    
+    def sigma2pix(x):
+        return x * (psf_params['semimajor_sigma'] / fwhm_scale)
+    
+    if isinstance(targets, int):
+        targets = [targets]
+    
+    n = len(targets)
+    cols = int(np.ceil(np.sqrt(n)))
+    rows = int(np.ceil(n / cols))
+    
+    fig, axes = plt.subplots(
+        nrows=rows,
+        ncols=cols,
+        figsize=(cols * 3, rows * 3),
+        tight_layout=True,
+        sharey='row',
+    )
+    
+    if n > 1:
+        for row in axes:
+            row[0].set_ylabel('Flux [%]', fontsize='large')
+    else:
+        axes.set_ylabel('Flux [%]', fontsize='large')
+    
+    axes = np.asarray([axes]).flatten()
+    
+    for target in targets:
+        i = target - 1  # index is just target ID - 1
+        
+        radii, fluxes = get_growth_curve(
+            image=image,
+            x_centroid=cat['xcentroid'][i],
+            y_centroid=cat['ycentroid'][i],
+            r_max = int(np.ceil(10 * psf_params['semimajor_sigma'])),
+        )
+        
+        axes[i].step(
+            radii,
+            100 * fluxes / np.max(fluxes),
+            c='k',
+            lw=1,
+            where='mid',
+            )
+        
+        secax = axes[i].secondary_xaxis('top', functions=(pix2sigma, sigma2pix))
+        secax.set_xlabel('Radius [FWHM]', fontsize='large')
+        secax.minorticks_on()
+        secax.tick_params(which='both', direction='in')
+        
+        axes[i].set_title(f'Source {i + 1}', fontsize='large')
+        axes[i].set_xlabel('Radius [pixels]', fontsize='large')
+        
+        axes[i].minorticks_on()
+        axes[i].tick_params(which='both', direction='in', right=True)
+    
+    # delete empty subplots
+    m = axes.size - n
+    for i in range(1, m + 1):
+        fig.delaxes(axes[-i])
+    
+    return fig
+
+
+
+
+
+
+
+
+
+
+
+
+
