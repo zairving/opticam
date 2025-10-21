@@ -407,7 +407,7 @@ def plot_growth_curves(
             image=image,
             x_centroid=cat['xcentroid'][i],
             y_centroid=cat['ycentroid'][i],
-            r_max = int(np.ceil(10 * psf_params['semimajor_sigma'])),
+            r_max = round(10 * psf_params['semimajor_sigma']),
         )
         
         axes[i].step(
