@@ -56,7 +56,7 @@ class DifferentialPhotometer:
         with open(os.path.join(self.out_directory, 'misc/reduction_parameters.json'), 'r') as file:
             input_parameters = json.load(file)
         self.filters = input_parameters['filters']
-        self.t_ref = input_parameters['t_ref']
+        self.t_ref = float(input_parameters['t_ref'])
         self.time_key = 'BMJD' if input_parameters['barycenter'] else 'MJD'
         
         # output filters

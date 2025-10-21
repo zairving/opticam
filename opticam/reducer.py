@@ -6,11 +6,11 @@ import os
 from typing import Callable, Dict, List, Literal, Tuple
 
 from astropy.table import QTable
+from matplotlib.patches import Ellipse
 from matplotlib import pyplot as plt
-from matplotlib.animation import FuncAnimation
 import numpy as np
 import pandas as pd
-from photutils.segmentation import SourceCatalog, detect_threshold
+from photutils.segmentation import detect_threshold
 from tqdm.contrib.concurrent import process_map
 from tqdm import tqdm
 
@@ -20,13 +20,14 @@ from opticam.correctors.flat_field_corrector import FlatFieldCorrector
 from opticam.finders import DefaultFinder, get_source_coords_from_image
 from opticam.photometers import BasePhotometer, perform_photometry
 from opticam.utils.batching import get_batches, get_batch_size
-from opticam.utils.constants import bar_format, pixel_scales
+from opticam.utils.constants import bar_format, fwhm_scale, pixel_scales
 from opticam.utils.data_checks import check_data
 from opticam.plotting.gifs import compile_gif, create_gif_frame
 from opticam.utils.helpers import camel_to_snake
 from opticam.utils.fits_handlers import get_data, get_stacked_images, save_stacked_images
 from opticam.utils.logging import recursive_log
 from opticam.plotting.plots import plot_backgrounds, plot_background_meshes, plot_catalogs, plot_growth_curves, plot_time_between_files
+from opticam.models.fittable_models import gaussian
 
 
 class Reducer:
@@ -87,8 +88,8 @@ class Reducer:
             callable is provided, it should take an image (`NDArray`) as input and return a `Background2D` object.
         finder: Callable, optional
             The source finder, by default `None`. If `None`, the default source finder is used. If a callable is
-            provided, it should take an image (`NDArray`) and a threshold (`float`) as input and return a
-            `SegmentationImage` object.
+            provided, it should take an image (`NDArray`) and a threshold (`float | NDArray`) as input and return a
+            `QTable` instance.
         aperture_selector: Callable, optional
             The aperture selector, by default `np.median`. This function is used to select the aperture size for
             photometry. If a callable is provided, it should take a list of source sizes (`List[float]`) as input and
@@ -447,7 +448,7 @@ class Reducer:
             
             try:
                 # identify sources in stacked image
-                segment_map = self.finder(
+                tbl = self.finder(
                     stacked_image,
                     threshold,
                     )
@@ -458,10 +459,8 @@ class Reducer:
             # save stacked image
             stacked_images[fltr] = stacked_image
             
-            # catalog sources
-            tbl = SourceCatalog(stacked_image, segment_map).to_table()
-            tbl.sort('segment_flux', reverse=True)
-            tbl = tbl[:max_catalog_sources]  # limit catalog to brightest max_catalog_sources sources
+            # limit catalog to brightest max_catalog_sources sources
+            tbl = tbl[:max_catalog_sources]
             
             # save catalog
             self.catalogs.update({fltr: tbl})
@@ -606,6 +605,11 @@ class Reducer:
             x_lo, x_hi = 0, stacked_images[fltr].shape[1]
             y_lo, y_hi = 0, stacked_images[fltr].shape[0]
             
+            a = self.psf_params[fltr]['semimajor_sigma']
+            b = self.psf_params[fltr]['semiminor_sigma']
+            
+            w = a * 10  # region width
+            
             for source_indx in tqdm(
                 range(len(self.catalogs[fltr])),
                 disable=not self.verbose,
@@ -613,16 +617,21 @@ class Reducer:
                 bar_format=bar_format,
                 ):
                 
-                x, y = int(self.catalogs[fltr]['xcentroid'][source_indx]), int(self.catalogs[fltr]['ycentroid'][source_indx])  # source position
-                w = int(self.catalogs[fltr]['semimajor_sigma'][source_indx].value) * 10  # source stdev
-                x_range = np.arange(max(x_lo, int(x - w)), min(x_hi, int(x + w)))  # x range
-                y_range = np.arange(max(y_lo, int(y - w)), min(y_hi, int(y + w)))  # y range
+                xc = self.catalogs[fltr]['xcentroid'][source_indx]
+                yc = self.catalogs[fltr]['ycentroid'][source_indx]
+                x_range = np.arange(max(x_lo, round(xc - w)), min(x_hi, round(xc + w)))  # x range
+                y_range = np.arange(max(y_lo, round(yc - w)), min(y_hi, round(yc + w)))  # y range
+                x_smooth = np.linspace(x_range[0], x_range[-1], 100)
+                y_smooth = np.linspace(y_range[0], y_range[-1], 100)
+                
+                theta = self.catalogs[fltr]['orientation'].value[source_indx]
+                theta_rad = theta * np.pi / 180
                 
                 # create mask
                 mask = np.zeros_like(stacked_images[fltr], dtype=bool)
-                for x in x_range:
-                    for y in y_range:
-                        mask[y, x] = True
+                for x_ in x_range:
+                    for y_ in y_range:
+                        mask[y_, x_] = True
                 
                 # isolate source
                 rows_to_keep = np.any(mask, axis=1)
@@ -630,29 +639,98 @@ class Reducer:
                 cols_to_keep = np.any(mask, axis=0)
                 region = region[:, cols_to_keep]
                 
-                fig = plt.figure(num=1, clear=True)
-                ax = fig.add_subplot(projection='3d')
+                fig, axes = plt.subplots(
+                    ncols=2,
+                    nrows=2,
+                    tight_layout=True,
+                    figsize=(6, 6),
+                    sharex='col',
+                    sharey='row',
+                    gridspec_kw={
+                        'hspace': 0,
+                        'wspace': 0,
+                        },
+                    )
+                fig.delaxes(axes[0, 1])
                 
                 x, y = np.meshgrid(x_range, y_range)
+                axes[1, 0].contour(
+                    x,
+                    y,
+                    region,
+                    5,
+                    colors='black',
+                    linewidths=1,
+                    zorder=1,
+                    linestyles='dashdot',
+                    )
+                axes[1, 0].set_xlabel('X', fontsize='large')
+                axes[1, 0].set_ylabel('Y', fontsize='large')
+                axes[1, 0].add_patch(
+                    Ellipse(
+                        xy=(xc, yc),
+                        width=2 * fwhm_scale * a,  # in this parameterisation, the width is the semimajor axis
+                        height=2 * fwhm_scale * b,  # in this parameterisation, the height is the semiminor axis
+                        angle=theta,  # in this parameterisation, the angle is the orientation of the PSF
+                        facecolor='none',
+                        edgecolor='r',
+                        lw=1,
+                        ls='-',
+                        zorder=2,
+                        ),
+                    )
                 
-                ax.plot_surface(x, y, region, edgecolor='r', rstride=2, cstride=2, color='none', lw=.5)
-                # ax.contour(x, y, region, 20, zdir='x', offset=ax.set_xlim()[0], colors='black', linewidths=.5)
-                # ax.contour(x, y, region, 20, zdir='y', offset=ax.set_ylim()[1], colors='black', linewidths=.5)
-                ax.contour(x, y, region, 10, zdir='z', offset=ax.set_zlim()[0], colors='black', linewidths=.5)
+                # project PSF onto x, y axes
+                xstd = np.sqrt(a**2 * np.cos(theta_rad)**2 + b**2 * np.sin(theta_rad)**2)
+                ystd = np.sqrt(a**2 * np.sin(theta_rad)**2 + b**2 * np.cos(theta_rad)**2)
                 
-                ax.set_title(f'{fltr} source {source_indx + 1}')
+                axes[0, 0].step(
+                    x_range,
+                    100 * region[region.shape[0] // 2, :] / np.max(region[region.shape[0] // 2, :]),
+                    color='k',
+                    lw=1,
+                    where='mid',
+                    zorder=1,
+                    )
+                axes[0, 0].plot(
+                    x_smooth,
+                    gaussian(x_smooth, 100, xc, xstd),
+                    'r-',
+                    lw=1,
+                    zorder=2,
+                )
+                axes[0, 0].set_ylabel('%age of peak flux', fontsize='large')
                 
-                def update(frame):
-                    ax.view_init(elev=30, azim=frame)
-                    return fig,
+                axes[1, 1].step(
+                    100 * region[:, region.shape[1] // 2] / np.max(region[:, region.shape[1] // 2]),
+                    y_range,
+                    color='k',
+                    lw=1,
+                    where='mid',
+                    )
+                axes[1, 1].plot(
+                    gaussian(y_smooth, 100, yc, ystd),
+                    y_smooth,
+                    'r-',
+                    lw=1,
+                )
+                axes[1, 1].set_xlabel('%age of peak flux', fontsize='large')
                 
-                ani = FuncAnimation(fig, update, frames=np.arange(0, 360, 5), interval=100, blit=True)
-                ani.save(
+                for ax in axes.flatten():
+                    ax.minorticks_on()
+                    ax.tick_params(
+                        which='both',
+                        direction='in',
+                        right=True,
+                        top=True,
+                        )
+                
+                fig.suptitle(f'{fltr} Source {source_indx + 1}', fontsize='large')
+                fig.savefig(
                     os.path.join(
                         self.out_directory,
-                        f'psfs/{fltr}_source_{source_indx + 1}.gif'),
-                    writer='pillow',
-                    fps=30,
+                        f'psfs/{fltr}_source_{source_indx + 1}.pdf',
+                        ),
                     )
                 plt.close(fig)
 
@@ -1036,12 +1114,6 @@ def parse_photometry_results(
             photometry_results[key].append(value)
     
     return photometry_results
-
-
-
-
-
-
 
 
 

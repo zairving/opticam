@@ -5,7 +5,7 @@ from typing import Callable, Dict, List, Tuple
 import numpy as np
 from numpy.typing import NDArray
 from photutils.aperture import aperture_photometry, EllipticalAperture
-from photutils.segmentation import SourceCatalog, detect_threshold
+from photutils.segmentation import detect_threshold
 
 from opticam.background.global_background import BaseBackground
 from opticam.background.local_background import BaseLocalBackground
@@ -690,8 +690,7 @@ def perform_photometry(
     image_coords = None  # assume no image coordinates by default
     if not photometer.forced:
         try:
-            segm = finder(image, threshold)
-            tbl = SourceCatalog(image, segm).to_table()
+            tbl = finder(image, threshold)
             image_coords = np.array([tbl["xcentroid"].value,
                                     tbl["ycentroid"].value]).T
         except Exception as e:
