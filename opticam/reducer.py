@@ -830,7 +830,6 @@ class Reducer:
         
         # for each filter
         for fltr in self.catalogs.keys():
-            
             if os.path.isfile(os.path.join(self.out_directory, f'{save_name}_light_curves/{fltr}_source_1.csv')) and not overwrite:
                 print(f'[OPTICAM] Skipping {fltr} since existing light curves files were found. To overwrite these files, set overwrite=True.')
                 continue
@@ -838,7 +837,8 @@ class Reducer:
             source_coords = np.array([self.catalogs[fltr]["xcentroid"].value,
                                       self.catalogs[fltr]["ycentroid"].value]).T
             
-            batch_size = get_batch_size(len(self.camera_files[fltr]))
+            files = [file for file in self.camera_files[fltr] if file not in self.unaligned_files]
+            batch_size = get_batch_size(len(files))
             results = process_map(
                 partial(
                     perform_photometry,
@@ -857,7 +857,7 @@ class Reducer:
                     fltr=fltr,
                     logger=self.logger,
                 ),
-                self.camera_files[fltr],
+                files,
                 max_workers=self.number_of_processors,
                 disable=not self.verbose,
                 desc=f"[OPTICAM] Performing photometry on {fltr} images",
