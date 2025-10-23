@@ -379,7 +379,6 @@ class Reducer:
             reference_image = np.asarray(
                 get_data(
                     file=self.reference_files[fltr],
-                    gain=self.gains[self.reference_files[fltr]],
                     return_error=False,
                     flat_corrector=self.flat_corrector,
                     rebin_factor=self.rebin_factor,
@@ -822,15 +821,15 @@ class Reducer:
         if photometer.forced:
             save_name = 'forced_' + save_name
         
-        print(f'[OPTICAM] Photometry results will be saved to {save_name}_light_curves in {self.out_directory}.')
+        print(f'[OPTICAM] Photometry results will be saved to lcs/{save_name} in {self.out_directory}.')
         
-        save_dir = os.path.join(self.out_directory, f"{save_name}_light_curves")
+        save_dir = os.path.join(self.out_directory, f"lcs/{save_name}")
         if not os.path.isdir(save_dir):
             os.makedirs(save_dir)
         
         # for each filter
         for fltr in self.catalogs.keys():
-            if os.path.isfile(os.path.join(self.out_directory, f'{save_name}_light_curves/{fltr}_source_1.csv')) and not overwrite:
+            if os.path.isfile(os.path.join(save_dir, f'{fltr}_source_1.csv')) and not overwrite:
                 print(f'[OPTICAM] Skipping {fltr} since existing light curves files were found. To overwrite these files, set overwrite=True.')
                 continue
             

@@ -252,7 +252,7 @@ class DifferentialPhotometer:
         # TODO: create functions to clean up this code
         
         # subdirectory where results will be saved
-        light_curve_dir = f'{phot_label}_light_curves'
+        light_curve_dir = f'lcs/{phot_label}'
         
         # get target data frame
         try:
@@ -335,7 +335,7 @@ class DifferentialPhotometer:
             'rel_flux_err': relative_flux_error,
         })
         df.to_csv(
-            os.path.join(self.out_directory, f'relative_light_curves/{prefix}_{fltr}_{phot_label}_light_curve.csv'),
+            os.path.join(self.out_directory, f'relative_light_curves/{phot_label}/{prefix}_{fltr}_light_curve.csv'),
             index=False,
         )
         
@@ -426,7 +426,7 @@ class DifferentialPhotometer:
             ax.minorticks_on()
             ax.tick_params(which='both', direction='in', top=True, right=True)
             
-            fig.savefig(os.path.join(self.out_directory, f'relative_light_curves/{prefix}_{fltr}_{phot_label}_light_curve.png'))
+            fig.savefig(os.path.join(self.out_directory, f'relative_light_curves/{phot_label}/{prefix}_{fltr}_light_curve.png'))
             
             if self.show_plots:
                 plt.show()
@@ -562,10 +562,11 @@ class DifferentialPhotometer:
         
         ########################################### save plot ###########################################
         
-        if not os.path.isdir(os.path.join(self.out_directory, 'relative_light_curves/diag')):
-            os.makedirs(os.path.join(self.out_directory, 'relative_light_curves/diag'))
+        save_dir = os.path.join(self.out_directory, f'relative_light_curves/{phot_label}/diag')
+        if not os.path.isdir(save_dir):
+            os.makedirs(save_dir)
         
-        fig.savefig(os.path.join(self.out_directory, f'relative_light_curves/diag/{fltr}_{comparison1}_{comparison2}_{phot_label}.png'))
+        fig.savefig(os.path.join(save_dir, f'{fltr}_{comparison1}_{comparison2}_diag_light_curve.png'))
         
         ########################################### optionally show plot ###########################################
         
