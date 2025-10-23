@@ -34,7 +34,6 @@ def create_gif_frame(
     data = np.asarray(
         get_data(
             file=file,
-            gain=gains[file],
             flat_corrector=flat_corrector,
             rebin_factor=rebin_factor,
             return_error=False,

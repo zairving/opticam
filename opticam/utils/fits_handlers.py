@@ -104,8 +104,8 @@ def get_time(
     if "GPSTIME" in header.keys():
         gpstime = header["GPSTIME"]
         split_gpstime = gpstime.split(" ")
-        date = split_gpstime[0]  # get date
-        time = split_gpstime[1].split(".")[0]  # get time (ignoring decimal seconds)
+        date = split_gpstime[0]
+        time = split_gpstime[1]
         mjd = Time(date + "T" + time, format="fits").mjd
     elif "UT" in header.keys():
         try:
@@ -120,12 +120,11 @@ def get_time(
     else:
         raise KeyError(f"[OPTICAM] Could not find GPSTIME or UT key in {file} header.")
     
-    return mjd
+    return float(mjd)
 
 
 def get_data(
     file: str,
-    gain: float,
     flat_corrector: FlatFieldCorrector | None,
     rebin_factor: int,
     return_error: bool,
@@ -138,8 +137,6 @@ def get_data(
     ----------
     file : str
         The file.
-    gain : float
-        The file gain.
     flat_corrector : FlatFieldCorrector | None
         The `FlatFieldCorrector` instance (if specified).
     rebin_factor : int
@@ -168,7 +165,7 @@ def get_data(
         raise ValueError(f"[OPTICAM] Could not open file {file}.")
     
     if return_error:
-        error = np.sqrt(data * gain)
+        error = np.sqrt(data)
     
     if flat_corrector:
         data = flat_corrector.correct(data, fltr)

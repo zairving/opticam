@@ -106,7 +106,6 @@ def align_batch(
         data = np.asarray(
             get_data(
                 file,
-                gains[file],
                 flat_corrector=flat_corrector,
                 rebin_factor=rebin_factor,
                 return_error=False,
