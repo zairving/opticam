@@ -23,8 +23,8 @@ class BasePhotometer(ABC):
     def __init__(
         self,
         forced: bool = False,
-        source_matching_tolerance: float = 2.,
-        local_background_estimator: None | BaseLocalBackground = None,
+        source_matching_tolerance: float = 5.,
+        local_background_estimator: BaseLocalBackground | Callable | None = None,
         ):
         """
         Initialise a photometer.
@@ -36,10 +36,10 @@ class BasePhotometer(ABC):
             are used to perform photometry, even in images where the source is not detected, and the resulting light
             curves will be saved with a 'forced' prefix.
         source_matching_tolerance : float, optional
-            The tolerance for source position matching in standard deviations (assuming a Gaussian PSF), by default 2.
+            The tolerance for source position matching in standard deviations (assuming a Gaussian PSF), by default 5.
             This parameter defines how far from the transformed catalogue position a source can be while still being
             considered the same source.
-        local_background_estimator : None | BaseLocalBackground, optional
+        local_background_estimator : BaseLocalBackground | Callable | None, optional
             The local background estimator to use, by default `None`. If `None`, the catalogue's 2D background estimator
             is used. If not `None`, this will be used instead of the catalogue's 2D background estimator.
         """
@@ -297,7 +297,7 @@ class AperturePhotometer(BasePhotometer):
         semiminor_axis: int | None = None,
         orientation: float | None = None,
         forced: bool = False,
-        source_matching_tolerance: float = 2.,
+        source_matching_tolerance: float = 5.,
         local_background_estimator: None | BaseLocalBackground = None,
         ):
         """
@@ -316,7 +316,7 @@ class AperturePhotometer(BasePhotometer):
             are used to perform photometry, even in images where the source is not detected, and the resulting light
             curves will be saved with a 'forced' prefix.
         source_matching_tolerance : float, optional
-            The tolerance for source position matching in standard deviations (assuming a Gaussian PSF), by default 2.
+            The tolerance for source position matching in standard deviations (assuming a Gaussian PSF), by default 5.
             This parameter defines how far from the transformed catalogue position a source can be while still being
             considered the same source.
         local_background_estimator : None | BaseLocalBackground, optional
@@ -671,7 +671,6 @@ def perform_photometry(
     
     image, error = get_data(
         file=file,
-        gain=gains[file],
         flat_corrector=flat_corrector,
         rebin_factor=rebin_factor,
         return_error=True,
@@ -700,12 +699,6 @@ def perform_photometry(
     
     assert 'flux' in results, f"[OPTICAM] Photometer {photometer.__class__.__name__}'s compute method must return a 'flux' key."
     assert 'flux_err' in results, f"[OPTICAM] Photometer {photometer.__class__.__name__}'s compute method must return a 'flux_err' key."
-    
-    # results check
-    for key, values in results.items():
-        for i, value in enumerate(values):
-            if value is None:
-                logger.warning(f"[OPTICAM] {key} could not be determined for source {i + 1} in {fltr} (got value {value}).")
     
     # add time stamp
     if barycenter:
