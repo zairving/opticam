@@ -181,7 +181,7 @@ class Analyzer:
                     linestyle='none',
                     ecolor='grey',
                     elinewidth=1,
-                    alpha=.3,
+                    alpha=.5,
                     )
                 axes[i].step(
                     t,
@@ -201,6 +201,21 @@ class Analyzer:
                 va='top',
                 ha='right',
             )
+            
+            # plot GTIs
+            gti = 86400 * (np.asarray(lc.gti) - self.t_ref)
+            for j in range(gti.shape[0] - 1):
+                stop = gti[j][1]
+                start = gti[j + 1][0]
+                
+                axes[i].fill_betweenx(
+                    axes[i].set_ylim(),
+                    stop,
+                    start,
+                    color='grey',
+                    edgecolor='none',
+                    alpha=.5,
+                )
         
         axes[-1].set_xlabel(f'Time from BMJD {self.t_ref:.4f} [s]', fontsize='large')
         axes[len(self.light_curves) // 2].set_ylabel('Normalized flux', fontsize='large')
