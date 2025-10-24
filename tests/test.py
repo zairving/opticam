@@ -1,6 +1,5 @@
 import unittest
 import numpy as np
-from photutils.segmentation import SourceCatalog
 import os
 import tempfile
 from astropy.io import fits
@@ -8,7 +7,7 @@ from astropy.io import fits
 from opticam.background.global_background import DefaultBackground
 from opticam.background.local_background import DefaultLocalBackground
 from opticam.finders import DefaultFinder
-from opticam.utils.generate import generate_flats, generate_gappy_observations, generate_observations
+from opticam.utils.generate import generate_observations
 
 
 class TestBackground(unittest.TestCase):
@@ -63,9 +62,9 @@ class TestFinder(unittest.TestCase):
                     image = np.array(hdul[0].data)
                 
                 bkg = bkg_estimator(image)
-                segment_map = finder(image - bkg.background, 5 * bkg.background_rms)
+                tbl = finder(image - bkg.background, 5 * bkg.background_rms)
                 
-                self.assertTrue(segment_map.nlabels == 6)
+                self.assertTrue(len(tbl) == 6)
 
 
 class TestLocalBackground(unittest.TestCase):
@@ -92,8 +91,7 @@ class TestLocalBackground(unittest.TestCase):
                     image = np.array(hdul[0].data)
                 
                 bkg = bkg_estimator(image)
-                segment_map = finder(image - bkg.background, 5 * bkg.background_rms)
-                tbl = SourceCatalog(image - bkg.background, segment_map, background=bkg.background).to_table()
+                tbl = finder(image - bkg.background, 5 * bkg.background_rms)
                 coords = np.array([tbl["xcentroid"], tbl["ycentroid"]]).T
                 local_bkg_estimator = DefaultLocalBackground()
                 
