@@ -140,15 +140,15 @@ class Analyzer:
 
     def plot_light_curves(
         self,
-        title: str | None = None,
+        show_gtis: bool = False,
         ) -> Figure:
         """
         Plot the light curves.
         
         Parameters
         ----------
-        title : str | None, optional
-            The figure title, by default `None`.
+        show_gtis : bool, optional
+            Whether to highlight the Good Time Intervals on the light curve plot, by default `False`.
         
         Returns
         -------
@@ -202,26 +202,23 @@ class Analyzer:
                 ha='right',
             )
             
-            # plot GTIs
-            gti = 86400 * (np.asarray(lc.gti) - self.t_ref)
-            for j in range(gti.shape[0] - 1):
-                stop = gti[j][1]
-                start = gti[j + 1][0]
-                
-                axes[i].fill_betweenx(
-                    axes[i].set_ylim(),
-                    stop,
-                    start,
-                    color='grey',
-                    edgecolor='none',
-                    alpha=.5,
-                )
+            if show_gtis:
+                gti = 86400 * (np.asarray(lc.gti) - self.t_ref)
+                for j in range(gti.shape[0] - 1):
+                    stop = gti[j][1]
+                    start = gti[j + 1][0]
+                    
+                    axes[i].fill_betweenx(
+                        axes[i].set_ylim(),
+                        stop,
+                        start,
+                        color='grey',
+                        edgecolor='none',
+                        alpha=.5,
+                    )
         
         axes[-1].set_xlabel(f'Time from BMJD {self.t_ref:.4f} [s]', fontsize='large')
         axes[len(self.light_curves) // 2].set_ylabel('Normalized flux', fontsize='large')
-        
-        if title is not None:
-            axes[0].set_title(title)
         
         for ax in axes:
             ax.minorticks_on()
