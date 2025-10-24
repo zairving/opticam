@@ -13,7 +13,7 @@ class BaseLocalBackground(ABC):
     def __init__(
         self,
         r_in_scale: float = 5,
-        r_out_scale: float = 6,
+        r_out_scale: float = 7.5,
         sigma_clip: None | SigmaClip = SigmaClip(sigma=3, maxiters=10),
         ) -> None:
         """
@@ -25,7 +25,7 @@ class BaseLocalBackground(ABC):
             The inner scale of the annulus in units of aperture semimajor/semiminor axes or radius, by default 5
             (assuming the semimajor axis is in standard deviations for a 2D Gaussian PSF).
         r_out_scale : float, optional
-            The outer scale of the annulus in units of aperture semimajor/semiminor axes or radius, by default 6
+            The outer scale of the annulus in units of aperture semimajor/semiminor axes or radius, by default 7.5
             (assuming the semimajor axis is in standard deviations for a 2D Gaussian PSF).
         sigma_clip : SigmaClip, optional
             The sigma clipper for removing outlier pixels in the annulus, by default `SigmaClip(sigma=3, maxiters=10)`.

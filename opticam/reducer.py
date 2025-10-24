@@ -4,15 +4,13 @@ import logging
 from multiprocessing import cpu_count
 import os
 from typing import Callable, Dict, List, Literal, Tuple
-import warnings
 
-from astropy.stats import SigmaClip
 from astropy.table import QTable
+from matplotlib.patches import Ellipse
 from matplotlib import pyplot as plt
-from matplotlib.animation import FuncAnimation
 import numpy as np
 import pandas as pd
-from photutils.segmentation import SourceCatalog, detect_threshold
+from photutils.segmentation import detect_threshold
 from tqdm.contrib.concurrent import process_map
 from tqdm import tqdm
 
@@ -22,13 +20,14 @@ from opticam.correctors.flat_field_corrector import FlatFieldCorrector
 from opticam.finders import DefaultFinder, get_source_coords_from_image
 from opticam.photometers import BasePhotometer, perform_photometry
 from opticam.utils.batching import get_batches, get_batch_size
-from opticam.utils.constants import bar_format, pixel_scales
+from opticam.utils.constants import bar_format, fwhm_scale, pixel_scales
 from opticam.utils.data_checks import check_data
 from opticam.plotting.gifs import compile_gif, create_gif_frame
 from opticam.utils.helpers import camel_to_snake
 from opticam.utils.fits_handlers import get_data, get_stacked_images, save_stacked_images
 from opticam.utils.logging import recursive_log
-from opticam.plotting.plots import plot_backgrounds, plot_background_meshes, plot_catalogs, plot_time_between_files
+from opticam.plotting.plots import plot_backgrounds, plot_background_meshes, plot_catalogs, plot_growth_curves, plot_time_between_files
+from opticam.models.fittable_models import gaussian
 
 
 class Reducer:
@@ -50,6 +49,7 @@ class Reducer:
         threshold: float = 5,
         aperture_selector: Callable = np.median,
         remove_cosmic_rays: bool = False,
+        barycenter: bool = True,
         number_of_processors: int = cpu_count() // 2,
         show_plots: bool = True,
         verbose: bool = True
@@ -88,8 +88,8 @@ class Reducer:
             callable is provided, it should take an image (`NDArray`) as input and return a `Background2D` object.
         finder: Callable, optional
             The source finder, by default `None`. If `None`, the default source finder is used. If a callable is
-            provided, it should take an image (`NDArray`) and a threshold (`float`) as input and return a
-            `SegmentationImage` object.
+            provided, it should take an image (`NDArray`) and a threshold (`float | NDArray`) as input and return a
+            `QTable` instance.
         aperture_selector: Callable, optional
             The aperture selector, by default `np.median`. This function is used to select the aperture size for
             photometry. If a callable is provided, it should take a list of source sizes (`List[float]`) as input and
@@ -98,6 +98,8 @@ class Reducer:
             Whether to remove cosmic rays from images, by default False. Cosmic rays are removed using the LACosmic
             algorithm as implemented in `astroscrappy`. Note: this can be computationally expensive, particularly for
             large images.
+        barycenter: bool, optional
+            Whether to apply a barycentric correction to the image time stamps, by default True.
         number_of_processors: int, optional
             The number of processors to use for parallel processing, by default half the number of available processors.
         show_plots: bool, optional
@@ -169,6 +171,7 @@ class Reducer:
         self.aperture_selector = aperture_selector
         self.threshold = threshold
         self.remove_cosmic_rays = remove_cosmic_rays
+        self.barycenter = barycenter
         self.number_of_processors = number_of_processors
         self.show_plots = show_plots
         
@@ -180,6 +183,7 @@ class Reducer:
                 c2_directory=c2_directory,
                 c3_directory=c3_directory,
                 out_directory=out_directory,
+                barycenter=self.barycenter,
                 verbose=verbose,
                 return_output=True,
                 logger=self.logger,
@@ -213,7 +217,7 @@ class Reducer:
         ########################################### background ###########################################
         
         if background is None:
-            box_size = 2048 // self.binning_scale // self.rebin_factor // 16
+            box_size = 2048 // self.binning_scale // self.rebin_factor // 32
             self.background = DefaultBackground(box_size)
             self.logger.info(f'[OPTICAM] Using default background estimator with box_size={box_size}.')
         elif callable(background):
@@ -245,7 +249,7 @@ class Reducer:
         
         self.transforms = {}  # define transforms as empty dictionary
         self.unaligned_files = []  # define unaligned files as empty list
-        self.catalogs = {}  # define catalogs as empty dictionary
+        self.catalogs : Dict[str, QTable] = {}  # define catalogs as empty dictionary
         self.psf_params = {}  # define PSF parameters as empty dictionary
         
         ########################################### read transforms ###########################################
@@ -332,7 +336,16 @@ class Reducer:
         
         # if catalogs already exist, skip
         if os.path.isfile(os.path.join(self.out_directory, 'cat/catalogs.png')) and not overwrite:
-            print('[OPTICAM] Catalogs already exist. To overwrite, set overwrite to True.')
+            print('[OPTICAM] Catalogs already exist. To overwrite, set overwrite=True.')
+            
+            plot_catalogs(
+                out_directory=self.out_directory,
+                stacked_images=get_stacked_images(self.out_directory),
+                catalogs=self.catalogs,
+                show=self.show_plots,
+                save=False,
+            )
+            
             return
         
         if self.verbose:
@@ -366,7 +379,6 @@ class Reducer:
             reference_image = np.asarray(
                 get_data(
                     file=self.reference_files[fltr],
-                    gain=self.gains[self.reference_files[fltr]],
                     return_error=False,
                     flat_corrector=self.flat_corrector,
                     rebin_factor=self.rebin_factor,
@@ -435,7 +447,7 @@ class Reducer:
             
             try:
                 # identify sources in stacked image
-                segment_map = self.finder(
+                tbl = self.finder(
                     stacked_image,
                     threshold,
                     )
@@ -446,10 +458,8 @@ class Reducer:
             # save stacked image
             stacked_images[fltr] = stacked_image
             
-            # catalog sources
-            tbl = SourceCatalog(stacked_image, segment_map).to_table()
-            tbl.sort('segment_flux', reverse=True)
-            tbl = tbl[:max_catalog_sources]  # limit catalog to brightest max_catalog_sources sources
+            # limit catalog to brightest max_catalog_sources sources
+            tbl = tbl[:max_catalog_sources]
             
             # save catalog
             self.catalogs.update({fltr: tbl})
@@ -513,6 +523,73 @@ class Reducer:
                 for file in self.unaligned_files:
                     unaligned_file.write(file + "\n")
 
+    def plot_growth_curves(
+        self,
+        targets: Dict[str, int | List[int]] | None = None,
+        show: bool = True,
+        ) -> None:
+        """
+        Plot the growth curves for the sources identified in the catalog images. The resulting plots are saved to
+        out_directory/diag/growth_curves as PDF files.
+        
+        Parameters
+        ----------
+        targets : Dict[str, int | List[int]] | None, optional
+            The targets for which growth curves will be created, by default `None` (growth curves are created for all
+            catalog sources). To create growth curves for specific targets, pass a dictionary with keys listing the
+            desired filters and values listing each filter's correpsonding target(s). For example:
+            ```
+            # plot growth curves for the three brightest sources in each catalog
+            plot_growth_curves(
+                targets = {
+                    'g-band': [1, 2, 3],
+                    'r-band': [1, 2, 3],
+                    'i-band': [1, 2, 3],
+                    },
+                )
+            ```
+        show : bool, optional
+            Whether to show the plots, by default `True`. The resulting plots are saved regardless of this value.
+        """
+        
+        stacked_images = get_stacked_images(self.out_directory)
+        
+        # create targets dict if it does not already exist
+        if targets is None:
+            growth_curve_targets = create_targets_dict(self.catalogs)
+        else:
+            growth_curve_targets = targets
+        
+        self.logger.info(f'[OPTICAM] Generating growth curves for targets: {repr(growth_curve_targets)}')
+        
+        for fltr, cat in self.catalogs.items():
+            
+            if fltr not in growth_curve_targets.keys():
+                self.logger.info(f'[OPTICAM] Filter {fltr} is not in target dictionary. Skipping.')
+                continue
+            
+            fig = plot_growth_curves(
+                image=stacked_images[fltr],
+                cat=cat,
+                targets=growth_curve_targets[fltr],
+                psf_params=self.psf_params[fltr],
+                )
+            
+            fig.suptitle(fltr, fontsize='large')
+            
+            dir_path = os.path.join(self.out_directory, 'diag/growth_curves')
+            if not os.path.isdir(dir_path):
+                os.makedirs(dir_path, exist_ok=True)
+            
+            fig.savefig(os.path.join(dir_path, f'{fltr}_growth_curves.pdf'))
+            
+            if show:
+                plt.show(fig)
+            else:
+                plt.close(fig)
+        
+        self.logger.info('[OPTICAM] Growth curves generated.')
+
     def plot_psfs(
         self,
         ) -> None:
@@ -527,23 +604,33 @@ class Reducer:
             x_lo, x_hi = 0, stacked_images[fltr].shape[1]
             y_lo, y_hi = 0, stacked_images[fltr].shape[0]
             
-            for source in tqdm(
-                self.catalogs[fltr]['label'],
+            a = self.psf_params[fltr]['semimajor_sigma']
+            b = self.psf_params[fltr]['semiminor_sigma']
+            
+            w = a * 10  # region width
+            
+            for source_indx in tqdm(
+                range(len(self.catalogs[fltr])),
                 disable=not self.verbose,
                 desc=f'[OPTICAM] Plotting {fltr} PSFs',
                 bar_format=bar_format,
                 ):
                 
-                x, y = int(self.catalogs[fltr]['xcentroid'][source - 1]), int(self.catalogs[fltr]['ycentroid'][source - 1])  # source position
-                w = int(self.catalogs[fltr]['semimajor_sigma'][source - 1].value) * 10  # source stdev
-                x_range = np.arange(max(x_lo, int(x - w)), min(x_hi, int(x + w)))  # x range
-                y_range = np.arange(max(y_lo, int(y - w)), min(y_hi, int(y + w)))  # y range
+                xc = self.catalogs[fltr]['xcentroid'][source_indx]
+                yc = self.catalogs[fltr]['ycentroid'][source_indx]
+                x_range = np.arange(max(x_lo, round(xc - w)), min(x_hi, round(xc + w)))  # x range
+                y_range = np.arange(max(y_lo, round(yc - w)), min(y_hi, round(yc + w)))  # y range
+                x_smooth = np.linspace(x_range[0], x_range[-1], 100)
+                y_smooth = np.linspace(y_range[0], y_range[-1], 100)
+                
+                theta = self.catalogs[fltr]['orientation'].value[source_indx]
+                theta_rad = theta * np.pi / 180
                 
                 # create mask
                 mask = np.zeros_like(stacked_images[fltr], dtype=bool)
-                for x in x_range:
-                    for y in y_range:
-                        mask[y, x] = True
+                for x_ in x_range:
+                    for y_ in y_range:
+                        mask[y_, x_] = True
                 
                 # isolate source
                 rows_to_keep = np.any(mask, axis=1)
@@ -551,29 +638,98 @@ class Reducer:
                 cols_to_keep = np.any(mask, axis=0)
                 region = region[:, cols_to_keep]
                 
-                fig = plt.figure(num=1, clear=True)
-                ax = fig.add_subplot(projection='3d')
+                fig, axes = plt.subplots(
+                    ncols=2,
+                    nrows=2,
+                    tight_layout=True,
+                    figsize=(6, 6),
+                    sharex='col',
+                    sharey='row',
+                    gridspec_kw={
+                        'hspace': 0,
+                        'wspace': 0,
+                        },
+                    )
+                fig.delaxes(axes[0, 1])
                 
                 x, y = np.meshgrid(x_range, y_range)
+                axes[1, 0].contour(
+                    x,
+                    y,
+                    region,
+                    5,
+                    colors='black',
+                    linewidths=1,
+                    zorder=1,
+                    linestyles='dashdot',
+                    )
+                axes[1, 0].set_xlabel('X', fontsize='large')
+                axes[1, 0].set_ylabel('Y', fontsize='large')
+                axes[1, 0].add_patch(
+                    Ellipse(
+                        xy=(xc, yc),
+                        width=2 * fwhm_scale * a,  # in this parameterisation, the width is the semimajor axis
+                        height=2 * fwhm_scale * b,  # in this parameterisation, the height is the semiminor axis
+                        angle=theta,  # in this parameterisation, the angle is the orientation of the PSF
+                        facecolor='none',
+                        edgecolor='r',
+                        lw=1,
+                        ls='-',
+                        zorder=2,
+                        ),
+                    )
                 
-                ax.plot_surface(x, y, region, edgecolor='r', rstride=2, cstride=2, color='none', lw=.5)
-                # ax.contour(x, y, region, 20, zdir='x', offset=ax.set_xlim()[0], colors='black', linewidths=.5)
-                # ax.contour(x, y, region, 20, zdir='y', offset=ax.set_ylim()[1], colors='black', linewidths=.5)
-                ax.contour(x, y, region, 10, zdir='z', offset=ax.set_zlim()[0], colors='black', linewidths=.5)
+                # project PSF onto x, y axes
+                xstd = np.sqrt(a**2 * np.cos(theta_rad)**2 + b**2 * np.sin(theta_rad)**2)
+                ystd = np.sqrt(a**2 * np.sin(theta_rad)**2 + b**2 * np.cos(theta_rad)**2)
                 
-                ax.set_title(f'{fltr} source {source}')
+                axes[0, 0].step(
+                    x_range,
+                    100 * region[region.shape[0] // 2, :] / np.max(region[region.shape[0] // 2, :]),
+                    color='k',
+                    lw=1,
+                    where='mid',
+                    zorder=1,
+                    )
+                axes[0, 0].plot(
+                    x_smooth,
+                    gaussian(x_smooth, 100, xc, xstd),
+                    'r-',
+                    lw=1,
+                    zorder=2,
+                )
+                axes[0, 0].set_ylabel('%age of peak flux', fontsize='large')
                 
-                def update(frame):
-                    ax.view_init(elev=30, azim=frame)
-                    return fig,
+                axes[1, 1].step(
+                    100 * region[:, region.shape[1] // 2] / np.max(region[:, region.shape[1] // 2]),
+                    y_range,
+                    color='k',
+                    lw=1,
+                    where='mid',
+                    )
+                axes[1, 1].plot(
+                    gaussian(y_smooth, 100, yc, ystd),
+                    y_smooth,
+                    'r-',
+                    lw=1,
+                )
+                axes[1, 1].set_xlabel('%age of peak flux', fontsize='large')
                 
-                ani = FuncAnimation(fig, update, frames=np.arange(0, 360, 5), interval=100, blit=True)
-                ani.save(
+                for ax in axes.flatten():
+                    ax.minorticks_on()
+                    ax.tick_params(
+                        which='both',
+                        direction='in',
+                        right=True,
+                        top=True,
+                        )
+                
+                fig.suptitle(f'{fltr} Source {source_indx + 1}', fontsize='large')
+                fig.savefig(
                     os.path.join(
                         self.out_directory,
-                        f'psfs/{fltr}_source_{source}.gif'),
-                    writer='pillow',
-                    fps=30,
+                        f'psfs/{fltr}_source_{source_indx + 1}.pdf',
+                        ),
                     )
                 plt.close(fig)
 
@@ -642,6 +798,7 @@ class Reducer:
     def photometry(
         self,
         photometer: BasePhotometer,
+        overwrite: bool = False,
         ) -> None:
         """
         Perform photometry on the catalogs using the provided photometer.
@@ -651,6 +808,8 @@ class Reducer:
         photometer : BasePhotometer
             The photometer. Should be a subclass of `BasePhotometer`, or implement a `compute` method that follows the
             `BasePhotometer` interface.
+        overwrite : bool, optional
+            Whether to overwrite any existing light curves files computed using the same photometer, by default `False`.
         """
         
         # define save directory using the photometer name
@@ -659,21 +818,26 @@ class Reducer:
         # change save directory based on photometer settings
         if photometer.local_background_estimator is not None:
             save_name += '_annulus'
-        if not photometer.match_sources:
+        if photometer.forced:
             save_name = 'forced_' + save_name
         
-        print(f'[OPTICAM] Photometry results will be saved to {save_name}_light_curves in {self.out_directory}.')
+        print(f'[OPTICAM] Photometry results will be saved to lcs/{save_name} in {self.out_directory}.')
         
-        save_dir = os.path.join(self.out_directory, f"{save_name}_light_curves")
+        save_dir = os.path.join(self.out_directory, f"lcs/{save_name}")
         if not os.path.isdir(save_dir):
             os.makedirs(save_dir)
         
         # for each filter
         for fltr in self.catalogs.keys():
+            if os.path.isfile(os.path.join(save_dir, f'{fltr}_source_1.csv')) and not overwrite:
+                print(f'[OPTICAM] Skipping {fltr} since existing light curves files were found. To overwrite these files, set overwrite=True.')
+                continue
+            
             source_coords = np.array([self.catalogs[fltr]["xcentroid"].value,
                                       self.catalogs[fltr]["ycentroid"].value]).T
             
-            batch_size = get_batch_size(len(self.camera_files[fltr]))
+            files = [file for file in self.camera_files[fltr] if file not in self.unaligned_files]
+            batch_size = get_batch_size(len(files))
             results = process_map(
                 partial(
                     perform_photometry,
@@ -681,6 +845,7 @@ class Reducer:
                     source_coords=source_coords,
                     gains=self.gains,
                     bmjds=self.bmjds,
+                    barycenter=self.barycenter,
                     flat_corrector=self.flat_corrector,
                     rebin_factor=self.rebin_factor,
                     remove_cosmic_rays=self.remove_cosmic_rays,
@@ -691,7 +856,7 @@ class Reducer:
                     fltr=fltr,
                     logger=self.logger,
                 ),
-                self.camera_files[fltr],
+                files,
                 max_workers=self.number_of_processors,
                 disable=not self.verbose,
                 desc=f"[OPTICAM] Performing photometry on {fltr} images",
@@ -703,6 +868,7 @@ class Reducer:
             save_photometry_results(
                 results=results,
                 catalogs=self.catalogs,
+                barycenter=self.barycenter,
                 save_dir=save_dir,
                 fltr=fltr
             )
@@ -710,7 +876,8 @@ class Reducer:
 
 
 
-################### for a clearner UI, the following functions are intentionally not Catalog methods ###################
+################### for a clearner UI, the following functions are intentionally not Reducer methods ###################
+
 
 def log_reducer_params(
     reducer: Reducer,
@@ -748,6 +915,7 @@ def log_reducer_params(
     # write parameters to file
     with open(os.path.join(reducer.out_directory, "misc/reduction_parameters.json"), "w") as file:
         json.dump(params, file, indent=4)
+
 
 def set_psf_params(
     fltr: str,
@@ -795,6 +963,7 @@ def set_psf_params(
     
     return psf_params_pix
 
+
 def parse_alignment_results(
     results: Tuple,
     camera_files: List[str],
@@ -834,9 +1003,38 @@ def parse_alignment_results(
     
     return transforms, unaligned_files, stacked_image, fltr_background_medians, fltr_background_rmss
 
+
+def create_targets_dict(
+    catalogs: Dict[str, QTable],
+    ) -> Dict[str, List[int]]:
+    """
+    Create a dictionary of target IDs for all catalog sources.
+    
+    Parameters
+    ----------
+    catalogs : Dict[str, QTable]
+        The catalogs.
+    
+    Returns
+    -------
+    Dict[str, List[int]]
+        The target IDs for all catalog sources.
+    """
+    
+    targets: Dict[str, List[int]] = {}
+    
+    for fltr, cat in catalogs.items():
+        targets[fltr] = []
+        for i in range(len(cat)):
+            targets[fltr].append(i + 1)
+    
+    return targets
+
+
 def save_photometry_results(
     results: Tuple[Dict],
     catalogs: Dict[str, QTable],
+    barycenter: bool,
     save_dir: str,
     fltr: str,
     ):
@@ -857,6 +1055,8 @@ def save_photometry_results(
     
     photometry_results = parse_photometry_results(results)
     
+    time_key = 'BMJD' if barycenter else 'MJD'
+    
     # for each source in the catalog
     for i in range(len(catalogs[fltr])):
         
@@ -865,7 +1065,7 @@ def save_photometry_results(
         for key, values in photometry_results.items():
             
             # time is a special case since it is already a single column
-            if key == 'BMJD':
+            if key == time_key:
                 source_results[key] = np.asarray(values)
             # for other keys, the ith column needs to be extracted
             else:
@@ -913,12 +1113,6 @@ def parse_photometry_results(
             photometry_results[key].append(value)
     
     return photometry_results
-
-
-
-
-
-
 
 
 

@@ -8,7 +8,7 @@ from numpy.typing import NDArray
 def apply_barycentric_correction(
     original_times: float | NDArray,
     coords: SkyCoord,
-    ) -> float | NDArray:
+    ) -> NDArray:
     """
     Apply barycentric corrections to a time array.
     
@@ -21,7 +21,7 @@ def apply_barycentric_correction(
     
     Returns
     -------
-    float | NDArray
+    NDArray
         The corrected time(s).
     """
     
@@ -34,10 +34,13 @@ def apply_barycentric_correction(
     # compute light travel time to barycentre
     ltt_bary = times.light_travel_time(coords)
     
-    return (times.tdb + ltt_bary).value
+    return np.asarray((times.tdb + ltt_bary).value)
 
 
-def infer_gtis(time: NDArray, threshold: float = 1.5) -> NDArray:
+def infer_gtis(
+    time: NDArray,
+    threshold: float = 1.5,
+    ) -> NDArray:
     """
     Infer the Good Time Intervals from a light curve.
     
@@ -50,25 +53,32 @@ def infer_gtis(time: NDArray, threshold: float = 1.5) -> NDArray:
     
     Returns
     -------
-    List[Tuple[float, float]]
+    NDArray
         The inferred GTIs.
     """
     
-    time = np.asarray(time)
+    time = np.sort(time)  # ensure time stamps are sorted
+    
+    # nominal time resolution
+    dt = np.median(np.diff(time))
     
     # compute the gap threshold
-    gap_threshold = threshold * np.median(np.diff(time))
+    gap_threshold = threshold * dt
     
     # define GTI starts and stops
-    gti_starts = [time[0]]
+    gti_starts = [time[0] - dt / 2]
     gti_stops = []
     
     # compute GTIs
     for i in range(1, time.size):
         if time[i] - time[i - 1] > gap_threshold:
-            gti_stops.append(time[i - 1])
-            gti_starts.append(time[i])
-    gti_stops.append(time[-1])
+            gti_stops.append(time[i - 1] + dt / 2)
+            gti_starts.append(time[i] - dt / 2)
+    
+    if gti_starts[-1] == time[-1]:
+        gti_starts.pop()
+    else:
+        gti_stops.append(time[-1] + dt / 2)
     
     # define GTIs in stingray format
     return np.array(list(zip(gti_starts, gti_stops)))

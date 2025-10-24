@@ -21,6 +21,7 @@ def check_data(
     c1_directory: None | str = None,
     c2_directory: None | str = None,
     c3_directory: None | str = None,
+    barycenter: bool = True,
     verbose: bool = True,
     return_output: bool = False,
     logger: Logger | None = None,
@@ -41,6 +42,8 @@ def check_data(
         The directory path to the data for Camera 2, by default None
     c3_directory : None | str, optional
         The directory path to the data for Camera 3, by default None
+    barycenter : bool, optional
+        Whether to apply a Barycentric correction to the image time stamps, by default True.
     verbose : bool, optional
         Whether to print any output info, by default True.
     return_output : bool, optional
@@ -71,6 +74,7 @@ def check_data(
     results = process_map(
         partial(
             get_header_info,
+            barycenter=barycenter,
             logger=logger,
             ),
         file_paths,

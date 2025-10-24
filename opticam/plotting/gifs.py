@@ -7,7 +7,7 @@ from matplotlib import pyplot as plt
 from matplotlib.patches import Circle
 import numpy as np
 from PIL import Image
-from skimage.transform import matrix_transform, SimilarityTransform
+from skimage.transform import matrix_transform
 from tqdm import tqdm
 
 from opticam.background.global_background import BaseBackground
@@ -34,7 +34,6 @@ def create_gif_frame(
     data = np.asarray(
         get_data(
             file=file,
-            gain=gains[file],
             flat_corrector=flat_corrector,
             rebin_factor=rebin_factor,
             return_error=False,
@@ -52,8 +51,13 @@ def create_gif_frame(
     
     fig, ax = plt.subplots(num=1, clear=True, tight_layout=True)
     
-    ax.imshow(plot_image, origin="lower", cmap="Greys_r", interpolation="nearest",
-            norm=simple_norm(plot_image, stretch="log"))  # type: ignore
+    ax.imshow(
+        plot_image,
+        origin="lower",
+        cmap="Greys",
+        interpolation="nearest",
+        norm=simple_norm(plot_image, stretch="log"),
+        )  # type: ignore
     
     # for each source
     for i in range(len(catalog)):
@@ -62,13 +66,13 @@ def create_gif_frame(
         
         if file == reference_file:
             aperture_position = source_position
-            ax.set_title(f'{file_name} (reference)', color='blue')
+            ax.set_title(f'{file_name} (reference)', color='blue', fontsize='large')
         elif file in transforms:
             aperture_position = matrix_transform(source_position, transforms[file])[0]
-            ax.set_title(f'{file_name} (aligned)', color='black')
+            ax.set_title(f'{file_name} (aligned)', color='black', fontsize='large')
         else:
             aperture_position = source_position
-            ax.set_title(f'{file_name} (unaligned)', color='red')
+            ax.set_title(f'{file_name} (unaligned)', color='red', fontsize='large')
         
         radius = 5 * aperture_selector(catalog["semimajor_sigma"].value)
         
@@ -87,8 +91,11 @@ def create_gif_frame(
             str(i + 1),
             color=catalog_colors[i % len(catalog_colors)],
             )
+        
+        ax.set_xlabel('X', fontsize='large')
+        ax.set_ylabel('Y', fontsize='large')
     
-    fig.savefig(os.path.join(out_directory, f'diag/{fltr}_gif_frames/{file_name}.png'))
+    fig.savefig(os.path.join(out_directory, f'diag/{fltr}_gif_frames/{file_name}.png'), bbox_inches='tight')
 
 def compile_gif(
     out_directory: str,
@@ -110,7 +117,7 @@ def compile_gif(
     
     # load frames
     frames = []
-    for file in tqdm(camera_files[fltr], disable=not verbose, desc=f"[OPTICAM] Loading {fltr} GIF frames"):
+    for file in camera_files[fltr]:
         try:
             frames.append(Image.open(os.path.join(out_directory, f'diag/{fltr}_gif_frames/{file.split('/')[-1].split(".")[0]}.png')))
         except:

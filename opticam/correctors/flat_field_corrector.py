@@ -69,13 +69,12 @@ class FlatFieldCorrector:
         
         # load master flats if they already exist
         self.master_flats = {}
-        for fltr in self.flat_paths.keys():
-            master_flat_path = os.path.join(self.out_directory, f'master_flats/{fltr}_master_flat.fit.gz')
-            if os.path.exists(master_flat_path):
-                with fits.open(master_flat_path) as hdul:
-                    self.master_flats[fltr] = np.array(hdul[0].data)
-            else:
-                self.master_flats[fltr] = None
+        if os.path.isfile(os.path.join(self.out_directory, 'master_flats.fits.gz')):
+            self.master_flats.update(
+                read_master_flats(
+                    self.out_directory,
+                    ),
+                )
     
     def create_master_flats(self, overwrite: bool = False) -> None:
         """
@@ -87,16 +86,11 @@ class FlatFieldCorrector:
             Whether to overwrite the existing master flat-field image, by default False.
         """
         
+        if os.path.isfile(os.path.join(self.out_directory, 'master_flats.fits.gz')) and not overwrite:
+            print(f'[OPTICAM] Master flats file already exists. To overwrite existing flats, set overwrite=True.')
+            return
+        
         for fltr in self.flat_paths.keys():
-            # skip if master flat-field image already exists and overwrite is False
-            if os.path.exists(os.path.join(self.out_directory, f'master_flats/{fltr}_master_flat.fit.gz')) and not overwrite:
-                continue
-            
-            if not os.path.isdir(os.path.join(self.out_directory, 'master_flats')):
-                try:
-                    os.makedirs(os.path.join(self.out_directory, 'master_flats'))
-                except:
-                    raise Exception(f'[OPTICAM] Could not create master_flats directory in {self.out_directory}')
             
             if len(self.flat_paths[fltr]) == 1:
                 raise Exception(f"[OPTICAM] Only one {fltr} flat found. Master flats cannot be created from a single image.")
@@ -113,10 +107,12 @@ class FlatFieldCorrector:
             
             # hold master flat in memory (faster than having to read it from disk every time correct() is called)
             self.master_flats[fltr] = master_flat
-            
-            # save master flat to file
-            hdu = fits.PrimaryHDU(master_flat)
-            hdu.writeto(os.path.join(self.out_directory, f'master_flats/{fltr}_master_flat.fit.gz'), overwrite=overwrite)
+        
+        save_master_flats(
+            master_flats=self.master_flats,
+            out_directory=self.out_directory,
+            overwrite=overwrite,
+            )
     
     def correct(self, image: NDArray, fltr: str) -> NDArray:
         """
@@ -204,6 +200,63 @@ def validate_flat_files(
     return flats
 
 
+def save_master_flats(
+    master_flats: Dict[str, NDArray],
+    out_directory: str,
+    overwrite: bool,
+    ) -> None:
+    """
+    Save some master flats to a compressed FITS cube.
+    
+    Parameters
+    ----------
+    master_flats : Dict[str, NDArray]
+        The master flats {filter: master flat}.
+    """
+    
+    hdr = fits.Header()
+    hdr['COMMENT'] = 'This FITS file contains master flat-field images for each filter.'
+    empty_primary = fits.PrimaryHDU(header=hdr)
+    hdul = fits.HDUList([empty_primary])
+    
+    for fltr, img in master_flats.items():
+        hdr = fits.Header()
+        hdr['FILTER'] = fltr
+        hdu = fits.ImageHDU(img, hdr)
+        hdul.append(hdu)
+    
+    file_path = os.path.join(out_directory, 'master_flats.fits.gz')
+    
+    if not os.path.isfile(file_path) or overwrite:
+        hdul.writeto(file_path, overwrite=overwrite)
+
+
+def read_master_flats(
+    out_directory: str,
+    ) -> Dict[str, NDArray]:
+    """
+    Read the master flat-field images from the output directory.
+    
+    Parameters
+    ----------
+    out_directory : str
+        The directory path to the reduction output.
+    
+    Returns
+    -------
+    Dict[str, NDArray]
+        The master flat-field images {filter: image}.
+    """
+    
+    master_flats = {}
+    with fits.open(os.path.join(out_directory, 'master_flats.fits.gz')) as hdul:
+        for hdu in hdul:
+            if 'FILTER' not in hdu.header:
+                continue
+            fltr = hdu.header['FILTER']
+            master_flats[fltr] = np.asarray(hdu.data)
+    
+    return master_flats
 
 
 

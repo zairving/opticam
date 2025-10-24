@@ -1,12 +1,11 @@
 from abc import ABC, abstractmethod
 from logging import Logger
 from typing import Callable, Dict, List, Tuple
-import warnings
 
 import numpy as np
 from numpy.typing import NDArray
 from photutils.aperture import aperture_photometry, EllipticalAperture
-from photutils.segmentation import SourceCatalog, detect_threshold
+from photutils.segmentation import detect_threshold
 
 from opticam.background.global_background import BaseBackground
 from opticam.background.local_background import BaseLocalBackground
@@ -23,34 +22,30 @@ class BasePhotometer(ABC):
 
     def __init__(
         self,
-        match_sources: bool = True,
-        source_matching_tolerance: float = 2.,
-        local_background_estimator: None | BaseLocalBackground = None,
+        forced: bool = False,
+        source_matching_tolerance: float = 5.,
+        local_background_estimator: BaseLocalBackground | Callable | None = None,
         ):
         """
         Initialise a photometer.
         
         Parameters
         ----------
-        match_sources : bool, optional
-            Whether to match sources in the image to sources in the catalogue, by default True. This can improve source
-            position matching, but may lead to incorrect source matching if the field is crowded or the
-            alignments are poor. If False, the photometer will use the source positions from the catalogue directly,
-            and the directory in which the resulting light curves will be saved will have a 'forced' prefix.
+        forced : bool, optional
+            Whether to performed "forced" photometry, by default `False`. If `True`, the catalog-aligned coordinates
+            are used to perform photometry, even in images where the source is not detected, and the resulting light
+            curves will be saved with a 'forced' prefix.
         source_matching_tolerance : float, optional
-            The tolerance for source position matching in standard deviations (assuming a Gaussian PSF), by default 2.
+            The tolerance for source position matching in standard deviations (assuming a Gaussian PSF), by default 5.
             This parameter defines how far from the transformed catalogue position a source can be while still being
             considered the same source.
-        local_background_estimator : None | BaseLocalBackground, optional
+        local_background_estimator : BaseLocalBackground | Callable | None, optional
             The local background estimator to use, by default `None`. If `None`, the catalogue's 2D background estimator
             is used. If not `None`, this will be used instead of the catalogue's 2D background estimator.
         """
         
-        warnings.warn('[OPTICAM] from version 0.3.0, "match_sources" will be renamed to "forced". "forced=False" will function the same as "match_sources=True".')
-        
-        self.match_sources = match_sources
+        self.forced = forced
         self.source_matching_tolerance = source_matching_tolerance
-        self.scale_factor = 1 if match_sources else 2  # use a larger aperture if source matching is disabled
         
         if local_background_estimator is not None:
             assert callable(local_background_estimator), "[OPTICAM] local_background_estimator must be either None or a callable object."
@@ -67,10 +62,7 @@ class BasePhotometer(ABC):
         psf_params: Dict[str, float],
         ) -> Dict[str, List]:
         """
-        Perform photometry on the given image using the provided source coordinates and PSF parameters. If defining a
-        custom photometer, this method must be implemented. The resulting dictionary must contain 'flux' and
-        'flux_err' keys, as well as any additional metrics that the photometer computes. The time stamps for each
-        image are handled by the catalogue, and so they do not need to be included in the results dictionary.
+        Compute the fluxes of the catalogued sources from the given image.
         
         Parameters
         ----------
@@ -85,152 +77,16 @@ class BasePhotometer(ABC):
             image to sources in the catalogue.
         psf_params : Dict[str, float]
             The PSF parameters for the camera used to take the image. This parameter is defined in the catalogue and
-            has the following keys: 'semimajor_sigma' (in pixels), 'semiminor_sigma' (in pixels), and 'orientation' (in 
+            has the following keys: 'semimajor_sigma' (in pixels), 'semiminor_sigma' (in pixels), and 'orientation' (in
             *degrees*).
         
         Returns
         -------
         Dict[str, List]
-            A dictionary containing the results of the photometry. The dictionary must contain 'flux' and 'flux_error'
-            keys, as well as any additional metrics that the photometer computes. The time stamps for each image are
-            handled by the catalogue, and so they do not need to be included in the results dictionary.
+            The photometry results.
         """
         
         pass
-
-
-class SimplePhotometer(BasePhotometer):
-    """
-    A simple photometer that provides simple aperture photometry routines with support for local background estimations
-    using annuli.
-    """
-
-    def compute(
-        self,
-        image: NDArray,
-        image_err: NDArray,
-        source_coords: NDArray,
-        image_coords: None | NDArray,
-        psf_params: Dict[str, float],
-        ) -> Dict[str, List]:
-        """
-        Compute the simple photometry for the given image using the provided source coordinates and PSF parameters.
-        
-        Parameters
-        ----------
-        image : NDArray
-            The image. If `local_background_estimator` is undefined, this image will be background subtracted.
-        image_err : NDArray
-            The error in the image.
-        source_coords : NDArray
-            The source coordinates in the catalogue.
-        image_coords : None | NDArray
-            The source coordinates in the image. If `match_sources` is True, this will be used to match sources in the
-            image to sources in the catalogue.
-        psf_params : Dict[str, float]
-            The PSF parameters for the camera used to take the image. This parameter is defined in the catalogue and
-            has the following keys: 'semimajor_sigma' (in pixels), 'semiminor_sigma' (in pixels), and 'orientation' (in
-            *degrees*).
-        
-        Returns
-        -------
-        Dict[str, List]
-            The results of the photometry
-        """
-        
-        results = self.define_results_dict()
-        
-        for i in range(len(source_coords)):
-            
-            # get position of source depending on whether source matching is enabled or not
-            position = self.get_position(
-                source_coords,
-                image_coords,
-                i,
-                psf_params,
-                )
-            
-            # if position is None, pad the results dictionary and continue to the next source
-            if position is None:
-                results = self.pad_results_dict(results)
-                continue
-            
-            # populate the results dictionary with the computed flux, flux error, and background (if applicable)
-            results = self.populate_results_dict(
-                results,
-                self.compute_aperture_flux,
-                image,
-                image_err,
-                position,
-                psf_params,
-                )
-        
-        return results
-
-    def compute_aperture_flux(
-        self,
-        data: NDArray,
-        error: NDArray,
-        position: NDArray,
-        psf_params: Dict[str, float],
-        ) -> Tuple[float, float] | Tuple[float, float, float, float]:
-        """
-        Compute the aperture flux of a source in the image.
-        
-        Parameters
-        ----------
-        data : NDArray
-            The image.
-        error : NDArray
-            The error in the image.
-        position : NDArray
-            The position of the source.
-        psf_params : Dict[str, float]
-            The PSF parameters for the camera used to take the image. This parameter is defined in the catalogue and
-            has the following keys: 'semimajor_sigma' (in pixels), 'semiminor_sigma' (in pixels), and 'orientation' (in
-            *degrees*).
-        
-        Returns
-        -------
-        Tuple[float, float] | Tuple[float, float, float, float]
-            The flux and flux error. If `local_background_estimator` is defined, the background and its error are also
-            returned.
-        """
-        
-        aperture = EllipticalAperture(
-            position,
-            fwhm_scale * self.scale_factor * psf_params['semimajor_sigma'],
-            fwhm_scale * self.scale_factor * psf_params['semiminor_sigma'],
-            psf_params['orientation'],
-            )
-        
-        phot_table = aperture_photometry(data, aperture, error=error)
-        
-        if self.local_background_estimator is None:
-            return phot_table["aperture_sum"].value[0], phot_table["aperture_sum_err"].value[0]
-        else:
-            aperture_area = aperture.area_overlap(data)  # aperture area in pixels
-            
-            # estimate local background in the annulus
-            local_background_per_pixel, local_background_error_per_pixel = self.local_background_estimator(
-                data,
-                error,
-                position,
-                psf_params['semimajor_sigma'],
-                psf_params['semiminor_sigma'],
-                psf_params['orientation'],
-                )
-            
-            # estimate the total background in aperture
-            total_bkg = local_background_per_pixel * aperture_area
-            total_bkg_error = np.sqrt(local_background_error_per_pixel**2 * aperture_area)
-            
-            flux = float(phot_table["aperture_sum"].value[0] - total_bkg)
-            flux_error = float(np.sqrt(phot_table["aperture_sum_err"].value[0]**2 + total_bkg_error**2))
-            local_background = float(total_bkg)
-            local_background_errors = float(total_bkg_error)
-            
-            return flux, flux_error, local_background, local_background_errors
 
     def get_position(
         self,
@@ -261,7 +117,7 @@ class SimplePhotometer(BasePhotometer):
             The source coordinates.
         """
         
-        if self.match_sources:
+        if not self.forced:
             return self.get_closest_source(
                 source_coords,
                 image_coords,
@@ -430,10 +286,53 @@ class SimplePhotometer(BasePhotometer):
         return results
 
 
-class OptimalPhotometer(SimplePhotometer):
+class AperturePhotometer(BasePhotometer):
     """
-    A photometer that implements the optimal photometry method described in Naylor 1998, MNRAS, 296, 339-346.
+    A photometer for performing aperture photometry.
     """
+    
+    def __init__(
+        self,
+        semimajor_axis: int | None = None,
+        semiminor_axis: int | None = None,
+        orientation: float | None = None,
+        forced: bool = False,
+        source_matching_tolerance: float = 5.,
+        local_background_estimator: None | BaseLocalBackground = None,
+        ):
+        """
+        Initialise a photometer.
+        
+        Parameters
+        ----------
+        semimajor_axis : int | None, optional
+            The semi-major axis of the aperture, by default None (set to the FWHM of the PSF).
+        semiminor_axis : int | None, optional
+            The semi-minor axis of the aperture, by default None (set to the FWHM of the PSF).
+        orientation : float, optional
+            The orientation of the ellipse, by default None (set based on the averaged PSF orientation).
+        forced : bool, optional
+            Whether to performed "forced" photometry, by default `False`. If `True`, the catalog-aligned coordinates
+            are used to perform photometry, even in images where the source is not detected, and the resulting light
+            curves will be saved with a 'forced' prefix.
+        source_matching_tolerance : float, optional
+            The tolerance for source position matching in standard deviations (assuming a Gaussian PSF), by default 5.
+            This parameter defines how far from the transformed catalogue position a source can be while still being
+            considered the same source.
+        local_background_estimator : None | BaseLocalBackground, optional
+            The local background estimator to use, by default `None`. If `None`, the catalogue's 2D background estimator
+            is used. If not `None`, this will be used instead of the catalogue's 2D background estimator.
+        """
+        
+        self.semimajor_axis = semimajor_axis
+        self.semiminor_axis = semiminor_axis
+        self.orientation = orientation
+        
+        super().__init__(
+            forced=forced,
+            source_matching_tolerance=source_matching_tolerance,
+            local_background_estimator=local_background_estimator,
+            )
 
     def compute(
         self,
@@ -444,8 +343,7 @@ class OptimalPhotometer(SimplePhotometer):
         psf_params: Dict[str, float],
         ) -> Dict[str, List]:
         """
-        Compute the optimal photometry for each source in the image using the method described in Naylor 1998, MNRAS,
-        296, 339-346.
+        Compute the fluxes of the catalogued sources from the given image.
         
         Parameters
         ----------
@@ -466,8 +364,148 @@ class OptimalPhotometer(SimplePhotometer):
         Returns
         -------
         Dict[str, List]
-            The results of the photometry, including 'flux', 'flux_error', and optionally 'background' and
-            'background_error' if `local_background_estimator` is defined.
+            The photometry results.
+        """
+        
+        results = self.define_results_dict()
+        
+        for i in range(len(source_coords)):
+            
+            # get position of source depending on whether source matching is enabled or not
+            position = self.get_position(
+                source_coords,
+                image_coords,
+                i,
+                psf_params,
+                )
+            
+            # if position is None, pad the results dictionary and continue to the next source
+            if position is None:
+                results = self.pad_results_dict(results)
+                continue
+            
+            # populate the results dictionary with the computed flux, flux error, and background (if applicable)
+            results = self.populate_results_dict(
+                results,
+                self.compute_aperture_flux,
+                image,
+                image_err,
+                position,
+                psf_params,
+                )
+        
+        return results
+
+    def compute_aperture_flux(
+        self,
+        data: NDArray,
+        error: NDArray,
+        position: NDArray,
+        psf_params: Dict[str, float],
+        ) -> Tuple[float, float] | Tuple[float, float, float, float]:
+        """
+        Compute the aperture flux of a source in the image.
+        
+        Parameters
+        ----------
+        data : NDArray
+            The image.
+        error : NDArray
+            The error in the image.
+        position : NDArray
+            The position of the source.
+        psf_params : Dict[str, float]
+            The PSF parameters for the camera used to take the image. This parameter is defined in the catalogue and
+            has the following keys: 'semimajor_sigma' (in pixels), 'semiminor_sigma' (in pixels), and 'orientation' (in
+            *degrees*).
+        
+        Returns
+        -------
+        Tuple[float, float] | Tuple[float, float, float, float]
+            The flux and flux error. If `local_background_estimator` is defined, the background and its error are also
+            returned.
+        """
+        
+        if self.semimajor_axis is not None and self.semiminor_axis is not None and self.orientation is not None:
+            aperture = EllipticalAperture(
+                position,
+                self.semimajor_axis,
+                self.semiminor_axis,
+                self.orientation,
+                )
+        else:
+            aperture = EllipticalAperture(
+                position,
+                fwhm_scale * psf_params['semimajor_sigma'],
+                fwhm_scale * psf_params['semiminor_sigma'],
+                psf_params['orientation'],
+                )
+        
+        phot_table = aperture_photometry(data, aperture, error=error)
+        
+        if self.local_background_estimator is None:
+            return phot_table["aperture_sum"].value[0], phot_table["aperture_sum_err"].value[0]
+        else:
+            aperture_area = aperture.area_overlap(data)  # aperture area in pixels
+            
+            # estimate local background in the annulus
+            local_background_per_pixel, local_background_error_per_pixel = self.local_background_estimator(
+                data,
+                error,
+                position,
+                psf_params['semimajor_sigma'],
+                psf_params['semiminor_sigma'],
+                psf_params['orientation'],
+                )
+            
+            # estimate the total background in aperture
+            total_bkg = local_background_per_pixel * aperture_area
+            total_bkg_error = np.sqrt(local_background_error_per_pixel**2 * aperture_area)
+            
+            flux = float(phot_table["aperture_sum"].value[0] - total_bkg)
+            flux_error = float(np.sqrt(phot_table["aperture_sum_err"].value[0]**2 + total_bkg_error**2))
+            local_background = float(total_bkg)
+            local_background_errors = float(total_bkg_error)
+            
+            return flux, flux_error, local_background, local_background_errors
+
+
+class OptimalPhotometer(BasePhotometer):
+    """
+    A photometer that implements the optimal photometry method described in Naylor 1998, MNRAS, 296, 339-346.
+    """
+
+    def compute(
+        self,
+        image: NDArray,
+        image_err: NDArray,
+        source_coords: NDArray,
+        image_coords: None | NDArray,
+        psf_params: Dict[str, float],
+        ) -> Dict[str, List]:
+        """
+        Compute the fluxes of the catalogued sources from the given image.
+        
+        Parameters
+        ----------
+        image : NDArray
+            The image. If `local_background_estimator` is undefined, this image will be background subtracted.
+        image_err : NDArray
+            The error in the image.
+        source_coords : NDArray
+            The source coordinates in the catalogue.
+        image_coords : None | NDArray
+            The source coordinates in the image. If `match_sources` is True, this will be used to match sources in the
+            image to sources in the catalogue.
+        psf_params : Dict[str, float]
+            The PSF parameters for the camera used to take the image. This parameter is defined in the catalogue and
+            has the following keys: 'semimajor_sigma' (in pixels), 'semiminor_sigma' (in pixels), and 'orientation' (in
+            *degrees*).
+        
+        Returns
+        -------
+        Dict[str, List]
+            The photometry results.
         """
         
         results = self.define_results_dict()
@@ -578,6 +616,7 @@ def perform_photometry(
     source_coords: NDArray,
     gains: Dict[str, float],
     bmjds: Dict[str, float],
+    barycenter: bool,
     flat_corrector: FlatFieldCorrector | None,
     rebin_factor: int,
     remove_cosmic_rays: bool,
@@ -588,10 +627,50 @@ def perform_photometry(
     fltr: str,
     logger: Logger,
     ) -> Dict[str, List]:
+    """
+    Perform photometry on a file.
+    
+    Parameters
+    ----------
+    file : str
+        The file path.
+    photometer : BasePhotometer
+        The photometer to use.
+    source_coords : NDArray
+        The coordinates of the sources.
+    gains : Dict[str, float]
+        The image gain.
+    bmjds : Dict[str, float]
+        The image time stamps.
+    barycenter : bool
+        Whether to apply a barycentric correction to the image time stamps.
+    flat_corrector : FlatFieldCorrector | None
+        The flat field corrector.
+    rebin_factor : int
+        The software pixel rebinning factor.
+    remove_cosmic_rays : bool
+        Whether to remove cosmic rays from the image.
+    background : BaseBackground
+        The two-dimensional background estimator.
+    threshold : float
+        The scalar source detection threshold in units of background RMS.
+    finder : DefaultFinder
+        The source finder.
+    psf_params : Dict[str, Dict[str, float]]
+        The PSF parameters.
+    fltr : str
+        The image filter.
+    logger : Logger
+        The logger.
+    
+    Returns
+    -------
+    Dict[str, List]
+        The photometry results.
+    """
     
     image, error = get_data(
         file=file,
-        gain=gains[file],
         flat_corrector=flat_corrector,
         rebin_factor=rebin_factor,
         return_error=True,
@@ -608,10 +687,9 @@ def perform_photometry(
         threshold = detect_threshold(image, threshold, error=error)  # type: ignore
     
     image_coords = None  # assume no image coordinates by default
-    if photometer.match_sources:
+    if not photometer.forced:
         try:
-            segm = finder(image, threshold)
-            tbl = SourceCatalog(image, segm).to_table()
+            tbl = finder(image, threshold)
             image_coords = np.array([tbl["xcentroid"].value,
                                     tbl["ycentroid"].value]).T
         except Exception as e:
@@ -622,16 +700,65 @@ def perform_photometry(
     assert 'flux' in results, f"[OPTICAM] Photometer {photometer.__class__.__name__}'s compute method must return a 'flux' key."
     assert 'flux_err' in results, f"[OPTICAM] Photometer {photometer.__class__.__name__}'s compute method must return a 'flux_err' key."
     
-    # results check
-    for key, values in results.items():
-        for i, value in enumerate(values):
-            if value is None:
-                logger.warning(f"[OPTICAM] {key} could not be determined for source {i + 1} in {fltr} (got value {value}).")
-    
     # add time stamp
-    results['BMJD'] = bmjds[file]  # add time of observation
+    if barycenter:
+        results['BMJD'] = bmjds[file]  # type: ignore
+    else:
+        results['MJD'] = bmjds[file]  # type: ignore
     
     return results
+
+
+def get_growth_curve(
+    image: NDArray,
+    x_centroid: float,
+    y_centroid: float,
+    r_max: int,
+    ) -> Tuple[NDArray, NDArray]:
+    """
+    Compute the growth curve for a point in an image.
+    
+    Parameters
+    ----------
+    image : NDArray
+        The image.
+    x_centroid : float
+        The x centroid of the point.
+    y_centroid : float
+        The y centroid of the point.
+    r_max : int
+        The maximum radius in pixels.
+    
+    Returns
+    -------
+    Tuple[NDArray, NDArray]
+        _description_
+    """
+    
+    position = np.array([x_centroid, y_centroid])
+    
+    radii, fluxes = [], []
+    
+    for r in range(1, r_max):
+        radii.append(r)
+        
+        photometer = AperturePhotometer(
+            semimajor_axis=r,
+            semiminor_axis=r,
+            orientation=0,
+            forced=True,
+            )
+        
+        flux = photometer.compute_aperture_flux(
+            data=image,
+            error=image,
+            position=position,
+            psf_params={},  # empty dict since not needed
+            )[0]
+        
+        fluxes.append(flux)
+    
+    return np.array(radii), np.array(fluxes)
 
 
 

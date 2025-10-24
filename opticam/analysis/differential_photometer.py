@@ -56,7 +56,8 @@ class DifferentialPhotometer:
         with open(os.path.join(self.out_directory, 'misc/reduction_parameters.json'), 'r') as file:
             input_parameters = json.load(file)
         self.filters = input_parameters['filters']
-        self.t_ref = input_parameters['t_ref']
+        self.t_ref = float(input_parameters['t_ref'])
+        self.time_key = 'BMJD' if input_parameters['barycenter'] else 'MJD'
         
         # output filters
         print('[OPTICAM] Filters: ' + ', '.join(list(self.filters)))
@@ -251,7 +252,7 @@ class DifferentialPhotometer:
         # TODO: create functions to clean up this code
         
         # subdirectory where results will be saved
-        light_curve_dir = f'{phot_label}_light_curves'
+        light_curve_dir = f'lcs/{phot_label}'
         
         # get target data frame
         try:
@@ -275,7 +276,11 @@ class DifferentialPhotometer:
             comp_dfs.append(comparison_df)
         
         # ensure all DataFrames have the same time column
-        filtered_target_df, filtered_comp_dfs = filter_dataframes_to_common_time_column(target_df, comp_dfs)
+        filtered_target_df, filtered_comp_dfs = filter_dataframes_to_common_time_column(
+            target_df=target_df,
+            comp_dfs=comp_dfs,
+            time_key=self.time_key,
+            )
         
         # plot diagnostic light curves for target and comparison source(s)
         for i, df in enumerate(filtered_comp_dfs):
@@ -304,7 +309,7 @@ class DifferentialPhotometer:
                             show_diagnostics,
                             )
         
-        time = filtered_target_df["BMJD"].values
+        time = filtered_target_df[self.time_key].values
         
         # get total flux and error of comparison sources
         comp_fluxes = np.sum([df["flux"].values for df in filtered_comp_dfs], axis=0)
@@ -325,12 +330,12 @@ class DifferentialPhotometer:
         
         # save relative light curve to CSV
         df = pd.DataFrame({
-            'BMJD': time,
+            self.time_key: time,
             'rel_flux': relative_flux,
             'rel_flux_err': relative_flux_error,
         })
         df.to_csv(
-            os.path.join(self.out_directory, f'relative_light_curves/{prefix}_{fltr}_{phot_label}_light_curve.csv'),
+            os.path.join(self.out_directory, f'relative_light_curves/{phot_label}/{prefix}_{fltr}_light_curve.csv'),
             index=False,
         )
         
@@ -415,13 +420,13 @@ class DifferentialPhotometer:
         
         if standalone_plot:
             ax.set_title(f'{fltr} (Source ID: {target}, Comparison ID(s): {', '.join([str(comp) for comp in comparisons])})')
-            ax.set_xlabel(f"Time from BMJD {self.t_ref:.4f} [s]")
+            ax.set_xlabel(f"Time from {self.time_key} {self.t_ref:.4f} [s]")
             ax.set_ylabel("Relative flux")
             
             ax.minorticks_on()
             ax.tick_params(which='both', direction='in', top=True, right=True)
             
-            fig.savefig(os.path.join(self.out_directory, f'relative_light_curves/{prefix}_{fltr}_{phot_label}_light_curve.png'))
+            fig.savefig(os.path.join(self.out_directory, f'relative_light_curves/{phot_label}/{prefix}_{fltr}_light_curve.png'))
             
             if self.show_plots:
                 plt.show()
@@ -463,7 +468,7 @@ class DifferentialPhotometer:
         """
         
         # convert time to seconds from t_ref
-        time = (comparison1_df["BMJD"].values - self.t_ref) * 86400
+        time = (comparison1_df[self.time_key].values - self.t_ref) * 86400
         
         fig, axes = plt.subplots(
             nrows=3,
@@ -546,7 +551,7 @@ class DifferentialPhotometer:
             color='r',
             lw=1,
         )
-        axes[2].set_xlabel(f"Time from BMJD {self.t_ref} [s]")
+        axes[2].set_xlabel(f"Time from {self.time_key} {self.t_ref} [s]")
         axes[2].set_ylabel("Normalised relative flux")
         
         ########################################### format plot ###########################################
@@ -557,10 +562,11 @@ class DifferentialPhotometer:
         
         ########################################### save plot ###########################################
         
-        if not os.path.isdir(os.path.join(self.out_directory, 'relative_light_curves/diag')):
-            os.makedirs(os.path.join(self.out_directory, 'relative_light_curves/diag'))
+        save_dir = os.path.join(self.out_directory, f'relative_light_curves/{phot_label}/diag')
+        if not os.path.isdir(save_dir):
+            os.makedirs(save_dir)
         
-        fig.savefig(os.path.join(self.out_directory, f'relative_light_curves/diag/{fltr}_{comparison1}_{comparison2}_{phot_label}.png'))
+        fig.savefig(os.path.join(save_dir, f'{fltr}_{comparison1}_{comparison2}_diag_light_curve.png'))
         
         ########################################### optionally show plot ###########################################
         
@@ -572,6 +578,7 @@ class DifferentialPhotometer:
 def filter_dataframes_to_common_time_column(
     target_df: pd.DataFrame,
     comp_dfs: List[pd.DataFrame],
+    time_key: str,
     ) -> Tuple[pd.DataFrame, List[pd.DataFrame]]:
     """
     Get the matching times between a target data frame (light curve) and a list of comparison data frames (light 
@@ -583,6 +590,8 @@ def filter_dataframes_to_common_time_column(
         The data frame of the target source.
     comp_dfs : List[pd.DataFrame]
         The list of data frames of the comparison sources.
+    time_key : str,
+        The time key (either BMJD or MJD depending on whether Barycentric corrections were applied).
     
     Returns
     -------
@@ -591,8 +600,8 @@ def filter_dataframes_to_common_time_column(
     """
     
     # get time columns from all data frames
-    time_columns = [target_df['BMJD'].values]
-    time_columns.extend([df['BMJD'].values for df in comp_dfs])
+    time_columns = [target_df[time_key].values]
+    time_columns.extend([df[time_key].values for df in comp_dfs])
     
     # get matching times between all data frames
     common_times = set(time_columns[0])
@@ -601,11 +610,11 @@ def filter_dataframes_to_common_time_column(
     common_times = sorted(common_times)
     
     # get matching times for target
-    filtered_target_df = target_df[target_df['BMJD'].isin(common_times)]
+    filtered_target_df = target_df[target_df[time_key].isin(common_times)]
     filtered_target_df.reset_index(drop=True, inplace=True)
     
     # get matching times for comparisons
-    filtered_comp_dfs = [df[df['BMJD'].isin(common_times)] for df in comp_dfs]
+    filtered_comp_dfs = [df[df[time_key].isin(common_times)] for df in comp_dfs]
     filtered_comp_dfs = [df.reset_index(drop=True) for df in filtered_comp_dfs]
     
     return filtered_target_df, filtered_comp_dfs

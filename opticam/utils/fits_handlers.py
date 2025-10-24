@@ -17,6 +17,7 @@ from opticam.utils.image_helpers import rebin_image
 
 def get_header_info(
     file: str,
+    barycenter: bool,
     logger: Logger | None,
     ) -> Tuple[ArrayLike | None, str | None, str | None, float | None]:
     """
@@ -26,6 +27,10 @@ def get_header_info(
     ----------
     file : str
         The file path.
+    barycenter : bool
+        Whether to apply a Barycentric correction to the image time stamps.
+    logger : Logger | None
+        The logger.
     
     Returns
     -------
@@ -51,20 +56,22 @@ def get_header_info(
         mjd = get_time(header, file)
         fltr = header["FILTER"]
         
-        try:
-            # try to compute barycentric dynamical time
-            coords = SkyCoord(ra, dec, unit=(u.hourangle, u.deg))
-            bmjd = apply_barycentric_correction(mjd, coords)
-        except Exception as e:
-            if logger:
-                logger.info(f"[OPTICAM] Could not compute BMJD for {file}: {e}. Skipping.")
-            return None, None, None, None
+        if barycenter:
+            try:
+                # try to compute barycentric dynamical time
+                coords = SkyCoord(ra, dec, unit=(u.hourangle, u.deg))
+                bmjd = apply_barycentric_correction(mjd, coords)
+                return bmjd, fltr, binning, gain
+            except Exception as e:
+                if logger:
+                    logger.info(f"[OPTICAM] Could not compute BMJD for {file}: {e}. Skipping.")
+                return None, None, None, None
     except Exception as e:
         if logger:
             logger.info(f'[OPTICAM] Could not read {file}: {e}. Skipping.')
         return None, None, None, None
     
-    return bmjd, fltr, binning, gain
+    return mjd, fltr, binning, gain
 
 
 def get_time(
@@ -97,8 +104,8 @@ def get_time(
     if "GPSTIME" in header.keys():
         gpstime = header["GPSTIME"]
         split_gpstime = gpstime.split(" ")
-        date = split_gpstime[0]  # get date
-        time = split_gpstime[1].split(".")[0]  # get time (ignoring decimal seconds)
+        date = split_gpstime[0]
+        time = split_gpstime[1]
         mjd = Time(date + "T" + time, format="fits").mjd
     elif "UT" in header.keys():
         try:
@@ -113,12 +120,11 @@ def get_time(
     else:
         raise KeyError(f"[OPTICAM] Could not find GPSTIME or UT key in {file} header.")
     
-    return mjd
+    return float(mjd)
 
 
 def get_data(
     file: str,
-    gain: float,
     flat_corrector: FlatFieldCorrector | None,
     rebin_factor: int,
     return_error: bool,
@@ -131,8 +137,6 @@ def get_data(
     ----------
     file : str
         The file.
-    gain : float
-        The file gain.
     flat_corrector : FlatFieldCorrector | None
         The `FlatFieldCorrector` instance (if specified).
     rebin_factor : int
@@ -161,7 +165,7 @@ def get_data(
         raise ValueError(f"[OPTICAM] Could not open file {file}.")
     
     if return_error:
-        error = np.sqrt(data * gain)
+        error = np.sqrt(data)
     
     if flat_corrector:
         data = flat_corrector.correct(data, fltr)
@@ -191,7 +195,7 @@ def save_stacked_images(
     overwrite: bool,
     ) -> None:
     """
-    Save the stacked images to a compressed FITS file.
+    Save the stacked images to a compressed FITS cube.
     
     Parameters
     ----------
@@ -200,7 +204,7 @@ def save_stacked_images(
     """
     
     hdr = fits.Header()
-    hdr['COMMENT'] = 'This FITS file contains the stacked images for each filter.'
+    hdr['COMMENT'] = 'This FITS file contains stacked images for each filter.'
     empty_primary = fits.PrimaryHDU(header=hdr)
     hdul = fits.HDUList([empty_primary])
     

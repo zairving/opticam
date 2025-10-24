@@ -1,7 +1,8 @@
+from astropy.table import QTable
 import numpy as np
 from numpy.typing import NDArray
 from photutils.background import Background2D
-from photutils.segmentation import SourceCatalog, SourceFinder, SegmentationImage
+from photutils.segmentation import SourceCatalog, SourceFinder
 
 from opticam.background.global_background import BaseBackground
 
@@ -36,14 +37,17 @@ class DefaultFinder:
         self,
         data: NDArray,
         threshold: float | NDArray,
-        ) -> SegmentationImage:
+        ) -> QTable:
         
         segment_map = self.finder(data, threshold)
         
         if self.border_width > 0:
             segment_map.remove_border_labels(border_width=self.border_width, relabel=True)
         
-        return segment_map
+        tbl = SourceCatalog(data, segment_map).to_table()
+        tbl.sort('segment_flux', reverse=True)
+        
+        return tbl
 
 
 def get_source_coords_from_image(
@@ -77,11 +81,9 @@ def get_source_coords_from_image(
     elif bkg is None and background is None:
         raise ValueError('[OPTICAM] get_source_coords_from_image() requires either bkg or background be specified.')
     
-    image_clean = image - bkg.background  # remove background from image
+    image_clean = image - bkg.background
     
-    cat = finder(image_clean, threshold*bkg.background_rms)  # find sources in background-subtracted image
-    tbl = SourceCatalog(image_clean, cat, background=bkg.background).to_table()  # create catalog of sources
-    tbl.sort('segment_flux', reverse=True)  # sort catalog by flux in descending order
+    tbl = finder(image_clean, threshold*bkg.background_rms)
     
     coords = np.array([tbl["xcentroid"], tbl["ycentroid"]]).T
     

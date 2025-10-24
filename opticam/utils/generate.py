@@ -3,9 +3,19 @@ import os
 from tqdm import tqdm
 import numpy as np
 from numpy.typing import NDArray
-from typing import List
+from typing import List, Tuple
 
 from opticam.utils.constants import bar_format
+
+
+FILTERS = ["g", "r", "i"]
+N_SOURCES = 6
+FREQ = 0.135
+PHASE_LAGS = {
+    'g': 0,
+    'r': np.pi / 2,
+    'i': np.pi,
+}
 
 
 def _add_two_dimensional_gaussian_to_image(
@@ -73,14 +83,7 @@ def _variable_function(
         The flux.
     """
     
-    if fltr == 'g':
-        phase = 0
-    elif fltr == 'r':
-        phase = - np.pi / 2
-    elif fltr == 'i':
-        phase = - np.pi
-    
-    return 20 * np.sin(2 * np.pi * i * 0.135 + phase)
+    return 20 * np.sin(2 * np.pi * i * FREQ + PHASE_LAGS[fltr])
 
 def _create_image(
     binning_scale: int,
@@ -127,8 +130,6 @@ def _add_noise(
 
 def _create_images(
     out_dir: str,
-    filters: List[str],
-    N_sources: int,
     variable_source: int,
     source_positions: NDArray,
     peak_fluxes: NDArray,
@@ -162,7 +163,7 @@ def _create_images(
         Whether to overwrite the image if it already exists.
     """
     
-    for fltr in filters:
+    for fltr in FILTERS:
         if os.path.isfile(f"{out_dir}/240101{fltr}{200000000 + i}o.fits.gz") and not overwrite:
             continue
         
@@ -172,21 +173,20 @@ def _create_images(
             image = _apply_flat_field(image)  # apply circular aperture shadow
         noisy_image = _add_noise(image, i)  # add Poisson noise
         
-        # PSF parameters
-        semimajor_sigma = noisy_image.shape[0] // 256
-        semiminor_sigma = noisy_image.shape[1] // 256
+        # PSF parameters (typical PSF stdev of ~6pix at 1x1 binning for good seeing)
+        semimajor_sigma = 6 / (2048 / noisy_image.shape[0])
+        semiminor_sigma = 6 / (2048 / noisy_image.shape[0])
         orientation = 0
         
         # (x, y) translations
         rng = np.random.default_rng(i)
-        dx = rng.normal()
-        dy = rng.normal()
+        dx = 2048 // 512 * rng.normal() / binning_scale
+        dy = 2048 // 512 * rng.normal() / binning_scale
         x_positions = source_positions[:, 0] + dx
         y_positions = source_positions[:, 1] + dy
         
         # put sources in the image
-        for j in range(N_sources):
-            
+        for j in range(N_SOURCES):
             if j == variable_source:
                 noisy_image = _add_two_dimensional_gaussian_to_image(
                     noisy_image,
@@ -225,13 +225,10 @@ def _create_images(
         hdu.header["UT"] = f"2024-01-01 {hh}:{mm}:{ss}"
         
         # save fits file
-        try:
-            hdu.writeto(
-                f"{out_dir}/240101{fltr}{200000000 + i}o.fits.gz",
-                overwrite=overwrite,
-                )
-        except:
-            pass
+        hdu.writeto(
+            f"{out_dir}/240101{fltr}{200000000 + i}o.fits.gz",
+            overwrite=overwrite,
+            )
 
 def _apply_flat_field(
     image: NDArray,
@@ -312,10 +309,7 @@ def _create_flats(
         hdu.header["UT"] = f"2024-01-01 {hh}:{mm}:{ss}"
         
         # save fits file
-        try:
-            hdu.writeto(f"{out_dir}/{fltr}-band_flat_{i}.fits.gz", overwrite=overwrite)
-        except:
-            pass
+        hdu.writeto(f"{out_dir}/{fltr}-band_flat_{i}.fits.gz", overwrite=overwrite)
 
 def generate_flats(
     out_dir: str,
@@ -353,6 +347,45 @@ def generate_flats(
             overwrite,
             )
 
+def setup_obs(
+    out_dir: str,
+    binning_scale: int,
+    ) -> Tuple[int, NDArray, NDArray]:
+    """
+    Configure the dummy observation parameters.
+    
+    Parameters
+    ----------
+    out_dir : str
+        The output directory.
+    binning_scale : int
+        The image binning scale.
+    
+    Returns
+    -------
+    Tuple[List[str], int, int, NDArray, NDArray]
+        The variable source index, source positions, and peak fluxes.
+    """
+    
+    # create directory if it does not exist
+    if not os.path.isdir(out_dir):
+        os.makedirs(out_dir)
+    
+    rng = np.random.default_rng(123)
+    
+    border = 2048 // (16 * binning_scale)
+    source_positions = rng.uniform(border, 2048 // binning_scale - border, (N_SOURCES, 2))  # generate random source positions away from the edges
+    peak_fluxes = rng.uniform(100, 1000, N_SOURCES)  # generate random peak fluxes
+    variable_source = 1  # index of the variable source
+    
+    print(f'[OPTICAM] variable source is at ({source_positions[variable_source][0]:.0f}, {source_positions[variable_source][1]:.0f})')
+    print(f'[OPTICAM] variability frequency: {FREQ} Hz')
+    print('[OPTICAM] variability phase lags:')
+    for fltr, lag in PHASE_LAGS.items():
+        print(f'    [OPTICAM] {fltr}-band: {lag:.3f} radians')
+    
+    return variable_source, source_positions, peak_fluxes
+
 def generate_observations(
     out_dir: str,
     n_images: int = 100,
@@ -377,33 +410,21 @@ def generate_observations(
         Whether to overwrite data if they currently exist, by default False.
     """
     
-    # create directory if it does not exist
-    if not os.path.isdir(out_dir):
-        os.makedirs(out_dir, exist_ok=True)
-    
-    rng = np.random.default_rng(123)
-    filters = ["g", "r", "i"]
-    
-    N_sources = 6
-    source_positions = rng.uniform(0 + int(64 / binning_scale), int(2048 / binning_scale - 64 / binning_scale),
-                                   (N_sources, 2))  # generate random source positions away from the edges
-    peak_fluxes = rng.uniform(100, 1000, N_sources)  # generate random peak fluxes
-    variable_source = 1  # index of the variable source
-    
-    print(f'[OPTICAM] variable source is at ({source_positions[variable_source][0]:.0f}, {source_positions[variable_source][1]:.0f})')
+    variable_source, source_positions, peak_fluxes = setup_obs(
+        out_dir=out_dir,
+        binning_scale=binning_scale,
+        )
     
     for i in tqdm(range(n_images), desc="Generating observations", bar_format=bar_format):
         _create_images(
-            out_dir,
-            filters,
-            N_sources,
-            variable_source,
-            source_positions,
-            peak_fluxes,
-            i,
-            binning_scale,
-            circular_aperture,
-            overwrite
+            out_dir=out_dir,
+            variable_source=variable_source,
+            source_positions=source_positions,
+            peak_fluxes=peak_fluxes,
+            i=i,
+            binning_scale=binning_scale,
+            circular_aperture=circular_aperture,
+            overwrite=overwrite,
             )
 
 
@@ -431,22 +452,13 @@ def generate_gappy_observations(
         Whether to overwrite data if they currently exist, by default False.
     """
     
-    # create directory if it does not exist
-    if not os.path.isdir(out_dir):
-        os.makedirs(out_dir, exist_ok=True)
+    variable_source, source_positions, peak_fluxes = setup_obs(
+        out_dir=out_dir,
+        binning_scale=binning_scale,
+        )
     
-    rng = np.random.default_rng(123)
-    filters = ["g", "r", "i"]
-    
-    N_sources = 6
-    source_positions = rng.uniform(0 + int(64 / binning_scale), int(2048 / binning_scale - 64 / binning_scale),
-                                   (N_sources, 2))  # generate random source positions away from the edges
-    peak_fluxes = rng.uniform(100, 1000, N_sources)  # generate random peak fluxes
-    variable_source = 1  # index of the variable source
-    
-    print(f'[OPTICAM] variable source is at ({source_positions[variable_source][0]:.0f}, {source_positions[variable_source][1]:.0f})')
-    
-    gap_probability = .01  # probability of skipping an image
+    rng = np.random.default_rng(42)
+    gap_probability = .02  # probability of skipping an image
     
     for i in tqdm(range(n_images), desc="Generating observations", bar_format=bar_format):
         
@@ -456,19 +468,15 @@ def generate_gappy_observations(
             gap_probability = .95
             continue
         else:
-            gap_probability = .01  # reset the probability of skipping the next image
+            gap_probability = .02  # reset the probability of skipping the next image
         
         _create_images(
-            out_dir,
-            filters,
-            N_sources,
-            variable_source,
-            source_positions,
-            peak_fluxes,
-            i,
-            binning_scale,
-            circular_aperture,
-            overwrite
+            out_dir=out_dir,
+            variable_source=variable_source,
+            source_positions=source_positions,
+            peak_fluxes=peak_fluxes,
+            i=i,
+            binning_scale=binning_scale,
+            circular_aperture=circular_aperture,
+            overwrite=overwrite,
             )
-
-
