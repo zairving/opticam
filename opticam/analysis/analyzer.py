@@ -224,7 +224,7 @@ class Analyzer:
             ax.minorticks_on()
             ax.tick_params(which='both', direction='in', top=True, right=True)
         
-        fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_light_curves.png')
+        fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_light_curves.pdf')
         
         if self.show_plots:
             plt.show()
@@ -308,7 +308,7 @@ class Analyzer:
             axes[-1].set_xlabel('Phase')
             axes[len(self.light_curves) // 2].set_ylabel('Normalized Flux')
             
-            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_P={save_period:.4f}s_phase_fold.png')
+            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_P={save_period:.4f}s_phase_fold.pdf')
             plt.show()
         
         return results
@@ -459,7 +459,7 @@ class Analyzer:
                 ax.minorticks_on()
                 ax.tick_params(which='both', direction='in', top=True, right=True)
             
-            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_P={save_period:.4f}s_phase_bin.png')
+            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_P={save_period:.4f}s_phase_bin.pdf')
             plt.show()
         
         return results
@@ -507,7 +507,7 @@ class Analyzer:
         
         if self.show_plots and len(results) > 0:
             fig = plot(results, scale)
-            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_periodograms.png')
+            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_periodograms.pdf')
             plt.show()
         
         return results
@@ -568,7 +568,7 @@ class Analyzer:
         
         if self.show_plots:
             fig = plot(results, scale)
-            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_averaged_power_spectra.png')
+            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_averaged_power_spectra.pdf')
             plt.show()
         
         return results
@@ -613,7 +613,7 @@ class Analyzer:
         
         if self.show_plots:
             fig = plot(results, scale)
-            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_L-S_periodograms.png')
+            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_L-S_periodograms.pdf')
             plt.show()
         
         return results
@@ -676,7 +676,7 @@ class Analyzer:
         
         if self.show_plots:
             fig = plot(results)
-            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_cross_correlations.png')
+            fig.savefig(f'{self.out_directory}/plots/{self.prefix}_{self.phot_label}_cross_correlations.pdf')
             plt.show()
         
         return results
