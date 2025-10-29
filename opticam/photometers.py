@@ -564,20 +564,12 @@ class OptimalPhotometer(BasePhotometer):
             returned.
         """
         
-        # define pixel coordinates
-        y, x = np.ogrid[:image.shape[0], :image.shape[1]]
-        
-        # convert orientation from degrees to radians
-        theta = psf_params['orientation'] * np.pi / 180
-        
-        # offset coordinates to the position of the source and align axes with the orientation of the PSF
-        x0, y0 = position
-        x_rot = (x - x0) * np.cos(theta) + (y - y0) * np.sin(theta)
-        y_rot = -(x - x0) * np.sin(theta) + (y - y0) * np.cos(theta)
-        
-        # compute the weights for each pixel using a 2D Gaussian
-        weights = np.exp(- .5 * ((x_rot / psf_params['semimajor_sigma'])**2 + (y_rot / psf_params['semiminor_sigma'])**2))
-        weights /= np.sum(weights)  # normalise weights
+        weights = self.get_weights(
+            width=image.shape[1],
+            height=image.shape[0],
+            position=position,
+            psf_params=psf_params,
+            )
         
         # compute optimal flux and its error
         flux = np.sum(image * weights)
@@ -606,6 +598,47 @@ class OptimalPhotometer(BasePhotometer):
             local_background_errors = total_bkg_error
             
             return flux, flux_error, local_background, local_background_errors
+    
+    @staticmethod
+    def get_weights(
+        width: int,
+        height: int,
+        position: NDArray,
+        psf_params: Dict[str, float],
+        ) -> NDArray:
+        """
+        Compute the optimal weight for each pixel in an image.
+        
+        Parameters
+        ----------
+        width : int
+            The width of the image.
+        height : int
+            The height of the image.
+        position : NDArray
+            The position of the source.
+        psf_params : Dict[str, float]
+            The PSF parameters.
+        
+        Returns
+        -------
+        NDArray
+            The normalised weights.
+        """
+        
+        # define pixel coordinates
+        y, x = np.ogrid[:height, :width]
+        
+        theta = psf_params['orientation'] * np.pi / 180
+        
+        # offset coordinates to the position of the source and align axes with the orientation of the PSF
+        x0, y0 = position
+        x_rot = (x - x0) * np.cos(theta) + (y - y0) * np.sin(theta)
+        y_rot = -(x - x0) * np.sin(theta) + (y - y0) * np.cos(theta)
+        
+        weights = np.exp(- .5 * ((x_rot / psf_params['semimajor_sigma'])**2 + (y_rot / psf_params['semiminor_sigma'])**2))
+        
+        return weights / np.sum(weights)
 
 
 
@@ -759,8 +792,6 @@ def get_growth_curve(
         fluxes.append(flux)
     
     return np.array(radii), np.array(fluxes)
-
-
 
 
 
