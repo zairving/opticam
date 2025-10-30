@@ -1,9 +1,8 @@
 from typing import Dict, List
 
-from astropy.io import fits
 from astropy.table import QTable
 from astropy.visualization import simple_norm
-from matplotlib.patches import Circle, Ellipse, Rectangle
+from matplotlib.patches import Circle, Ellipse
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 import numpy as np
