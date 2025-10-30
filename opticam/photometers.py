@@ -426,27 +426,17 @@ class AperturePhotometer(BasePhotometer):
             returned.
         """
         
-        if self.semimajor_axis is not None and self.semiminor_axis is not None and self.orientation is not None:
-            aperture = EllipticalAperture(
-                position,
-                self.semimajor_axis,
-                self.semiminor_axis,
-                self.orientation,
-                )
-        else:
-            aperture = EllipticalAperture(
-                position,
-                fwhm_scale * psf_params['semimajor_sigma'],
-                fwhm_scale * psf_params['semiminor_sigma'],
-                psf_params['orientation'],
-                )
+        aperture = self.get_aperture(
+            position=position,
+            psf_params=psf_params,
+            )
         
         phot_table = aperture_photometry(data, aperture, error=error)
         
         if self.local_background_estimator is None:
             return phot_table["aperture_sum"].value[0], phot_table["aperture_sum_err"].value[0]
         else:
-            aperture_area = aperture.area_overlap(data)  # aperture area in pixels
+            aperture_area = aperture.area
             
             # estimate local background in the annulus
             local_background_per_pixel, local_background_error_per_pixel = self.local_background_estimator(
@@ -460,7 +450,7 @@ class AperturePhotometer(BasePhotometer):
             
             # estimate the total background in aperture
             total_bkg = local_background_per_pixel * aperture_area
-            total_bkg_error = np.sqrt(local_background_error_per_pixel**2 * aperture_area)
+            total_bkg_error = local_background_error_per_pixel * np.sqrt(aperture_area)
             
             flux = float(phot_table["aperture_sum"].value[0] - total_bkg)
             flux_error = float(np.sqrt(phot_table["aperture_sum_err"].value[0]**2 + total_bkg_error**2))
@@ -468,6 +458,27 @@ class AperturePhotometer(BasePhotometer):
             local_background_errors = float(total_bkg_error)
             
             return flux, flux_error, local_background, local_background_errors
+    
+    def get_aperture(
+        self,
+        position: NDArray,
+        psf_params: Dict[str, float],
+        ) -> EllipticalAperture:
+        
+        if self.semimajor_axis is not None and self.semiminor_axis is not None and self.orientation is not None:
+            return EllipticalAperture(
+                position,
+                self.semimajor_axis,
+                self.semiminor_axis,
+                self.orientation,
+                )
+        else:
+            return EllipticalAperture(
+                position,
+                fwhm_scale * psf_params['semimajor_sigma'],
+                fwhm_scale * psf_params['semiminor_sigma'],
+                psf_params['orientation'],
+                )
 
 
 class OptimalPhotometer(BasePhotometer):
