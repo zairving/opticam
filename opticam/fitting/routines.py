@@ -1,4 +1,4 @@
-from typing import Dict, List, Tuple
+from typing import Dict
 
 import numpy as np
 from numpy.typing import NDArray
@@ -32,23 +32,51 @@ def fit_rms_vs_flux(
             rms.append(values['rms'])
             flux.append(values['flux'])
         
-        log_x = np.log10(flux)
-        log_y = np.log10(rms)
+        x = np.array(flux)
+        y = np.asarray(rms)
         
-        popt, pcov = curve_fit(
-            straight_line,
-            log_x,
-            log_y,
-            )
+        try:
+            converged = False
+            prev, prev_err = None, None
+            while not converged:
+                log_x = np.log10(flux)
+                log_y = np.log10(rms)
+                
+                popt, pcov = curve_fit(
+                    straight_line,
+                    log_x,
+                    log_y,
+                    )
+                perr = np.sqrt(np.diag(pcov))
+                
+                if prev is not None and prev_err is not None:
+                    converged = np.allclose(popt, prev, atol=np.sqrt(perr**2 + prev_err**2))
+                
+                # remove largest outliers
+                model = straight_line(log_x, *popt)
+                r = log_y - model
+                i = np.argmax(r)
+                
+                rms.pop(i)
+                flux.pop(i)
+                
+                prev = popt
+                prev_err = perr
+        except:
+            popt, pcov = curve_fit(
+                    straight_line,
+                    np.log10(x),
+                    np.log10(y),
+                    )
         
         y_model = power_law(
-            np.asarray(flux),
+            x,
             10**(popt[1]),
             popt[0],
             )
         
         pl_fits[fltr] = {
-            'flux': np.asarray(flux),
+            'flux': x,
             'rms': y_model,
         }
     
