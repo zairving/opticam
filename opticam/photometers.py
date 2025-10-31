@@ -13,6 +13,7 @@ from opticam.correctors.flat_field_corrector import FlatFieldCorrector
 from opticam.finders import DefaultFinder
 from opticam.utils.constants import fwhm_scale
 from opticam.utils.fits_handlers import get_data
+from opticam.utils.helpers import camel_to_snake
 
 
 class BasePhotometer(ABC):
@@ -285,12 +286,33 @@ class BasePhotometer(ABC):
         
         return results
 
+    def get_label(
+            self,
+            ) -> str:
+            """
+            Get the label of the photometer for labelling output.
+            
+            Returns
+            -------
+            str
+                The label.
+            """
+            
+            save_name = camel_to_snake(self.__class__.__name__).replace('_photometer', '')
+            
+            # change save directory based on photometer settings
+            if self.local_background_estimator is not None:
+                save_name += '_annulus'
+            if self.forced:
+                save_name = 'forced_' + save_name
+            
+            return save_name
 
 class AperturePhotometer(BasePhotometer):
     """
     A photometer for performing aperture photometry.
     """
-    
+
     def __init__(
         self,
         semimajor_axis: int | None = None,
@@ -458,7 +480,7 @@ class AperturePhotometer(BasePhotometer):
             local_background_errors = float(total_bkg_error)
             
             return flux, flux_error, local_background, local_background_errors
-    
+
     def get_aperture(
         self,
         position: NDArray,
@@ -479,6 +501,15 @@ class AperturePhotometer(BasePhotometer):
                 fwhm_scale * psf_params['semiminor_sigma'],
                 psf_params['orientation'],
                 )
+
+    def get_aperture_area(self, psf_params):
+        
+        aperture = self.get_aperture(
+            position=np.zeros(2),
+            psf_params=psf_params
+        )
+        
+        return aperture.area
 
 
 class OptimalPhotometer(BasePhotometer):
@@ -609,7 +640,7 @@ class OptimalPhotometer(BasePhotometer):
             local_background_errors = total_bkg_error
             
             return flux, flux_error, local_background, local_background_errors
-    
+
     @staticmethod
     def get_weights(
         width: int,

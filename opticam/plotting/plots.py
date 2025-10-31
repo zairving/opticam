@@ -1,4 +1,5 @@
-from typing import Dict, List
+import os.path
+from typing import Callable, Dict, List
 
 from astropy.table import QTable
 from astropy.visualization import simple_norm
@@ -7,15 +8,15 @@ from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 import numpy as np
 from numpy.typing import NDArray
-import os.path
 import pandas as pd
 from pandas import DataFrame
 
 from opticam.background.global_background import BaseBackground
-from opticam.utils.constants import catalog_colors, fwhm_scale
+from opticam.correctors.noise import characterise_noise
 from opticam.photometers import get_growth_curve
 from opticam.fitting.models import gaussian
 from opticam.fitting.routines import fit_rms_vs_flux
+from opticam.utils.constants import catalog_colors, fwhm_scale
 
 
 def plot_catalogs(
@@ -649,25 +650,11 @@ def plot_rms_vs_median_flux(
             fontsize='large',
             )
         
-        for source in data[fltr].keys():
-            flux = data[fltr][source]['flux']
-            rms = data[fltr][source]['rms']
-            ax1.scatter(
-                flux,
-                rms,
-                marker='.',
-                color='k',
-                )
-            ax1.text(
-                flux * 1.03,
-                rms * 1.03,
-                str(source),
-                )
-        
+        # plot model
         ax1.plot(
             pl_fits[fltr]['flux'],
             pl_fits[fltr]['rms'],
-            color='red',
+            color='blue',
             lw=1,
             )
         
@@ -677,32 +664,35 @@ def plot_rms_vs_median_flux(
             r = float(values['rms'] / pl_fits[fltr]['rms'][i])
             
             if r - 1 > 0.05:
-                ax1.add_patch(
-                    Ellipse(
-                        xy=(values['flux'], values['rms']),
-                        width=values['flux'] * 0.1,
-                        height=values['rms'] * 0.125,
-                        facecolor='none',
-                        edgecolor='red',
-                        lw=1,
-                        )
-                    )
-                c = 'red'
+                color = 'red'
             else:
-                c = 'black'
+                color = 'black'
+            
+            ax1.scatter(
+                values['flux'],
+                values['rms'],
+                marker='.',
+                color=color,
+                )
+            ax1.text(
+                values['flux'] * 1.03,
+                values['rms'] * 1.03,
+                str(source_number),
+                color=color,
+                )
             
             ax2.scatter(
                 values['flux'],
                 r,
                 marker='.',
-                color=c,
+                color=color,
                 )
             ax2.text(
                 values['flux'] * 1.015,
                 r * 1.015,
                 str(source_number),
                 fontsize='large',
-                color=c,
+                color=color,
                 )
     
     for ax in axes[0, :]:
@@ -778,7 +768,111 @@ def get_lc_rms_and_flux_dict(
     return data
 
 
-
+def plot_noise(
+    out_directory: str,
+    files: Dict[str, str],
+    background: BaseBackground | Callable,
+    psf_params: Dict[str, Dict[str, float]],
+    catalogs: Dict[str, QTable],
+    show: bool = False,
+    ):
+    """
+    Plot the various noise contributions and compare them to the measured noise for a series of images.
+    
+    Parameters
+    ----------
+    out_directory : str
+        The output directory.
+    files : Dict[str, str]
+        The reference files for each filter {filter: path to image}.
+    background : BaseBackground | Callable
+        The global background estimator.
+    psf_params : Dict[str, Dict[str, float]]
+        The PSF parameters for each filter {filter: psf parameters}.
+    catalogs : Dict[str, QTable]
+        The catalogs for each filter {filter: catalog}.
+    photometer : BasePhotometer
+        The photometer to use for measuring noise.
+    show : bool, optional
+        Whether to show the plot, by default `False`.
+    """
+    
+    fig, axes = plt.subplots(
+        ncols=3,
+        nrows=2,
+        tight_layout=True,
+        sharex='col',
+        gridspec_kw={
+            'hspace': 0,
+            'height_ratios': [4, 1],
+            },
+        figsize=(3 * 6.4, 4.8),
+        )
+    
+    for i, (fltr, file) in enumerate(files.items()):
+        
+        results = characterise_noise(
+            file=file,
+            background=background,
+            catalog=catalogs[fltr],
+            psf_params=psf_params[fltr],
+            )
+        
+        axes[0][i].plot(results['model_mags'], results['effective_noise'], label='Effective noise', c='k', lw=1, zorder=3)
+        axes[0][i].plot(results['model_mags'], results['sky_noise'], ls='--', lw=1, label='Sky noise')
+        axes[0][i].plot(results['model_mags'], results['shot_noise'], ls='--', lw=1, label='Shot noise')
+        axes[0][i].plot(results['model_mags'], results['dark_noise'], ls='--', lw=1, label='Dark noise')
+        axes[0][i].plot(results['model_mags'], results['read_noise'], ls='--', lw=1, label='Read noise')
+        
+        axes[0][i].scatter(
+            results['measured_mags'],
+            results['measured_noise'],
+            label='Measured'
+            )
+        
+        axes[1][i].axhline(
+            1,
+            c='k',
+            lw=1,
+            )
+        axes[1][i].fill_between(
+            axes[1][i].set_xlim(),
+            1.05,
+            .95,
+            color='grey',
+            alpha=.5,
+            edgecolor='none',
+            )
+        axes[1][i].scatter(
+            results['measured_mags'],
+            results['measured_noise'] / results['expected_measured_noise'],
+        )
+        
+        axes[0][i].set_yscale('log')
+        axes[0][i].set_ylabel('$\\sigma_{\\rm mag}$', fontsize='large')
+        axes[0][i].set_title(fltr, fontsize='large')
+        
+        axes[1][i].set_xlabel('-2.5 log(counts)', fontsize='large')
+        axes[1][i].set_ylabel('$\\frac{\\sigma_{\\rm measured}}{\\sigma_{\\rm expected}}$', fontsize='xx-large')
+    
+    for ax in axes.flatten():
+        ax.minorticks_on()
+        ax.tick_params(which='both', direction='in', right=True, top=True)
+    
+    fig.legend(
+        *axes[0, 0].get_legend_handles_labels(),
+        bbox_to_anchor=(.5, .97),
+        loc='lower center',
+        ncol=6,
+        bbox_transform=fig.transFigure,
+        )
+    
+    fig.savefig(os.path.join(out_directory, 'diag/noise_characterisation.pdf'))
+    
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
 
 
 

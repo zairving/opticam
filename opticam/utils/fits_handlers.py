@@ -5,6 +5,7 @@ from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.time import Time
 from astropy import units as u
+from astropy.units import Quantity
 from ccdproc import cosmicray_lacosmic  # TODO: replace with astroscrappy to reduce dependencies?
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -161,8 +162,8 @@ def get_data(
         with fits.open(file) as hdul:
             data = np.array(hdul[0].data, dtype=np.float64)
             fltr = hdul[0].header["FILTER"] + '-band'
-    except:
-        raise ValueError(f"[OPTICAM] Could not open file {file}.")
+    except Exception as e:
+        raise ValueError(f"[OPTICAM] Could not open file {file} due to the following exception: {e}.")
     
     if return_error:
         error = np.sqrt(data)
@@ -246,3 +247,60 @@ def get_stacked_images(
             stacked_images[fltr] = np.asarray(hdu.data)
     
     return stacked_images
+
+
+def get_image_noise_info(
+    file_path: str,
+    ) -> Tuple[NDArray, Quantity, Quantity, Quantity]:
+    """
+    Given a FITS file, get the image and corresponding filter, exposure time, dark current, and gain.
+    
+    Parameters
+    ----------
+    file_path : str
+        The path to the FITS file.
+    
+    Returns
+    -------
+    Tuple[NDArray, Quantity, Quantity, Quantity]
+        The image, exposure time, dark current, and gain.
+    
+    Raises
+    ------
+    ValueError
+        If the file could not be parsed.
+    """
+    
+    try:
+        with fits.open(file_path) as hdul:
+            img = np.array(hdul[0].data, dtype=np.float64)  # type: ignore
+            t_exp = float(hdul[0].header['EXPOSURE']) * u.s  # type: ignore
+            dark_curr = float(hdul[0].header['DARKCURR']) * u.adu / u.pix / u.s  # type: ignore
+            gain = float(hdul[0].header['GAIN']) * u.ph / u.adu  # type: ignore
+    except Exception as e:
+        raise ValueError(f"[OPTICAM] Could not parse file {file_path} due to the following exception: {e}.")
+    
+    return img, t_exp, dark_curr, gain
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

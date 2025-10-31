@@ -24,7 +24,6 @@ from opticam.utils.batching import get_batches, get_batch_size
 from opticam.utils.constants import bar_format, pixel_scales
 from opticam.utils.data_checks import check_data
 from opticam.plotting.gifs import compile_gif, create_gif_frame
-from opticam.utils.helpers import camel_to_snake
 from opticam.utils.fits_handlers import get_data, get_stacked_images, save_stacked_images
 from opticam.utils.logging import recursive_log
 from opticam.plotting.plots import plot_backgrounds, plot_background_meshes, plot_catalogs, plot_growth_curves, \
@@ -485,7 +484,13 @@ class Reducer:
             catalogs=self.catalogs,
             show=self.show_plots,
             save=True,
-        )
+            )
+        
+        save_stacked_images(
+            stacked_images=stacked_images,
+            out_directory=self.out_directory,
+            overwrite=overwrite,
+            )
         
         plot_backgrounds(
             out_directory=self.out_directory,
@@ -496,7 +501,7 @@ class Reducer:
             t_ref=self.t_ref,
             show=show_diagnostic_plots,
             save=True,
-        )
+            )
         
         plot_background_meshes(
             out_directory=self.out_directory,
@@ -505,12 +510,15 @@ class Reducer:
             background=self.background,
             show=show_diagnostic_plots,
             save=True,
-        )
+            )
         
-        save_stacked_images(
-            stacked_images=stacked_images,
+        plot_noise(
             out_directory=self.out_directory,
-            overwrite=overwrite,
+            files=self.reference_files,
+            background=self.background,
+            psf_params=self.psf_params,
+            catalogs=self.catalogs,
+            show=self.show_plots,
             )
         
         # save transforms to file
@@ -705,13 +713,7 @@ class Reducer:
         """
         
         # define save directory using the photometer name
-        save_name = camel_to_snake(photometer.__class__.__name__).replace('_photometer', '')
-        
-        # change save directory based on photometer settings
-        if photometer.local_background_estimator is not None:
-            save_name += '_annulus'
-        if photometer.forced:
-            save_name = 'forced_' + save_name
+        save_name = photometer.get_label()
         
         print(f'[OPTICAM] Photometry results will be saved to lcs/{save_name} in {self.out_directory}.')
         
