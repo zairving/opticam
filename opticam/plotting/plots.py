@@ -708,7 +708,6 @@ def plot_rms_vs_median_flux(
         ax.tick_params(which='both', direction='in', top=True, right=True)
     
     for ax in axes[1, :]:
-        
         ax.fill_between(
             ax.set_xlim(),
             0.95,
@@ -806,7 +805,7 @@ def plot_noise(
             'hspace': 0,
             'height_ratios': [4, 1],
             },
-        figsize=(3 * 6.4, 4.8),
+        figsize=(15, 5),
         )
     
     for i, (fltr, file) in enumerate(files.items()):
@@ -867,7 +866,10 @@ def plot_noise(
         bbox_transform=fig.transFigure,
         )
     
-    fig.savefig(os.path.join(out_directory, 'diag/noise_characterisation.pdf'))
+    fig.savefig(
+        os.path.join(out_directory, 'diag/noise_characterisation.pdf'),
+        bbox_inches='tight',
+        )
     
     if show:
         plt.show()
