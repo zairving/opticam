@@ -3,14 +3,18 @@ import os
 from tqdm import tqdm
 import numpy as np
 from numpy.typing import NDArray
-from typing import List, Tuple
+from typing import Tuple
 
 from opticam.utils.constants import bar_format
 
 
 FILTERS = ["g", "r", "i"]
 N_SOURCES = 6
-FREQ = 0.135
+
+RMS = 0.02  # fractional RMS of variability
+FREQ = 0.135  # frequency of variability
+
+# variability phase lags
 PHASE_LAGS = {
     'g': 0,
     'r': np.pi / 2,
@@ -18,13 +22,13 @@ PHASE_LAGS = {
 }
 
 
-def _add_two_dimensional_gaussian_to_image(
+def two_dimensional_gaussian(
     image: NDArray,
     x_centroid: float,
     y_centroid: float,
-    peak_flux: float,
-    sigma_x: float,
-    sigma_y: float,
+    flux: float,
+    a: float,
+    b: float,
     theta: float,
     ) -> NDArray:
     """
@@ -38,12 +42,12 @@ def _add_two_dimensional_gaussian_to_image(
         The x-coordinate of the source.
     y_centroid : float
         The y-coordinate of the source.
-    peak_flux : float
-        The peak flux of the source.
-    sigma_x : float
-        The standard deviation of the source in the x-direction.
-    sigma_y : float
-        The standard deviation of the source in the y-direction.
+    flux : float
+        The total flux of the source.
+    a : float
+        The semi-major standard deviation.
+    b : float
+        The semi-minor standard deviation.
     theta : float
         The rotation angle of the source.
     
@@ -53,17 +57,21 @@ def _add_two_dimensional_gaussian_to_image(
         The image with the source added.
     """
     
-    x, y = np.meshgrid(np.arange(image.shape[1]), np.arange(image.shape[0]))
+    theta_rad = theta * np.pi / 180
     
-    a = np.cos(theta)**2/(2*sigma_x**2) + np.sin(theta)**2/(2*sigma_y**2)
-    b = -np.sin(2*theta)/(4*sigma_x**2) + np.sin(2*theta)/(4*sigma_y**2)
-    c = np.sin(theta)**2/(2*sigma_x**2) + np.cos(theta)**2/(2*sigma_y**2)
+    y, x = np.mgrid[0:image.shape[0], 0:image.shape[1]]
     
-    gaussian = peak_flux*np.exp(-(a*(x - x_centroid)**2 + 2*b*(x - x_centroid)*(y - y_centroid) + c*(y - y_centroid)**2))
+    dx = x - x_centroid
+    dy = y - y_centroid
     
-    return image + gaussian
+    x_rot = dx * np.cos(theta_rad) + dy * np.sin(theta_rad)
+    y_rot = -dx * np.sin(theta_rad) + dy * np.cos(theta_rad)
+    
+    amp = flux / (2 * np.pi * a * b)
+    
+    return amp * np.exp(-.5 * (np.square(x_rot / a) + np.square(y_rot / b)))
 
-def _variable_function(
+def variable_function(
     i: float,
     fltr: str,
     ) -> float:
@@ -83,9 +91,11 @@ def _variable_function(
         The flux.
     """
     
-    return 20 * np.sin(2 * np.pi * i * FREQ + PHASE_LAGS[fltr])
+    amp = RMS * np.sqrt(2)  # convert RMS amplitude to peak amplitude
+    
+    return 1 + amp * np.sin(2 * np.pi * i * FREQ + PHASE_LAGS[fltr])
 
-def _create_image(
+def create_image(
     binning_scale: int,
     ) -> NDArray:
     """
@@ -104,7 +114,7 @@ def _create_image(
     
     return np.zeros((int(2048 / binning_scale), int(2048 / binning_scale))) + 100
 
-def _add_noise(
+def add_noise(
     image: NDArray,
     i: int,
     ) -> NDArray:
@@ -128,11 +138,11 @@ def _add_noise(
     
     return rng.normal(image, np.sqrt(image))
 
-def _create_images(
+def create_images(
     out_dir: str,
     variable_source: int,
     source_positions: NDArray,
-    peak_fluxes: NDArray,
+    fluxes: NDArray,
     i: int,
     binning_scale: int,
     circular_aperture: bool,
@@ -151,8 +161,8 @@ def _create_images(
         The index of the variable source.
     source_positions : NDArray
         The positions of the sources.
-    peak_fluxes : NDArray
-        The peak fluxes of the sources.
+    fluxes : NDArray
+        The fluxes of the sources.
     i : int
         The image index (equivalent to time).
     binning_scale : int
@@ -168,10 +178,10 @@ def _create_images(
             continue
         
         # generate image
-        image = _create_image(binning_scale)
+        image = create_image(binning_scale)
         if circular_aperture:
-            image = _apply_flat_field(image)  # apply circular aperture shadow
-        noisy_image = _add_noise(image, i)  # add Poisson noise
+            image = apply_flat_field(image)  # apply circular aperture shadow
+        noisy_image = add_noise(image, i)  # add Poisson noise
         
         # PSF parameters (typical PSF stdev of ~6pix at 1x1 binning for good seeing)
         semimajor_sigma = 6 / (2048 / noisy_image.shape[0])
@@ -188,21 +198,21 @@ def _create_images(
         # put sources in the image
         for j in range(N_SOURCES):
             if j == variable_source:
-                noisy_image = _add_two_dimensional_gaussian_to_image(
+                noisy_image += two_dimensional_gaussian(
                     noisy_image,
                     x_positions[j],
                     y_positions[j],
-                    peak_fluxes[j] + _variable_function(i, fltr),  # add variable flux to the source
+                    fluxes[j] * variable_function(i, fltr),  # add variable flux to the source
                     semimajor_sigma,
                     semiminor_sigma,
                     orientation,
                     )
             else:
-                noisy_image = _add_two_dimensional_gaussian_to_image(
+                noisy_image += two_dimensional_gaussian(
                     noisy_image,
                     x_positions[j],
                     y_positions[j],
-                    peak_fluxes[j],
+                    fluxes[j],
                     semimajor_sigma,
                     semiminor_sigma,
                     orientation,
@@ -232,7 +242,7 @@ def _create_images(
             overwrite=overwrite,
             )
 
-def _apply_flat_field(
+def apply_flat_field(
     image: NDArray,
     ) -> NDArray:
     """
@@ -264,7 +274,7 @@ def _apply_flat_field(
     
     return image
 
-def _create_flats(
+def create_flats(
     out_dir: str,
     filters: list,
     i: int,
@@ -294,9 +304,9 @@ def _create_flats(
             continue
         
         # create flat-field image
-        image = _create_image(binning_scale)
-        image = _apply_flat_field(image)  # apply circular aperture shadow
-        noisy_image = _add_noise(image, 123 * (i + 123))  # ensure different noise from observation images
+        image = create_image(binning_scale)
+        image = apply_flat_field(image)  # apply circular aperture shadow
+        noisy_image = add_noise(image, 123 * (i + 123))  # ensure different noise from observation images
         
         # create fits file
         hdu = fits.PrimaryHDU(noisy_image)
@@ -341,7 +351,7 @@ def generate_flats(
     filters = ["g", "r", "i"]
     
     for i in tqdm(range(n_flats), desc="Generating flats", bar_format=bar_format):
-        _create_flats(
+        create_flats(
             out_dir,
             filters,
             i,
@@ -377,16 +387,22 @@ def setup_obs(
     
     border = 2048 // (16 * binning_scale)
     source_positions = rng.uniform(border, 2048 // binning_scale - border, (N_SOURCES, 2))  # generate random source positions away from the edges
-    peak_fluxes = rng.uniform(100, 1000, N_SOURCES)  # generate random peak fluxes
+    
+    random_fluxes = np.round(10**rng.uniform(3, 5, N_SOURCES))  # generate random fluxes (uniform in logarithm)
+    fluxes = -np.sort(-random_fluxes)  # sort fluxes in descending order
+    
     variable_source = 1  # index of the variable source
     
     print(f'[OPTICAM] variable source is at ({source_positions[variable_source][0]:.0f}, {source_positions[variable_source][1]:.0f})')
+    print(f'[OPTICAM] variability RMS: {RMS} %')
     print(f'[OPTICAM] variability frequency: {FREQ} Hz')
     print('[OPTICAM] variability phase lags:')
     for fltr, lag in PHASE_LAGS.items():
         print(f'    [OPTICAM] {fltr}-band: {lag:.3f} radians')
     
-    return variable_source, source_positions, peak_fluxes
+    # print(f'[OPTICAM] source fluxes: {fluxes}')
+    
+    return variable_source, source_positions, fluxes
 
 def generate_observations(
     out_dir: str,
@@ -412,17 +428,17 @@ def generate_observations(
         Whether to overwrite data if they currently exist, by default False.
     """
     
-    variable_source, source_positions, peak_fluxes = setup_obs(
+    variable_source, source_positions, fluxes = setup_obs(
         out_dir=out_dir,
         binning_scale=binning_scale,
         )
     
     for i in tqdm(range(n_images), desc="Generating observations", bar_format=bar_format):
-        _create_images(
+        create_images(
             out_dir=out_dir,
             variable_source=variable_source,
             source_positions=source_positions,
-            peak_fluxes=peak_fluxes,
+            fluxes=fluxes,
             i=i,
             binning_scale=binning_scale,
             circular_aperture=circular_aperture,
@@ -454,7 +470,7 @@ def generate_gappy_observations(
         Whether to overwrite data if they currently exist, by default False.
     """
     
-    variable_source, source_positions, peak_fluxes = setup_obs(
+    variable_source, source_positions, fluxes = setup_obs(
         out_dir=out_dir,
         binning_scale=binning_scale,
         )
@@ -472,11 +488,11 @@ def generate_gappy_observations(
         else:
             gap_probability = .02  # reset the probability of skipping the next image
         
-        _create_images(
+        create_images(
             out_dir=out_dir,
             variable_source=variable_source,
             source_positions=source_positions,
-            peak_fluxes=peak_fluxes,
+            fluxes=fluxes,
             i=i,
             binning_scale=binning_scale,
             circular_aperture=circular_aperture,
