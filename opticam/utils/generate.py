@@ -181,11 +181,10 @@ def create_images(
         image = create_image(binning_scale)
         if circular_aperture:
             image = apply_flat_field(image)  # apply circular aperture shadow
-        noisy_image = add_noise(image, i)  # add Poisson noise
         
         # PSF parameters (typical PSF stdev of ~6pix at 1x1 binning for good seeing)
-        semimajor_sigma = 6 / (2048 / noisy_image.shape[0])
-        semiminor_sigma = 6 / (2048 / noisy_image.shape[0])
+        semimajor_sigma = 6 / (2048 / image.shape[0])
+        semiminor_sigma = 6 / (2048 / image.shape[0])
         orientation = 0
         
         # (x, y) translations
@@ -198,8 +197,8 @@ def create_images(
         # put sources in the image
         for j in range(N_SOURCES):
             if j == variable_source:
-                noisy_image += two_dimensional_gaussian(
-                    noisy_image,
+                image += two_dimensional_gaussian(
+                    image,
                     x_positions[j],
                     y_positions[j],
                     fluxes[j] * variable_function(i, fltr),  # add variable flux to the source
@@ -208,8 +207,8 @@ def create_images(
                     orientation,
                     )
             else:
-                noisy_image += two_dimensional_gaussian(
-                    noisy_image,
+                image += two_dimensional_gaussian(
+                    image,
                     x_positions[j],
                     y_positions[j],
                     fluxes[j],
@@ -217,6 +216,8 @@ def create_images(
                     semiminor_sigma,
                     orientation,
                     )
+        
+        noisy_image = add_noise(image, i)  # add Poisson noise
         
         # create fits file
         hdu = fits.PrimaryHDU(noisy_image)
@@ -388,7 +389,7 @@ def setup_obs(
     border = 2048 // (16 * binning_scale)
     source_positions = rng.uniform(border, 2048 // binning_scale - border, (N_SOURCES, 2))  # generate random source positions away from the edges
     
-    random_fluxes = np.round(10**rng.uniform(3, 5, N_SOURCES))  # generate random fluxes (uniform in logarithm)
+    random_fluxes = np.round(10**(3 + rng.random(N_SOURCES)))  # generate random fluxes (uniform in logarithm)
     fluxes = -np.sort(-random_fluxes)  # sort fluxes in descending order
     
     variable_source = 1  # index of the variable source
