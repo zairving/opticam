@@ -1,6 +1,4 @@
-from copy import copy, deepcopy
-from typing import Callable, Dict
-import warnings
+from typing import Callable, Dict, List, Tuple
 
 from astropy.units import Quantity
 from astropy.table import QTable
@@ -101,7 +99,7 @@ def get_read_counts_per_pixel(
 
 def get_sky_stderr(
     N_source: Quantity,
-    N_pix: int,
+    N_pix: Quantity,
     n_sky: Quantity,
     gain: Quantity,
     ) -> float:
@@ -158,7 +156,7 @@ def get_shot_stderr(
 
 def get_dark_stderr(
     N_source: Quantity,
-    N_pix: int,
+    N_pix: Quantity,
     n_dark: Quantity,
     t_exp: Quantity,
     gain: Quantity,
@@ -194,7 +192,7 @@ def get_dark_stderr(
 
 def get_read_stderr(
     N_source: Quantity,
-    N_pix: int,
+    N_pix: Quantity,
     n_read: Quantity,
     gain: Quantity,
     ) -> float:
@@ -228,7 +226,8 @@ def get_read_stderr(
 
 def snr(
     N_source: Quantity,
-    N_pix: int,
+    N_pix: Quantity,
+    N_bkg: Quantity,
     n_sky: Quantity,
     dark_curr: Quantity,
     n_read: Quantity,
@@ -236,7 +235,7 @@ def snr(
     gain: Quantity,
     ) -> float:
     """
-    The simplified S/N ratio equation or CCD Equation (see Chapter 4.4 of Handbook of CCD Astronomy by Howell, 2006).
+    The (simplified) S/N ratio equation or CCD Equation (see Chapter 4.4 of Handbook of CCD Astronomy by Howell, 2006).
     
     Parameters
     ----------
@@ -244,6 +243,8 @@ def snr(
         The total number of source counts.
     N_pix : int
         The number of aperture pixels.
+    N_bkg : Quantity
+        The number of pixels used to estimate the background.
     n_sky : Quantity
         The number of sky counts **per pixel**.
     dark_curr : Quantity
@@ -266,11 +267,12 @@ def snr(
     dark_counts_per_pixel = get_dark_counts_per_pixel(dark_curr=dark_curr, t_exp=t_exp)
     read_counts_per_pixel = get_read_counts_per_pixel(n_read=n_read)
     
-    return source_photons / np.sqrt(source_photons + N_pix.value * (sky_photons_per_pix + dark_counts_per_pixel + read_counts_per_pixel**2))
+    return source_photons / np.sqrt(source_photons + N_pix.value * (1 + N_pix.value / N_bkg.value) * (sky_photons_per_pix + dark_counts_per_pixel + read_counts_per_pixel**2))
 
 def snr_stderr(
     N_source: Quantity,
-    N_pix: int,
+    N_pix: Quantity,
+    N_bkg: Quantity,
     n_sky: Quantity,
     dark_curr: Quantity,
     n_read: Quantity,
@@ -287,6 +289,8 @@ def snr_stderr(
         The total number of source counts.
     N_pix : int
         The number of aperture pixels.
+    N_bkg : Quantity
+        The number of pixels used to estimate the background.
     n_sky : Quantity
         The number of sky counts **per pixel**.
     dark_curr : Quantity
@@ -309,17 +313,37 @@ def snr_stderr(
     dark_counts_per_pixel = get_dark_counts_per_pixel(dark_curr=dark_curr, t_exp=t_exp)
     read_counts_per_pixel = get_read_counts_per_pixel(n_read=n_read)
     
-    p = N_pix.value * (sky_photons_per_pix + dark_counts_per_pixel + read_counts_per_pixel**2)
+    p = N_pix.value * (1 + (N_pix.value / N_bkg.value)) * (sky_photons_per_pix + dark_counts_per_pixel + read_counts_per_pixel**2)
     
     return 1.0857 * np.sqrt(source_photons + p) / source_photons
 
 
-def characterise_noise(
+def get_noise_params(
     file: str,
-    background: BaseBackground | Callable,
     catalog: QTable,
+    background: BaseBackground | Callable,
     psf_params: Dict[str, float],
-    ) -> Dict[str, NDArray]:
+    ) -> Tuple[NDArray, NDArray, Quantity, Quantity, Quantity, Quantity, Quantity, Quantity, Quantity]:
+    """
+    Get the noise values of a science image.
+    
+    Parameters
+    ----------
+    file : str
+        The path to the science image.
+    catalog : QTable
+        The source catalog corresponding to the science image.
+    background : BaseBackground | Callable
+        The background estimator.
+    psf_params : Dict[str, float]
+        The PSF parameters.
+    
+    Returns
+    -------
+    Tuple[NDArray, NDArray, Quantity, Quantity, Quantity, Quantity, Quantity, Quantity]
+        The fluxes, flux errors, number of pixels, backgorund counts/pixel, dark current, readout noise, exposure time,
+        and gain.
+    """
     
     n_read = 1.1 * u.adu / u.pix  # Andor Zyla 4.2 PLUS @ 216 MHz
     
@@ -329,11 +353,20 @@ def characterise_noise(
     
     # global background
     bkg = background(img)
-    n_sky = bkg.background_median * u.adu / u.pix
     
+    # get median background position
+    bkg_values = bkg.background_mesh.flatten()
+    median_index = np.argsort(bkg_values)[bkg_values.size // 2]
+    median_pos = np.unravel_index(median_index, bkg.background_mesh.shape)
+    
+    N_bkg = bkg.npixels_mesh[median_pos] * u.pix  # number of pixels used to estimate background
+    n_sky = bkg.background_mesh[median_pos] * u.adu / u.pix  # background estimate
+    
+    # subtract background from image
     img_clean = img - bkg.background
     img_clean_err = np.sqrt(img + bkg.background_rms**2)
     
+    # perform photometry
     phot = AperturePhotometer()
     phot_results = phot.compute(
         img_clean,
@@ -343,11 +376,94 @@ def characterise_noise(
         psf_params,
         )
     
-    # get the effective number of pixels in the aperture
+    # get the number of pixels in the aperture
     N_pix = phot.get_aperture_area(psf_params=psf_params) * u.pix
     
-    fluxes = np.asarray([flux for flux in phot_results['flux']])
-    flux_errs = np.asarray([flux for flux in phot_results['flux_err']])
+    fluxes = np.array(phot_results['flux'])
+    flux_errs = np.array(phot_results['flux_err'])
+    
+    return fluxes, flux_errs, N_pix, N_bkg, n_sky, dark_curr, n_read, t_exp, gain
+
+def get_snrs(
+    file: str,
+    background: BaseBackground | Callable,
+    catalog: QTable,
+    psf_params: Dict[str, float],
+    ) -> List[float]:
+    """
+    Get the S/N ratios for the cataloged sources in a science image.
+    
+    Parameters
+    ----------
+    file : str
+        The path to the science image.
+    background : BaseBackground | Callable
+        The background estimator.
+    catalog : QTable
+        The source catalog corresponding to the science image.
+    psf_params : Dict[str, float]
+        The PSF parameters.
+    
+    Returns
+    -------
+    List[float]
+        The S/N for each source. Sources are ordered as they appear in `catalog`.
+    """
+    
+    fluxes, flux_errs, N_pix, N_bkg, n_sky, dark_curr, n_read, t_exp, gain = get_noise_params(
+        file=file,
+        catalog=catalog,
+        background=background,
+        psf_params=psf_params,
+    )
+    
+    snrs = [snr(
+        N_source=flux * u.adu,
+        N_pix=N_pix,
+        N_bkg=N_bkg,
+        n_sky=n_sky,
+        dark_curr=dark_curr,
+        n_read=n_read,
+        t_exp=t_exp,
+        gain=gain,
+        ) for flux in fluxes]
+        
+    
+    return snrs
+
+def characterise_noise(
+    file: str,
+    background: BaseBackground | Callable,
+    catalog: QTable,
+    psf_params: Dict[str, float],
+    ) -> Dict[str, NDArray]:
+    """
+    Characterise the expected noise from an image and compare it to the measured noise for a number of cataloged 
+    sources.
+    
+    Parameters
+    ----------
+    file : str
+        The file path to the science image.
+    background : BaseBackground | Callable
+        The background estimator.
+    catalog : QTable
+        The source catalog corresponding to the science image.
+    psf_params : Dict[str, float]
+        The PSF parameters.
+    
+    Returns
+    -------
+    Dict[str, NDArray]
+        The noies properties.
+    """
+    
+    fluxes, flux_errs, N_pix, N_bkg, n_sky, dark_curr, n_read, t_exp, gain = get_noise_params(
+        file=file,
+        catalog=catalog,
+        background=background,
+        psf_params=psf_params,
+    )
     
     N_source = np.logspace(
         np.log10(np.min(fluxes) / 1.5),
@@ -358,7 +474,7 @@ def characterise_noise(
     results = {}
     
     results['model_mags'] = -2.5 * np.log10(N_source.value)
-    results['effective_noise'] = snr_stderr(N_source, N_pix, n_sky, dark_curr, n_read, t_exp, gain)
+    results['effective_noise'] = snr_stderr(N_source, N_pix, N_bkg, n_sky, dark_curr, n_read, t_exp, gain)
     results['sky_noise'] = get_sky_stderr(N_source, N_pix, n_sky, gain)
     results['shot_noise'] = get_shot_stderr(N_source, gain)
     results['dark_noise'] = get_dark_stderr(N_source, N_pix, dark_curr, t_exp, gain)
@@ -366,6 +482,28 @@ def characterise_noise(
     
     results['measured_mags'] = -2.5 * np.log10(fluxes)
     results['measured_noise'] = 1.0857 * flux_errs / fluxes,
-    results['expected_measured_noise'] = snr_stderr(fluxes * u.adu, N_pix, n_sky, dark_curr, n_read, t_exp, gain)
+    results['expected_measured_noise'] = snr_stderr(fluxes * u.adu, N_pix, N_bkg, n_sky, dark_curr, n_read, t_exp, gain)
     
     return results
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
