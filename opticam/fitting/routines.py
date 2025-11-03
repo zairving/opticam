@@ -28,12 +28,13 @@ def fit_rms_vs_flux(
     
     for fltr in data.keys():
         rms, flux = [], []
-        for source_number, values in data[fltr].items():
+        for values in data[fltr].values():
             rms.append(values['rms'])
             flux.append(values['flux'])
         
-        x = np.array(flux)
-        y = np.asarray(rms)
+        order = np.argsort(flux)
+        x = np.array(flux)[order]
+        y = np.array(rms)[order]
         
         try:
             converged = False
@@ -50,7 +51,9 @@ def fit_rms_vs_flux(
                 perr = np.sqrt(np.diag(pcov))
                 
                 if prev is not None and prev_err is not None:
-                    converged = np.allclose(popt, prev, atol=np.sqrt(perr**2 + prev_err**2))
+                    # assume fit has converged is params are within 20%
+                    # do not use perr since it may be very large
+                    converged = np.allclose(popt, prev, rtol=0.2, atol=0)
                 
                 # remove largest outliers
                 model = straight_line(log_x, *popt)
@@ -69,15 +72,25 @@ def fit_rms_vs_flux(
                     np.log10(y),
                     )
         
+        # get model prediction band using Monte Carlo method
+        N = 1000
+        y_models = np.zeros((N, x.size))
+        for i in range(N):
+            rng = np.random.default_rng(i)
+            a, b = rng.multivariate_normal(popt, pcov)
+            y_models[i] += power_law(x, 10**a, b)
+        y_model_err = np.std(y_models, axis=0)
+        
         y_model = power_law(
             x,
-            10**(popt[1]),
+            10**popt[1],
             popt[0],
             )
         
         pl_fits[fltr] = {
             'flux': x,
             'rms': y_model,
+            'err': y_model_err,
         }
     
     return pl_fits
