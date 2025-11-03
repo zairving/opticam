@@ -12,7 +12,7 @@ import pandas as pd
 from pandas import DataFrame
 
 from opticam.background.global_background import BaseBackground
-from opticam.correctors.noise import characterise_noise
+from opticam.noise import characterise_noise, get_snrs
 from opticam.photometers import get_growth_curve
 from opticam.fitting.models import gaussian
 from opticam.fitting.routines import fit_rms_vs_flux
@@ -657,13 +657,21 @@ def plot_rms_vs_median_flux(
             color='blue',
             lw=1,
             )
+        ax1.fill_between(
+            pl_fits[fltr]['flux'],
+            pl_fits[fltr]['rms'] - pl_fits[fltr]['err'],
+            pl_fits[fltr]['rms'] + pl_fits[fltr]['err'],
+            color='grey',
+            edgecolor='none',
+            alpha=.5,
+            )
         
         # highlight potentially variable sources
         for source_number, values in data[fltr].items():
             i = np.where(pl_fits[fltr]['flux'] == values['flux'])[0]
-            r = float(values['rms'] / pl_fits[fltr]['rms'][i])
+            r = values['rms'] / pl_fits[fltr]['rms'][i]
             
-            if r - 1 > 0.05:
+            if r - 1 > pl_fits[fltr]['err'][i]:
                 color = 'red'
             else:
                 color = 'black'
@@ -694,11 +702,36 @@ def plot_rms_vs_median_flux(
                 fontsize='large',
                 color=color,
                 )
-    
-    for ax in axes[0, :]:
-        ax.set_yscale('log')
-        ax.set_ylabel(
+        
+        ax1.set_yscale('log')
+        ax1.set_ylabel(
             'Flux RMS [counts]',
+            fontsize='large',
+            )
+        
+        ax2.plot(
+            pl_fits[fltr]['flux'],
+            np.ones_like(pl_fits[fltr]['flux']),
+            color='blue',
+            lw=1,
+            )
+        ax2.fill_between(
+            pl_fits[fltr]['flux'],
+            1 - pl_fits[fltr]['err'] / pl_fits[fltr]['rms'],
+            1 + pl_fits[fltr]['err'] / pl_fits[fltr]['rms'],
+            color='grey',
+            edgecolor='none',
+            alpha=.5,
+            )
+        
+        lo, hi = ax2.get_ylim()
+        ax2.set_ylim(lo * 0.95, hi * 1.05)
+        ax2.set_xlabel(
+            'Median flux [counts]',
+            fontsize='large',
+            )
+        ax2.set_ylabel(
+            'RMS / model',
             fontsize='large',
             )
     
@@ -706,27 +739,6 @@ def plot_rms_vs_median_flux(
         ax.set_xscale('log')
         ax.minorticks_on()
         ax.tick_params(which='both', direction='in', top=True, right=True)
-    
-    for ax in axes[1, :]:
-        ax.fill_between(
-            ax.set_xlim(),
-            0.95,
-            1.05,
-            color='grey',
-            edgecolor='none',
-            alpha=.5,
-            )
-        
-        lo, hi = ax.get_ylim()
-        ax.set_ylim(lo * 0.95, hi * 1.05)
-        ax.set_xlabel(
-            'Median flux [counts]',
-            fontsize='large',
-            )
-        ax.set_ylabel(
-            'RMS / model',
-            fontsize='large',
-            )
     
     fig.savefig(os.path.join(save_dir, f'{phot_label}_rms_vs_median.pdf'))
     
@@ -737,7 +749,20 @@ def plot_rms_vs_median_flux(
 
 def get_lc_rms_and_flux_dict(
     lc_dir: str,
-    ):
+    ) -> Dict[str, Dict[str, Dict[str, float]]]:
+    """
+    Get the RMS and median flux for a series of light curves.
+    
+    Parameters
+    ----------
+    lc_dir : str
+        The directory path to the light curves.
+    
+    Returns
+    -------
+    Dict[str, Dict[str, Dict[str, float]]]
+        The median and RMS flux values for each light curve grouped by filter.
+    """
     
     lcs = os.listdir(lc_dir)
     
@@ -750,21 +775,113 @@ def get_lc_rms_and_flux_dict(
         
         df = pd.read_csv(os.path.join(lc_dir, lc))
         
-        flux = np.asarray(df['flux'].values)
+        flux = np.array(df['flux'].values, dtype=np.float64)
+        flux = flux
         
         median = np.median(flux)
         rms = np.sqrt(np.mean(np.square(flux - np.mean(flux))))
         
-        if fltr not in data.keys():
-            data[fltr] = {}
-        
-        source_info = {
-            'rms': rms,
-            'flux': median,
-            }
-        data[fltr][source_number] = source_info
+        if not np.isnan(median) and not np.isnan(rms):
+            if fltr not in data.keys():
+                data[fltr] = {}
+            source_info = {
+                'rms': rms,
+                'flux': median,
+                }
+            data[fltr][source_number] = source_info
     
     return data
+
+
+def plot_snrs(
+    out_directory: str,
+    files: Dict[str, str],
+    background: BaseBackground | Callable,
+    psf_params: Dict[str, Dict[str, float]],
+    catalogs: Dict[str, QTable],
+    show: bool = False,
+    ):
+    """
+    Plot the S/N for each source.
+    
+    Parameters
+    ----------
+    out_directory : str
+        The output directory.
+    files : Dict[str, str]
+        The reference files for each filter {filter: path to image}.
+    background : BaseBackground | Callable
+        The global background estimator.
+    psf_params : Dict[str, Dict[str, float]]
+        The PSF parameters for each filter {filter: psf parameters}.
+    catalogs : Dict[str, QTable]
+        The catalogs for each filter {filter: catalog}.
+    photometer : BasePhotometer
+        The photometer to use for measuring noise.
+    show : bool, optional
+        Whether to show the plot, by default `False`.
+    """
+    
+    fig, axes = plt.subplots(
+        ncols=3,
+        tight_layout=True,
+        figsize=(15, 5),
+        )
+    
+    for i, (fltr, file) in enumerate(files.items()):
+        
+        source_ids = np.arange(len(catalogs[fltr])) + 1  # source IDs
+        snrs = np.round(
+            get_snrs(
+                file=file,
+                background=background,
+                catalog=catalogs[fltr],
+                psf_params=psf_params[fltr],
+                ),
+            1,
+            )
+        
+        axes[i].set_title(
+            fltr,
+            fontsize='large',
+            )
+        axes[i].set_xlabel(
+            'Source ID',
+            fontsize='large',
+            )
+        axes[i].set_ylabel(
+            'S/N',
+            fontsize='large',
+            )
+        
+        p = axes[i].bar(
+            source_ids,
+            snrs,
+            facecolor='none',
+            edgecolor='k',
+            lw=1,
+            )
+        axes[i].bar_label(
+            p,
+            padding=0.02 * axes[i].get_ylim()[1],
+            fontsize='large',
+            rotation=90,
+            )
+    
+    for ax in axes:
+        ax.set_ylim(ax.get_ylim()[0], 1.2 * ax.get_ylim()[1])
+        ax.minorticks_on()
+        ax.tick_params(which='both', direction='in', right=True, top=True)
+    
+    fig.savefig(
+        os.path.join(out_directory, 'diag/snrs.pdf'),
+        bbox_inches='tight',
+        )
+    
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
 
 
 def plot_noise(
@@ -834,14 +951,6 @@ def plot_noise(
             c='k',
             lw=1,
             )
-        axes[1][i].fill_between(
-            axes[1][i].set_xlim(),
-            1.05,
-            .95,
-            color='grey',
-            alpha=.5,
-            edgecolor='none',
-            )
         axes[1][i].scatter(
             results['measured_mags'],
             results['measured_noise'] / results['expected_measured_noise'],
@@ -857,6 +966,9 @@ def plot_noise(
     for ax in axes.flatten():
         ax.minorticks_on()
         ax.tick_params(which='both', direction='in', right=True, top=True)
+    
+    for ax in axes[0, :]:
+        ax.invert_xaxis()
     
     fig.legend(
         *axes[0, 0].get_legend_handles_labels(),
