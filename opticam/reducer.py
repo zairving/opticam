@@ -27,7 +27,7 @@ from opticam.plotting.gifs import compile_gif, create_gif_frame
 from opticam.utils.fits_handlers import get_data, get_stacked_images, save_stacked_images
 from opticam.utils.logging import recursive_log
 from opticam.plotting.plots import plot_backgrounds, plot_background_meshes, plot_catalogs, plot_growth_curves, \
-    plot_time_between_files, plot_psf, plot_rms_vs_median_flux, plot_noise
+    plot_time_between_files, plot_psf, plot_rms_vs_median_flux, plot_noise, plot_snrs
 
 
 class Reducer:
@@ -511,6 +511,15 @@ class Reducer:
             show=show_diagnostic_plots,
             save=True,
             )
+        
+        plot_snrs(
+            out_directory=self.out_directory,
+            files=self.reference_files,
+            background=self.background,
+            psf_params=self.psf_params,
+            catalogs=self.catalogs,
+            show=self.show_plots,
+        )
         
         plot_noise(
             out_directory=self.out_directory,
