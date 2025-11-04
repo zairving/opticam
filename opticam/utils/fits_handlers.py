@@ -128,9 +128,8 @@ def get_data(
     file: str,
     flat_corrector: FlatFieldCorrector | None,
     rebin_factor: int,
-    return_error: bool,
     remove_cosmic_rays: bool,
-    ) -> NDArray | Tuple[NDArray, NDArray]:
+    ) -> NDArray:
     """
     Get the image data from a FITS file.
     
@@ -142,15 +141,13 @@ def get_data(
         The `FlatFieldCorrector` instance (if specified).
     rebin_factor : int
         The rebin factor.
-    return_error : bool
-        Whether to compute and return the error image.
     remove_cosmic_rays : bool
         Whether to remove cosmic rays from the image.
     
     Returns
     -------
-    NDArray | Tuple[NDArray, NDArray]
-        The data and its error.
+    NDArray
+        The data.
     
     Raises
     ------
@@ -165,14 +162,8 @@ def get_data(
     except Exception as e:
         raise ValueError(f"[OPTICAM] Could not open file {file} due to the following exception: {e}.")
     
-    if return_error:
-        error = np.sqrt(data)  # Poisson noise
-    
     if flat_corrector:
         data = flat_corrector.correct(data, fltr)
-        
-        if return_error:
-            error = flat_corrector.correct(error, fltr)
     
     # remove cosmic rays if required
     if remove_cosmic_rays:
@@ -180,12 +171,6 @@ def get_data(
     
     if rebin_factor > 1:
         data = rebin_image(data, rebin_factor)
-        
-        if return_error:
-            error = rebin_image(error, rebin_factor)
-    
-    if return_error:
-        return data, error
     
     return data
 
