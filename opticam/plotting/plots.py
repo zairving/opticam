@@ -671,7 +671,7 @@ def plot_rms_vs_median_flux(
             i = np.where(pl_fits[fltr]['flux'] == values['flux'])[0]
             r = values['rms'] / pl_fits[fltr]['rms'][i]
             
-            if r - 1 > pl_fits[fltr]['err'][i]:
+            if r - 1 >= pl_fits[fltr]['err'][i] / pl_fits[fltr]['rms'][i]:
                 color = 'red'
             else:
                 color = 'black'
