@@ -8,6 +8,7 @@ from numpy.typing import NDArray
 
 from opticam.background.global_background import BaseBackground
 from opticam.photometers import AperturePhotometer
+from opticam.utils.constants import counts_to_mag_factor
 from opticam.utils.fits_handlers import get_image_noise_info
 
 
@@ -128,7 +129,7 @@ def get_sky_stderr(
     
     p_sky = N_pix.value * sky_photons_per_pix
     
-    return 1.0857 * np.sqrt(p_sky) / source_photons
+    return counts_to_mag_factor * np.sqrt(p_sky) / source_photons
 
 def get_shot_stderr(
     N_source: Quantity,
@@ -152,7 +153,7 @@ def get_shot_stderr(
     
     source_photons = get_source_photons(N_source=N_source, gain=gain)
     
-    return 1.0857 * np.sqrt(source_photons) / source_photons
+    return counts_to_mag_factor * np.sqrt(source_photons) / source_photons
 
 def get_dark_stderr(
     N_source: Quantity,
@@ -188,7 +189,7 @@ def get_dark_stderr(
     
     p_dark = N_pix.value * dark_counts_per_pixel
     
-    return 1.0857 * np.sqrt(p_dark) / source_photons
+    return counts_to_mag_factor * np.sqrt(p_dark) / source_photons
 
 def get_read_stderr(
     N_source: Quantity,
@@ -221,7 +222,7 @@ def get_read_stderr(
     
     p_read = N_pix.value * read_counts_per_pixel**2
     
-    return 1.0857 * np.sqrt(p_read) / source_photons
+    return counts_to_mag_factor * np.sqrt(p_read) / source_photons
 
 
 def snr(
@@ -315,7 +316,7 @@ def snr_stderr(
     
     p = N_pix.value * (1 + (N_pix.value / N_bkg.value)) * (sky_photons_per_pix + dark_counts_per_pixel + read_counts_per_pixel**2)
     
-    return 1.0857 * np.sqrt(source_photons + p) / source_photons
+    return counts_to_mag_factor * np.sqrt(source_photons + p) / source_photons
 
 
 def get_noise_params(
@@ -357,10 +358,10 @@ def get_noise_params(
     # get median background position
     bkg_values = bkg.background_mesh.flatten()
     median_index = np.argsort(bkg_values)[bkg_values.size // 2]
-    median_pos = np.unravel_index(median_index, bkg.background_mesh.shape)
+    bkg_pos = np.unravel_index(median_index, bkg.background_mesh.shape)
     
-    N_bkg = bkg.npixels_mesh[median_pos] * u.pix  # number of pixels used to estimate background
-    n_sky = bkg.background_mesh[median_pos] * u.adu / u.pix  # background estimate
+    N_bkg = bkg.npixels_mesh[bkg_pos] * u.pix  # number of pixels used to estimate background
+    n_sky = bkg.background_mesh[bkg_pos] * u.adu / u.pix  # background estimate
     
     # subtract background from image
     img_clean = img - bkg.background
@@ -481,7 +482,7 @@ def characterise_noise(
     results['read_noise'] = get_read_stderr(N_source, N_pix, n_read, gain)
     
     results['measured_mags'] = -2.5 * np.log10(fluxes)
-    results['measured_noise'] = 1.0857 * flux_errs / fluxes,
+    results['measured_noise'] = counts_to_mag_factor * flux_errs / fluxes,
     results['expected_measured_noise'] = snr_stderr(fluxes * u.adu, N_pix, N_bkg, n_sky, dark_curr, n_read, t_exp, gain)
     
     return results
