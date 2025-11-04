@@ -453,12 +453,11 @@ class AperturePhotometer(BasePhotometer):
             psf_params=psf_params,
             )
         
-        phot_table = aperture_photometry(data, aperture, error=error)
-        
         if self.local_background_estimator is None:
+            phot_table = aperture_photometry(data, aperture, error=error)
+            
             return phot_table["aperture_sum"].value[0], phot_table["aperture_sum_err"].value[0]
         else:
-            aperture_area = aperture.area
             
             # estimate local background in the annulus
             local_background_per_pixel, local_background_error_per_pixel = self.local_background_estimator(
@@ -470,16 +469,15 @@ class AperturePhotometer(BasePhotometer):
                 psf_params['orientation'],
                 )
             
-            # estimate the total background in aperture
-            total_bkg = local_background_per_pixel * aperture_area
-            total_bkg_error = local_background_error_per_pixel * np.sqrt(aperture_area)
+            data_clean = data - local_background_per_pixel
+            clean_error = np.sqrt(error**2 + local_background_error_per_pixel**2)
             
-            flux = float(phot_table["aperture_sum"].value[0] - total_bkg)
-            flux_error = float(np.sqrt(phot_table["aperture_sum_err"].value[0]**2 + total_bkg_error**2))
-            local_background = float(total_bkg)
-            local_background_errors = float(total_bkg_error)
+            phot_table = aperture_photometry(data_clean, aperture, error=clean_error)
             
-            return flux, flux_error, local_background, local_background_errors
+            flux = phot_table["aperture_sum"].value[0]
+            flux_error = phot_table["aperture_sum_err"].value[0]
+            
+            return flux, flux_error, local_background_per_pixel, local_background_error_per_pixel
 
     def get_aperture(
         self,
@@ -502,14 +500,28 @@ class AperturePhotometer(BasePhotometer):
                 psf_params['orientation'],
                 )
 
-    def get_aperture_area(self, psf_params):
+    def get_aperture_area(
+        self,
+        psf_params: Dict[str, float],
+        ) -> float:
+        """
+        Get the area of the aperture.
         
-        aperture = self.get_aperture(
-            position=np.zeros(2),
-            psf_params=psf_params
-        )
+        Parameters
+        ----------
+        psf_params : Dict[str, float],
+            The PSF parameters.
         
-        return aperture.area
+        Returns
+        -------
+        float
+            The area of the aperture.
+        """
+        
+        return self.get_aperture(
+            position=np.zeros(2),  # position does not matter
+            psf_params=psf_params,
+            ).area
 
 
 class OptimalPhotometer(BasePhotometer):
@@ -613,11 +625,10 @@ class OptimalPhotometer(BasePhotometer):
             psf_params=psf_params,
             )
         
-        # compute optimal flux and its error
-        flux = np.sum(image * weights)
-        flux_error = np.sqrt(np.sum((error * weights)**2))
-        
         if self.local_background_estimator is None:
+            flux = np.sum(image * weights)
+            flux_error = np.sqrt(np.sum((error * weights)**2))
+            
             return flux, flux_error
         else:
             # estimate local background using annulus
@@ -630,16 +641,13 @@ class OptimalPhotometer(BasePhotometer):
                 psf_params['orientation'],
                 )
             
-            # estimate the total background in aperture
-            total_bkg = local_background_per_pixel * np.sum(weights)
-            total_bkg_error = np.sqrt(local_background_error_per_pixel**2 * np.sum(weights))
+            image_clean = image - local_background_per_pixel
+            clean_error = np.sqrt(error**2 + local_background_error_per_pixel**2)
             
-            flux = flux - total_bkg
-            flux_error = np.sqrt(flux_error**2 + total_bkg_error**2)
-            local_background = total_bkg
-            local_background_errors = total_bkg_error
+            flux = np.sum(image_clean * weights)
+            flux_error = np.sqrt(np.sum((clean_error * weights)**2))
             
-            return flux, flux_error, local_background, local_background_errors
+            return flux, flux_error, local_background_per_pixel, local_background_error_per_pixel
 
     @staticmethod
     def get_weights(
