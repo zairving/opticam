@@ -39,7 +39,6 @@ class BaseLocalBackground(ABC):
     def __call__(
         self,
         data: NDArray,
-        error: NDArray,
         position: NDArray,
         semimajor_axis: float,
         semiminor_axis: float,
@@ -51,8 +50,6 @@ class BaseLocalBackground(ABC):
         ----------
         data : NDArray
             The image data.
-        error : NDArray
-            The error in the image data.
         semimajor_axis : float
             The (unscaled) semi-major axis of the aperture.
         semiminor_axis : float
@@ -79,7 +76,6 @@ class DefaultLocalBackground(BaseLocalBackground):
     def __call__(
         self,
         data: NDArray,
-        error: NDArray,
         position: NDArray,
         semimajor_axis: float,
         semiminor_axis: float | None = None,
@@ -125,7 +121,6 @@ class DefaultLocalBackground(BaseLocalBackground):
         stats = ApertureStats(
             data,
             annulus,
-            error=error,
             sigma_clip=self.sigma_clip,
             )
         
