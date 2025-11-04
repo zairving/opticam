@@ -1,9 +1,11 @@
 import json
 import os
 from types import FunctionType
-from typing import Any, List
+from typing import Any, Dict, List
 
 from astropy.io import fits
+
+from opticam.utils.constants import pixel_scales
 
 
 def log_binnings(
@@ -108,3 +110,66 @@ def recursive_log(param: Any, depth: int = 0, max_depth: int = 5) -> Any:
     if hasattr(param, '__dict__'):
         return {key: recursive_log(value, depth + 1, max_depth) for key, value in vars(param).items()}
     return str(param)
+
+
+def log_psf_params(
+    out_directory: str,
+    psf_params: Dict[str, Dict[str, float]],
+    binning_scale: int,
+    rebin_factor: int,
+    ) -> None:
+    """
+    Log the PSF parameters.
+    
+    Parameters
+    ----------
+    out_directory : str
+        The path to the output directory.
+    psf_params : Dict[str, Dict[str, float]]
+        The PSF parameters.
+    binning_scale : int
+        The observation binning scale.
+    rebin_factor : int
+        The software rebinning factor.
+    """
+    
+    psf_params_full = {}
+    
+    for fltr in psf_params.keys():
+        # convert from pixels to arcsec
+        semimajor_sigma_arcsec = psf_params[fltr]['semimajor_sigma'] * binning_scale * rebin_factor * pixel_scales[fltr]
+        semiminor_sigma_arcsec = psf_params[fltr]['semiminor_sigma'] * binning_scale * rebin_factor * pixel_scales[fltr]
+        
+        psf_params_full[fltr] = {
+            'semimajor_sigma_arcsec': semimajor_sigma_arcsec,
+            'semimajor_sigma_pix': psf_params[fltr]['semimajor_sigma'],
+            'semiminor_sigma_arcsec': semiminor_sigma_arcsec,
+            'semiminor_sigma_pix': psf_params[fltr]['semiminor_sigma'],
+        }
+    
+    # save PSF params to JSON file
+    with open(os.path.join(out_directory, f'misc/psf_params.json'), 'w') as file:
+        json.dump(psf_params_full, file, indent=4)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

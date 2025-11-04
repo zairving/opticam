@@ -5,7 +5,6 @@ from multiprocessing import cpu_count
 import os
 from typing import Callable, Dict, List, Literal, Tuple
 
-from astropy.io import fits
 from astropy.table import QTable
 from matplotlib import pyplot as plt
 import numpy as np
@@ -21,11 +20,11 @@ from opticam.correctors.flat_field_corrector import FlatFieldCorrector
 from opticam.finders import DefaultFinder, get_source_coords_from_image
 from opticam.photometers import BasePhotometer, perform_photometry
 from opticam.utils.batching import get_batches, get_batch_size
-from opticam.utils.constants import bar_format, pixel_scales
+from opticam.utils.constants import bar_format
 from opticam.utils.data_checks import check_data
 from opticam.plotting.gifs import compile_gif, create_gif_frame
 from opticam.utils.fits_handlers import get_data, get_stacked_images, save_stacked_images
-from opticam.utils.logging import recursive_log
+from opticam.utils.logging import recursive_log, log_psf_params
 from opticam.plotting.plots import plot_backgrounds, plot_background_meshes, plot_catalogs, plot_growth_curves, \
     plot_time_between_files, plot_psf, plot_rms_vs_median_flux, plot_noise, plot_snrs
 
@@ -274,13 +273,9 @@ class Reducer:
                         }
                     )
                 self.psf_params[fltr] = set_psf_params(
-                    fltr=fltr,
                     aperture_selector=self.aperture_selector,
-                    out_directory=self.out_directory,
                     catalog=self.catalogs[fltr],
-                    binning_scale=self.binning_scale,
-                    rebin_factor=self.rebin_factor,
-                )
+                    )
                 if self.verbose:
                     print(f"[OPTICAM] Read {fltr} catalog from file.")
 
@@ -375,7 +370,6 @@ class Reducer:
                 continue
             
             # get reference image
-            # np.asarray() to fix type error
             reference_image = np.asarray(
                 get_data(
                     file=self.reference_files[fltr],
@@ -470,13 +464,16 @@ class Reducer:
                 )
             
             self.psf_params[fltr] = set_psf_params(
-                fltr=fltr,
                 aperture_selector=self.aperture_selector,
-                out_directory=self.out_directory,
                 catalog=self.catalogs[fltr],
-                binning_scale=self.binning_scale,
-                rebin_factor=self.rebin_factor,
                 )
+        
+        log_psf_params(
+            out_directory=self.out_directory,
+            psf_params=self.psf_params,
+            binning_scale=self.binning_scale,
+            rebin_factor=self.rebin_factor,
+            )
         
         plot_catalogs(
             out_directory=self.out_directory,
@@ -830,20 +827,23 @@ def log_reducer_params(
 
 
 def set_psf_params(
-    fltr: str,
-    out_directory: str,
     aperture_selector: Callable,
     catalog: QTable,
-    binning_scale: int,
-    rebin_factor: int,
     ) -> Dict[str, float]:
     """
-    Set the PSF parameters for a given filter based on the catalog data.
+    Set the PSF parameters.
     
     Parameters
     ----------
-    fltr : str
-        The filter for which to set the PSF parameters.
+    aperture_selector : Callable
+        The aperture selector (e.g., `numpy.median`).
+    catalog : QTable
+        The source catalog.
+    
+    Returns
+    -------
+    Dict[str, float]
+        The PSF parameters.
     """
     
     
@@ -851,29 +851,11 @@ def set_psf_params(
     semiminor_sigma_pix = aperture_selector(catalog['semiminor_sigma'].value)
     orientation = aperture_selector(catalog['orientation'].value)
     
-    semimajor_sigma_arcsec = semimajor_sigma_pix * binning_scale * rebin_factor * pixel_scales[fltr]
-    semiminor_sigma_arcsec = semiminor_sigma_pix * binning_scale * rebin_factor * pixel_scales[fltr]
-    
-    # PSF params used by Catalog (pixels only)
-    psf_params_pix = {
+    return {
         'semimajor_sigma': semimajor_sigma_pix,
         'semiminor_sigma': semiminor_sigma_pix,
         'orientation': orientation,
     }
-    
-    psf_params_full = {
-        'semimajor_sigma_arcsec': semimajor_sigma_arcsec,
-        'semimajor_sigma_pix': semimajor_sigma_pix,
-        'semiminor_sigma_arcsec': semiminor_sigma_arcsec,
-        'semiminor_sigma_pix': semiminor_sigma_pix,
-        'orientation': orientation,
-    }
-    
-    # save PSF params to JSON file
-    with open(os.path.join(out_directory, f'misc/psf_params.json'), 'w') as file:
-        json.dump(psf_params_full, file, indent=4)
-    
-    return psf_params_pix
 
 
 def parse_alignment_results(
@@ -882,7 +864,29 @@ def parse_alignment_results(
     transforms: Dict[str, List[float]],
     unaligned_files: List[str],
     verbose: bool,
-    ):
+    ) -> Tuple[Dict[str, List[float]], List[str], NDArray, Dict[str, float], Dict[str, float]]:
+    """
+    Parse the alignment results.
+    
+    Parameters
+    ----------
+    results : Tuple
+        The alignment results.
+    camera_files : List[str]
+        The file paths for all files. 
+    transforms : Dict[str, List[float]]
+        The image-to-image alignments {file path: transform}.
+    unaligned_files : List[str]
+        The paths of the files that could not be aligned.
+    verbose : bool
+        Whether to include output.
+    
+    Returns
+    -------
+    Tuple[Dict[str, List[float]], List[str], NDArray, Dict[str, float], Dict[str, float]]
+        The updated transforms, unaligned files, stacked image, median background values and median background RMS
+        values.
+    """
     
     fltr_transforms = {}
     fltr_unaligned_files = []
