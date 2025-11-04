@@ -98,7 +98,6 @@ class TestLocalBackground(unittest.TestCase):
                 for i in range(len(coords)):
                     local_bkg, local_bkg_error = local_bkg_estimator(
                         image,
-                        np.sqrt(image),
                         coords[i],
                         tbl['semimajor_sigma'][i].value,
                         tbl['semiminor_sigma'][i].value,
