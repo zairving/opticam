@@ -10,7 +10,10 @@ class BaseBackground(ABC):
     Base class for OPTICAM background estimators.
     """
     
-    def __init__(self, box_size: int | Tuple[int, int]):
+    def __init__(
+        self,
+        box_size: int | Tuple[int, int],
+        ):
         """
         Initialize a background estimator.
         
@@ -28,7 +31,10 @@ class BaseBackground(ABC):
         self.box_size = box_size
     
     @abstractmethod
-    def __call__(self, image: NDArray) -> Background2D:
+    def __call__(
+        self,
+        image: NDArray,
+        ) -> Background2D:
         """
         Compute the 2D background for an image.
         
