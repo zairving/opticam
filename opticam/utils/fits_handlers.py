@@ -150,7 +150,7 @@ def get_data(
     Returns
     -------
     NDArray | Tuple[NDArray, NDArray]
-        _description_
+        The data and its error.
     
     Raises
     ------
@@ -166,7 +166,7 @@ def get_data(
         raise ValueError(f"[OPTICAM] Could not open file {file} due to the following exception: {e}.")
     
     if return_error:
-        error = np.sqrt(data)
+        error = np.sqrt(data)  # Poisson noise
     
     if flat_corrector:
         data = flat_corrector.correct(data, fltr)
