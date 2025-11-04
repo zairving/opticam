@@ -373,7 +373,6 @@ class Reducer:
             reference_image = np.asarray(
                 get_data(
                     file=self.reference_files[fltr],
-                    return_error=False,
                     flat_corrector=self.flat_corrector,
                     rebin_factor=self.rebin_factor,
                     remove_cosmic_rays=self.remove_cosmic_rays,
