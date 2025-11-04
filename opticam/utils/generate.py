@@ -305,7 +305,7 @@ def create_flats(
             continue
         
         # create flat-field image
-        image = create_image(binning_scale)
+        image = create_image(binning_scale) * 100  # mean count rate = 100 * 100 = 10,000
         image = apply_flat_field(image)  # apply circular aperture shadow
         noisy_image = add_noise(image, 123 * (i + 123))  # ensure different noise from observation images
         
