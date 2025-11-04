@@ -365,7 +365,7 @@ def get_noise_params(
     
     # subtract background from image
     img_clean = img - bkg.background
-    img_clean_err = np.sqrt(img + bkg.background_rms**2)
+    img_clean_err = np.sqrt(img_clean + bkg.background_rms**2)
     
     # perform photometry
     phot = AperturePhotometer()
