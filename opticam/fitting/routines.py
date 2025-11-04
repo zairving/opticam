@@ -79,7 +79,7 @@ def fit_rms_vs_flux(
             rng = np.random.default_rng(i)
             a, b = rng.multivariate_normal(popt, pcov)
             y_models[i] += power_law(x, 10**a, b)
-        y_model_err = np.std(y_models, axis=0)
+        y_model_err = 5 * np.std(y_models, axis=0)  # 5 sigma error
         
         y_model = power_law(
             x,
