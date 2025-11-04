@@ -103,13 +103,11 @@ def align_batch(
     background_rmss = {}
     
     for file in batch:
-        data = np.asarray(
-            get_data(
-                file,
-                flat_corrector=flat_corrector,
-                rebin_factor=rebin_factor,
-                return_error=False,
-                remove_cosmic_rays=remove_cosmic_rays),
+        data = get_data(
+            file,
+            flat_corrector=flat_corrector,
+            rebin_factor=rebin_factor,
+            remove_cosmic_rays=remove_cosmic_rays,
             )
         
         # calculate and subtract background

@@ -5,6 +5,7 @@ from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.time import Time
 from astropy import units as u
+from astropy.units import Quantity
 from ccdproc import cosmicray_lacosmic  # TODO: replace with astroscrappy to reduce dependencies?
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -127,9 +128,8 @@ def get_data(
     file: str,
     flat_corrector: FlatFieldCorrector | None,
     rebin_factor: int,
-    return_error: bool,
     remove_cosmic_rays: bool,
-    ) -> NDArray | Tuple[NDArray, NDArray]:
+    ) -> NDArray:
     """
     Get the image data from a FITS file.
     
@@ -141,15 +141,13 @@ def get_data(
         The `FlatFieldCorrector` instance (if specified).
     rebin_factor : int
         The rebin factor.
-    return_error : bool
-        Whether to compute and return the error image.
     remove_cosmic_rays : bool
         Whether to remove cosmic rays from the image.
     
     Returns
     -------
-    NDArray | Tuple[NDArray, NDArray]
-        _description_
+    NDArray
+        The data.
     
     Raises
     ------
@@ -161,17 +159,11 @@ def get_data(
         with fits.open(file) as hdul:
             data = np.array(hdul[0].data, dtype=np.float64)
             fltr = hdul[0].header["FILTER"] + '-band'
-    except:
-        raise ValueError(f"[OPTICAM] Could not open file {file}.")
-    
-    if return_error:
-        error = np.sqrt(data)
+    except Exception as e:
+        raise ValueError(f"[OPTICAM] Could not open file {file} due to the following exception: {e}.")
     
     if flat_corrector:
         data = flat_corrector.correct(data, fltr)
-        
-        if return_error:
-            error = flat_corrector.correct(error, fltr)
     
     # remove cosmic rays if required
     if remove_cosmic_rays:
@@ -179,12 +171,6 @@ def get_data(
     
     if rebin_factor > 1:
         data = rebin_image(data, rebin_factor)
-        
-        if return_error:
-            error = rebin_image(error, rebin_factor)
-    
-    if return_error:
-        return data, error
     
     return data
 
@@ -246,3 +232,60 @@ def get_stacked_images(
             stacked_images[fltr] = np.asarray(hdu.data)
     
     return stacked_images
+
+
+def get_image_noise_info(
+    file_path: str,
+    ) -> Tuple[NDArray, Quantity, Quantity, Quantity]:
+    """
+    Given a FITS file, get the image and corresponding filter, exposure time, dark current, and gain.
+    
+    Parameters
+    ----------
+    file_path : str
+        The path to the FITS file.
+    
+    Returns
+    -------
+    Tuple[NDArray, Quantity, Quantity, Quantity]
+        The image, exposure time, dark current, and gain.
+    
+    Raises
+    ------
+    ValueError
+        If the file could not be parsed.
+    """
+    
+    try:
+        with fits.open(file_path) as hdul:
+            img = np.array(hdul[0].data, dtype=np.float64)  # type: ignore
+            t_exp = float(hdul[0].header['EXPOSURE']) * u.s  # type: ignore
+            dark_curr = float(hdul[0].header['DARKCURR']) * u.adu / u.pix / u.s  # type: ignore
+            gain = float(hdul[0].header['GAIN']) * u.ph / u.adu  # type: ignore
+    except Exception as e:
+        raise ValueError(f"[OPTICAM] Could not parse file {file_path} due to the following exception: {e}.")
+    
+    return img, t_exp, dark_curr, gain
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

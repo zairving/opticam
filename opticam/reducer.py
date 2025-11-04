@@ -6,9 +6,9 @@ import os
 from typing import Callable, Dict, List, Literal, Tuple
 
 from astropy.table import QTable
-from matplotlib.patches import Ellipse
 from matplotlib import pyplot as plt
 import numpy as np
+from numpy.typing import NDArray
 import pandas as pd
 from photutils.segmentation import detect_threshold
 from tqdm.contrib.concurrent import process_map
@@ -20,14 +20,13 @@ from opticam.correctors.flat_field_corrector import FlatFieldCorrector
 from opticam.finders import DefaultFinder, get_source_coords_from_image
 from opticam.photometers import BasePhotometer, perform_photometry
 from opticam.utils.batching import get_batches, get_batch_size
-from opticam.utils.constants import bar_format, fwhm_scale, pixel_scales
+from opticam.utils.constants import bar_format
 from opticam.utils.data_checks import check_data
 from opticam.plotting.gifs import compile_gif, create_gif_frame
-from opticam.utils.helpers import camel_to_snake
 from opticam.utils.fits_handlers import get_data, get_stacked_images, save_stacked_images
-from opticam.utils.logging import recursive_log
-from opticam.plotting.plots import plot_backgrounds, plot_background_meshes, plot_catalogs, plot_growth_curves, plot_time_between_files
-from opticam.models.fittable_models import gaussian
+from opticam.utils.logging import recursive_log, log_psf_params
+from opticam.plotting.plots import plot_backgrounds, plot_background_meshes, plot_catalogs, plot_growth_curves, \
+    plot_time_between_files, plot_psf, plot_rms_vs_median_flux, plot_noise, plot_snrs
 
 
 class Reducer:
@@ -274,20 +273,16 @@ class Reducer:
                         }
                     )
                 self.psf_params[fltr] = set_psf_params(
-                    fltr=fltr,
                     aperture_selector=self.aperture_selector,
-                    out_directory=self.out_directory,
                     catalog=self.catalogs[fltr],
-                    binning_scale=self.binning_scale,
-                    rebin_factor=self.rebin_factor,
-                )
+                    )
                 if self.verbose:
                     print(f"[OPTICAM] Read {fltr} catalog from file.")
 
     def create_catalogs(
         self,
-        max_catalog_sources: int = 30,
-        n_alignment_sources: int = 30,
+        max_catalog_sources: int = 15,
+        n_alignment_sources: int = 15,
         transform_type: Literal['affine', 'translation'] = 'affine',
         rotation_limit: float | None = None,
         translation_limit: float | int | List[float | int] | None = None,
@@ -335,7 +330,7 @@ class Reducer:
                 translation_limit = [translation_limit, translation_limit]
         
         # if catalogs already exist, skip
-        if os.path.isfile(os.path.join(self.out_directory, 'cat/catalogs.png')) and not overwrite:
+        if os.path.isfile(os.path.join(self.out_directory, 'cat/catalogs.pdf')) and not overwrite:
             print('[OPTICAM] Catalogs already exist. To overwrite, set overwrite=True.')
             
             plot_catalogs(
@@ -375,11 +370,9 @@ class Reducer:
                 continue
             
             # get reference image
-            # np.asarray() to fix type error
             reference_image = np.asarray(
                 get_data(
                     file=self.reference_files[fltr],
-                    return_error=False,
                     flat_corrector=self.flat_corrector,
                     rebin_factor=self.rebin_factor,
                     remove_cosmic_rays=self.remove_cosmic_rays,
@@ -470,13 +463,16 @@ class Reducer:
                 )
             
             self.psf_params[fltr] = set_psf_params(
-                fltr=fltr,
                 aperture_selector=self.aperture_selector,
-                out_directory=self.out_directory,
                 catalog=self.catalogs[fltr],
-                binning_scale=self.binning_scale,
-                rebin_factor=self.rebin_factor,
                 )
+        
+        log_psf_params(
+            out_directory=self.out_directory,
+            psf_params=self.psf_params,
+            binning_scale=self.binning_scale,
+            rebin_factor=self.rebin_factor,
+            )
         
         plot_catalogs(
             out_directory=self.out_directory,
@@ -484,7 +480,13 @@ class Reducer:
             catalogs=self.catalogs,
             show=self.show_plots,
             save=True,
-        )
+            )
+        
+        save_stacked_images(
+            stacked_images=stacked_images,
+            out_directory=self.out_directory,
+            overwrite=overwrite,
+            )
         
         plot_backgrounds(
             out_directory=self.out_directory,
@@ -495,7 +497,7 @@ class Reducer:
             t_ref=self.t_ref,
             show=show_diagnostic_plots,
             save=True,
-        )
+            )
         
         plot_background_meshes(
             out_directory=self.out_directory,
@@ -504,12 +506,24 @@ class Reducer:
             background=self.background,
             show=show_diagnostic_plots,
             save=True,
+            )
+        
+        plot_snrs(
+            out_directory=self.out_directory,
+            files=self.reference_files,
+            background=self.background,
+            psf_params=self.psf_params,
+            catalogs=self.catalogs,
+            show=self.show_plots,
         )
         
-        save_stacked_images(
-            stacked_images=stacked_images,
+        plot_noise(
             out_directory=self.out_directory,
-            overwrite=overwrite,
+            files=self.reference_files,
+            background=self.background,
+            psf_params=self.psf_params,
+            catalogs=self.catalogs,
+            show=self.show_plots,
             )
         
         # save transforms to file
@@ -593,6 +607,9 @@ class Reducer:
     def plot_psfs(
         self,
         ) -> None:
+        """
+        Plot the PSFs for the catalog sources.
+        """
         
         if not os.path.isdir(os.path.join(self.out_directory, 'psfs')):
             os.makedirs(os.path.join(self.out_directory, 'psfs'))
@@ -601,13 +618,9 @@ class Reducer:
         stacked_images = get_stacked_images(self.out_directory)
         
         for fltr in self.catalogs.keys():
-            x_lo, x_hi = 0, stacked_images[fltr].shape[1]
-            y_lo, y_hi = 0, stacked_images[fltr].shape[0]
             
             a = self.psf_params[fltr]['semimajor_sigma']
             b = self.psf_params[fltr]['semiminor_sigma']
-            
-            w = a * 10  # region width
             
             for source_indx in tqdm(
                 range(len(self.catalogs[fltr])),
@@ -615,123 +628,15 @@ class Reducer:
                 desc=f'[OPTICAM] Plotting {fltr} PSFs',
                 bar_format=bar_format,
                 ):
-                
-                xc = self.catalogs[fltr]['xcentroid'][source_indx]
-                yc = self.catalogs[fltr]['ycentroid'][source_indx]
-                x_range = np.arange(max(x_lo, round(xc - w)), min(x_hi, round(xc + w)))  # x range
-                y_range = np.arange(max(y_lo, round(yc - w)), min(y_hi, round(yc + w)))  # y range
-                x_smooth = np.linspace(x_range[0], x_range[-1], 100)
-                y_smooth = np.linspace(y_range[0], y_range[-1], 100)
-                
-                theta = self.catalogs[fltr]['orientation'].value[source_indx]
-                theta_rad = theta * np.pi / 180
-                
-                # create mask
-                mask = np.zeros_like(stacked_images[fltr], dtype=bool)
-                for x_ in x_range:
-                    for y_ in y_range:
-                        mask[y_, x_] = True
-                
-                # isolate source
-                rows_to_keep = np.any(mask, axis=1)
-                region = stacked_images[fltr][rows_to_keep, :]
-                cols_to_keep = np.any(mask, axis=0)
-                region = region[:, cols_to_keep]
-                
-                fig, axes = plt.subplots(
-                    ncols=2,
-                    nrows=2,
-                    tight_layout=True,
-                    figsize=(6, 6),
-                    sharex='col',
-                    sharey='row',
-                    gridspec_kw={
-                        'hspace': 0,
-                        'wspace': 0,
-                        },
-                    )
-                fig.delaxes(axes[0, 1])
-                
-                x, y = np.meshgrid(x_range, y_range)
-                axes[1, 0].contour(
-                    x,
-                    y,
-                    region,
-                    5,
-                    colors='black',
-                    linewidths=1,
-                    zorder=1,
-                    linestyles='dashdot',
-                    )
-                axes[1, 0].set_xlabel('X', fontsize='large')
-                axes[1, 0].set_ylabel('Y', fontsize='large')
-                axes[1, 0].add_patch(
-                    Ellipse(
-                        xy=(xc, yc),
-                        width=2 * fwhm_scale * a,  # in this parameterisation, the width is the semimajor axis
-                        height=2 * fwhm_scale * b,  # in this parameterisation, the height is the semiminor axis
-                        angle=theta,  # in this parameterisation, the angle is the orientation of the PSF
-                        facecolor='none',
-                        edgecolor='r',
-                        lw=1,
-                        ls='-',
-                        zorder=2,
-                        ),
-                    )
-                
-                # project PSF onto x, y axes
-                xstd = np.sqrt(a**2 * np.cos(theta_rad)**2 + b**2 * np.sin(theta_rad)**2)
-                ystd = np.sqrt(a**2 * np.sin(theta_rad)**2 + b**2 * np.cos(theta_rad)**2)
-                
-                axes[0, 0].step(
-                    x_range,
-                    100 * region[region.shape[0] // 2, :] / np.max(region[region.shape[0] // 2, :]),
-                    color='k',
-                    lw=1,
-                    where='mid',
-                    zorder=1,
-                    )
-                axes[0, 0].plot(
-                    x_smooth,
-                    gaussian(x_smooth, 100, xc, xstd),
-                    'r-',
-                    lw=1,
-                    zorder=2,
+                plot_psf(
+                    catalog=self.catalogs[fltr],
+                    source_indx=source_indx,
+                    stacked_image=stacked_images[fltr],
+                    fltr=fltr,
+                    a=a,
+                    b=b,
+                    out_directory=self.out_directory,
                 )
-                axes[0, 0].set_ylabel('%age of peak flux', fontsize='large')
-                
-                axes[1, 1].step(
-                    100 * region[:, region.shape[1] // 2] / np.max(region[:, region.shape[1] // 2]),
-                    y_range,
-                    color='k',
-                    lw=1,
-                    where='mid',
-                    )
-                axes[1, 1].plot(
-                    gaussian(y_smooth, 100, yc, ystd),
-                    y_smooth,
-                    'r-',
-                    lw=1,
-                )
-                axes[1, 1].set_xlabel('%age of peak flux', fontsize='large')
-                
-                for ax in axes.flatten():
-                    ax.minorticks_on()
-                    ax.tick_params(
-                        which='both',
-                        direction='in',
-                        right=True,
-                        top=True,
-                        )
-                
-                fig.suptitle(f'{fltr} Source {source_indx + 1}', fontsize='large')
-                fig.savefig(
-                    os.path.join(
-                        self.out_directory,
-                        f'psfs/{fltr}_source_{source_indx + 1}.pdf',
-                        ),
-                    )
-                plt.close(fig)
 
     def create_gifs(self, keep_frames: bool = True, overwrite: bool = False) -> None:
         """
@@ -813,13 +718,7 @@ class Reducer:
         """
         
         # define save directory using the photometer name
-        save_name = camel_to_snake(photometer.__class__.__name__).replace('_photometer', '')
-        
-        # change save directory based on photometer settings
-        if photometer.local_background_estimator is not None:
-            save_name += '_annulus'
-        if photometer.forced:
-            save_name = 'forced_' + save_name
+        save_name = photometer.get_label()
         
         print(f'[OPTICAM] Photometry results will be saved to lcs/{save_name} in {self.out_directory}.')
         
@@ -872,11 +771,20 @@ class Reducer:
                 save_dir=save_dir,
                 fltr=fltr
             )
+        
+        plot_rms_vs_median_flux(
+            lc_dir=save_dir,
+            save_dir=os.path.join(self.out_directory, 'diag'),
+            phot_label=save_name,
+            show=self.show_plots,
+            )
 
 
 
 
 ################### for a clearner UI, the following functions are intentionally not Reducer methods ###################
+
+
 
 
 def log_reducer_params(
@@ -918,20 +826,23 @@ def log_reducer_params(
 
 
 def set_psf_params(
-    fltr: str,
-    out_directory: str,
     aperture_selector: Callable,
     catalog: QTable,
-    binning_scale: int,
-    rebin_factor: int,
     ) -> Dict[str, float]:
     """
-    Set the PSF parameters for a given filter based on the catalog data.
+    Set the PSF parameters.
     
     Parameters
     ----------
-    fltr : str
-        The filter for which to set the PSF parameters.
+    aperture_selector : Callable
+        The aperture selector (e.g., `numpy.median`).
+    catalog : QTable
+        The source catalog.
+    
+    Returns
+    -------
+    Dict[str, float]
+        The PSF parameters.
     """
     
     
@@ -939,29 +850,11 @@ def set_psf_params(
     semiminor_sigma_pix = aperture_selector(catalog['semiminor_sigma'].value)
     orientation = aperture_selector(catalog['orientation'].value)
     
-    semimajor_sigma_arcsec = semimajor_sigma_pix * binning_scale * rebin_factor * pixel_scales[fltr]
-    semiminor_sigma_arcsec = semiminor_sigma_pix * binning_scale * rebin_factor * pixel_scales[fltr]
-    
-    # PSF params used by Catalog (pixels only)
-    psf_params_pix = {
+    return {
         'semimajor_sigma': semimajor_sigma_pix,
         'semiminor_sigma': semiminor_sigma_pix,
         'orientation': orientation,
     }
-    
-    psf_params_full = {
-        'semimajor_sigma_arcsec': semimajor_sigma_arcsec,
-        'semimajor_sigma_pix': semimajor_sigma_pix,
-        'semiminor_sigma_arcsec': semiminor_sigma_arcsec,
-        'semiminor_sigma_pix': semiminor_sigma_pix,
-        'orientation': orientation,
-    }
-    
-    # save PSF params to JSON file
-    with open(os.path.join(out_directory, f'misc/psf_params.json'), 'w') as file:
-        json.dump(psf_params_full, file, indent=4)
-    
-    return psf_params_pix
 
 
 def parse_alignment_results(
@@ -970,7 +863,29 @@ def parse_alignment_results(
     transforms: Dict[str, List[float]],
     unaligned_files: List[str],
     verbose: bool,
-    ):
+    ) -> Tuple[Dict[str, List[float]], List[str], NDArray, Dict[str, float], Dict[str, float]]:
+    """
+    Parse the alignment results.
+    
+    Parameters
+    ----------
+    results : Tuple
+        The alignment results.
+    camera_files : List[str]
+        The file paths for all files. 
+    transforms : Dict[str, List[float]]
+        The image-to-image alignments {file path: transform}.
+    unaligned_files : List[str]
+        The paths of the files that could not be aligned.
+    verbose : bool
+        Whether to include output.
+    
+    Returns
+    -------
+    Tuple[Dict[str, List[float]], List[str], NDArray, Dict[str, float], Dict[str, float]]
+        The updated transforms, unaligned files, stacked image, median background values and median background RMS
+        values.
+    """
     
     fltr_transforms = {}
     fltr_unaligned_files = []
@@ -1113,9 +1028,6 @@ def parse_photometry_results(
             photometry_results[key].append(value)
     
     return photometry_results
-
-
-
 
 
 

@@ -35,6 +35,9 @@ colors = {
 # stdev -> FWHM scale factor
 fwhm_scale = 2 * np.sqrt(2 * np.log(2))
 
+# factor for converting counts to magnitudes (~ 1.0857)
+counts_to_mag_factor = 2.5 / np.log(10)
+
 # colors for catalog source markers
 catalog_colors = list(mcolors.TABLEAU_COLORS.keys())
 catalog_colors.pop(catalog_colors.index("tab:brown"))

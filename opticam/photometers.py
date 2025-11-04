@@ -13,6 +13,7 @@ from opticam.correctors.flat_field_corrector import FlatFieldCorrector
 from opticam.finders import DefaultFinder
 from opticam.utils.constants import fwhm_scale
 from opticam.utils.fits_handlers import get_data
+from opticam.utils.helpers import camel_to_snake
 
 
 class BasePhotometer(ABC):
@@ -56,7 +57,7 @@ class BasePhotometer(ABC):
     def compute(
         self,
         image: NDArray,
-        image_err: NDArray,
+        image_err: NDArray | None,
         source_coords: NDArray,
         image_coords: None | NDArray,
         psf_params: Dict[str, float],
@@ -68,7 +69,7 @@ class BasePhotometer(ABC):
         ----------
         image : NDArray
             The image. If `local_background_estimator` is undefined, this image will be background subtracted.
-        image_err : NDArray
+        image_err : NDArray | None
             The error in the image.
         source_coords : NDArray
             The source coordinates in the catalogue.
@@ -285,12 +286,33 @@ class BasePhotometer(ABC):
         
         return results
 
+    def get_label(
+            self,
+            ) -> str:
+            """
+            Get the label of the photometer for labelling output.
+            
+            Returns
+            -------
+            str
+                The label.
+            """
+            
+            save_name = camel_to_snake(self.__class__.__name__).replace('_photometer', '')
+            
+            # change save directory based on photometer settings
+            if self.local_background_estimator is not None:
+                save_name += '_annulus'
+            if self.forced:
+                save_name = 'forced_' + save_name
+            
+            return save_name
 
 class AperturePhotometer(BasePhotometer):
     """
     A photometer for performing aperture photometry.
     """
-    
+
     def __init__(
         self,
         semimajor_axis: int | None = None,
@@ -337,7 +359,7 @@ class AperturePhotometer(BasePhotometer):
     def compute(
         self,
         image: NDArray,
-        image_err: NDArray,
+        image_err: NDArray | None,
         source_coords: NDArray,
         image_coords: None | NDArray,
         psf_params: Dict[str, float],
@@ -349,7 +371,7 @@ class AperturePhotometer(BasePhotometer):
         ----------
         image : NDArray
             The image. If `local_background_estimator` is undefined, this image will be background subtracted.
-        image_err : NDArray
+        image_err : NDArray | None
             The error in the image.
         source_coords : NDArray
             The source coordinates in the catalogue.
@@ -399,7 +421,7 @@ class AperturePhotometer(BasePhotometer):
     def compute_aperture_flux(
         self,
         data: NDArray,
-        error: NDArray,
+        error: NDArray | None,
         position: NDArray,
         psf_params: Dict[str, float],
         ) -> Tuple[float, float] | Tuple[float, float, float, float]:
@@ -410,7 +432,7 @@ class AperturePhotometer(BasePhotometer):
         ----------
         data : NDArray
             The image.
-        error : NDArray
+        error : NDArray | None
             The error in the image.
         position : NDArray
             The position of the source.
@@ -426,48 +448,79 @@ class AperturePhotometer(BasePhotometer):
             returned.
         """
         
-        if self.semimajor_axis is not None and self.semiminor_axis is not None and self.orientation is not None:
-            aperture = EllipticalAperture(
-                position,
-                self.semimajor_axis,
-                self.semiminor_axis,
-                self.orientation,
-                )
-        else:
-            aperture = EllipticalAperture(
-                position,
-                fwhm_scale * psf_params['semimajor_sigma'],
-                fwhm_scale * psf_params['semiminor_sigma'],
-                psf_params['orientation'],
-                )
-        
-        phot_table = aperture_photometry(data, aperture, error=error)
+        aperture = self.get_aperture(
+            position=position,
+            psf_params=psf_params,
+            )
         
         if self.local_background_estimator is None:
+            phot_table = aperture_photometry(data, aperture, error=error)
+            
             return phot_table["aperture_sum"].value[0], phot_table["aperture_sum_err"].value[0]
         else:
-            aperture_area = aperture.area_overlap(data)  # aperture area in pixels
             
             # estimate local background in the annulus
             local_background_per_pixel, local_background_error_per_pixel = self.local_background_estimator(
                 data,
-                error,
                 position,
                 psf_params['semimajor_sigma'],
                 psf_params['semiminor_sigma'],
                 psf_params['orientation'],
                 )
             
-            # estimate the total background in aperture
-            total_bkg = local_background_per_pixel * aperture_area
-            total_bkg_error = np.sqrt(local_background_error_per_pixel**2 * aperture_area)
+            data_clean = data - local_background_per_pixel
+            clean_error = np.sqrt(data_clean + local_background_error_per_pixel**2)
             
-            flux = float(phot_table["aperture_sum"].value[0] - total_bkg)
-            flux_error = float(np.sqrt(phot_table["aperture_sum_err"].value[0]**2 + total_bkg_error**2))
-            local_background = float(total_bkg)
-            local_background_errors = float(total_bkg_error)
+            phot_table = aperture_photometry(data_clean, aperture, error=clean_error)
             
-            return flux, flux_error, local_background, local_background_errors
+            flux = phot_table["aperture_sum"].value[0]
+            flux_error = phot_table["aperture_sum_err"].value[0]
+            
+            return flux, flux_error, local_background_per_pixel, local_background_error_per_pixel
+
+    def get_aperture(
+        self,
+        position: NDArray,
+        psf_params: Dict[str, float],
+        ) -> EllipticalAperture:
+        
+        if self.semimajor_axis is not None and self.semiminor_axis is not None and self.orientation is not None:
+            return EllipticalAperture(
+                position,
+                self.semimajor_axis,
+                self.semiminor_axis,
+                self.orientation,
+                )
+        else:
+            return EllipticalAperture(
+                position,
+                fwhm_scale * psf_params['semimajor_sigma'],
+                fwhm_scale * psf_params['semiminor_sigma'],
+                psf_params['orientation'],
+                )
+
+    def get_aperture_area(
+        self,
+        psf_params: Dict[str, float],
+        ) -> float:
+        """
+        Get the area of the aperture.
+        
+        Parameters
+        ----------
+        psf_params : Dict[str, float],
+            The PSF parameters.
+        
+        Returns
+        -------
+        float
+            The area of the aperture.
+        """
+        
+        return self.get_aperture(
+            position=np.zeros(2),  # position does not matter
+            psf_params=psf_params,
+            ).area
 
 
 class OptimalPhotometer(BasePhotometer):
@@ -478,7 +531,7 @@ class OptimalPhotometer(BasePhotometer):
     def compute(
         self,
         image: NDArray,
-        image_err: NDArray,
+        image_err: NDArray | None,
         source_coords: NDArray,
         image_coords: None | NDArray,
         psf_params: Dict[str, float],
@@ -537,7 +590,7 @@ class OptimalPhotometer(BasePhotometer):
     def compute_optimal_flux(
         self,
         image: NDArray,
-        error: NDArray,
+        error: NDArray | None,
         position: NDArray,
         psf_params: Dict[str, float],
         ) -> Tuple[float, float] | Tuple[float, float, float, float]:
@@ -548,7 +601,7 @@ class OptimalPhotometer(BasePhotometer):
         ----------
         image : NDArray
             The image.
-        error : NDArray
+        error : NDArray | None
             The error in the image.
         position : NDArray
             The position of the source in the image, given as (y, x) coordinates.
@@ -564,10 +617,66 @@ class OptimalPhotometer(BasePhotometer):
             returned.
         """
         
-        # define pixel coordinates
-        y, x = np.ogrid[:image.shape[0], :image.shape[1]]
+        weights = self.get_weights(
+            width=image.shape[1],
+            height=image.shape[0],
+            position=position,
+            psf_params=psf_params,
+            )
         
-        # convert orientation from degrees to radians
+        if self.local_background_estimator is None:
+            flux = np.sum(image * weights)
+            flux_error = np.sqrt(np.sum((error * weights)**2))
+            
+            return flux, flux_error
+        else:
+            # estimate local background using annulus
+            local_background_per_pixel, local_background_error_per_pixel = self.local_background_estimator(
+                image,
+                position,
+                psf_params['semimajor_sigma'],
+                psf_params['semiminor_sigma'],
+                psf_params['orientation'],
+                )
+            
+            image_clean = image - local_background_per_pixel
+            clean_error = np.sqrt(image_clean + local_background_error_per_pixel**2)
+            
+            flux = np.sum(image_clean * weights)
+            flux_error = np.sqrt(np.sum((clean_error * weights)**2))
+            
+            return flux, flux_error, local_background_per_pixel, local_background_error_per_pixel
+
+    @staticmethod
+    def get_weights(
+        width: int,
+        height: int,
+        position: NDArray,
+        psf_params: Dict[str, float],
+        ) -> NDArray:
+        """
+        Compute the optimal weight for each pixel in an image.
+        
+        Parameters
+        ----------
+        width : int
+            The width of the image.
+        height : int
+            The height of the image.
+        position : NDArray
+            The position of the source.
+        psf_params : Dict[str, float]
+            The PSF parameters.
+        
+        Returns
+        -------
+        NDArray
+            The normalised weights.
+        """
+        
+        # define pixel coordinates
+        y, x = np.ogrid[:height, :width]
+        
         theta = psf_params['orientation'] * np.pi / 180
         
         # offset coordinates to the position of the source and align axes with the orientation of the PSF
@@ -575,37 +684,9 @@ class OptimalPhotometer(BasePhotometer):
         x_rot = (x - x0) * np.cos(theta) + (y - y0) * np.sin(theta)
         y_rot = -(x - x0) * np.sin(theta) + (y - y0) * np.cos(theta)
         
-        # compute the weights for each pixel using a 2D Gaussian
         weights = np.exp(- .5 * ((x_rot / psf_params['semimajor_sigma'])**2 + (y_rot / psf_params['semiminor_sigma'])**2))
-        weights /= np.sum(weights)  # normalise weights
         
-        # compute optimal flux and its error
-        flux = np.sum(image * weights)
-        flux_error = np.sqrt(np.sum((error * weights)**2))
-        
-        if self.local_background_estimator is None:
-            return flux, flux_error
-        else:
-            # estimate local background using annulus
-            local_background_per_pixel, local_background_error_per_pixel = self.local_background_estimator(
-                image,
-                error,
-                position,
-                psf_params['semimajor_sigma'],
-                psf_params['semiminor_sigma'],
-                psf_params['orientation'],
-                )
-            
-            # estimate the total background in aperture
-            total_bkg = local_background_per_pixel * np.sum(weights)
-            total_bkg_error = np.sqrt(local_background_error_per_pixel**2 * np.sum(weights))
-            
-            flux = flux - total_bkg
-            flux_error = np.sqrt(flux_error**2 + total_bkg_error**2)
-            local_background = total_bkg
-            local_background_errors = total_bkg_error
-            
-            return flux, flux_error, local_background, local_background_errors
+        return weights / np.sum(weights)
 
 
 
@@ -669,22 +750,22 @@ def perform_photometry(
         The photometry results.
     """
     
-    image, error = get_data(
+    image = get_data(
         file=file,
         flat_corrector=flat_corrector,
         rebin_factor=rebin_factor,
-        return_error=True,
         remove_cosmic_rays=remove_cosmic_rays,
         )
     
     if photometer.local_background_estimator is None:
         bkg = background(image)  # get 2D background
         image = image - bkg.background  # remove background from image
-        error = np.sqrt(error**2 + bkg.background_rms**2)  # propagate error
+        error = np.sqrt(image + bkg.background_rms**2)  # propagate error
         threshold = threshold * bkg.background_rms  # define source detection threshold
     else:
         # estimate source detection threshold from noisy image
-        threshold = detect_threshold(image, threshold, error=error)  # type: ignore
+        threshold = detect_threshold(image, threshold)  # type: ignore
+        error = None
     
     image_coords = None  # assume no image coordinates by default
     if not photometer.forced:
@@ -695,7 +776,13 @@ def perform_photometry(
         except Exception as e:
             logger.warning(f"[OPTICAM] Could not determine source coordinates in {file}: {e}")
     
-    results = photometer.compute(image, error, source_coords, image_coords, psf_params[fltr])
+    results = photometer.compute(
+        image=image,
+        image_err=error,
+        source_coords=source_coords,
+        image_coords=image_coords,
+        psf_params=psf_params[fltr],
+        )
     
     assert 'flux' in results, f"[OPTICAM] Photometer {photometer.__class__.__name__}'s compute method must return a 'flux' key."
     assert 'flux_err' in results, f"[OPTICAM] Photometer {photometer.__class__.__name__}'s compute method must return a 'flux_err' key."
@@ -759,8 +846,6 @@ def get_growth_curve(
         fluxes.append(flux)
     
     return np.array(radii), np.array(fluxes)
-
-
 
 
 
