@@ -1,3 +1,5 @@
+This repo has now been archived. Development of this software has moved to https://github.com/OPTICAM-instrument.
+
 # opticam
 A Python package for reducing OPTICAM data.
 
